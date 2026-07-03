@@ -10,7 +10,10 @@ object QuantizeDct8x8Block {
   val ScaleFractionBits = 16
   val QmFractionBits = 16
 
+  val DefaultRawQuant = 5
+  val DefaultScaleQ16 = 7340
   val DefaultQmMultiplierQ16 = 1 << QmFractionBits
+  val DefaultInvDcFactorQ16: Seq[Int] = Seq(300809830, 37584640, 18792320)
 
   val DctXInvQ16: Seq[Long] = Seq(
     0, 206438240, 205734432, 173580464, 146452064, 123563264, 104251904, 87958504,

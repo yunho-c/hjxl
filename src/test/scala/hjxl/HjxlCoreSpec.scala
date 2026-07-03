@@ -14,7 +14,9 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut: HjxlCore,
       enableXyb: Boolean,
       enableDct: Boolean = false,
-      enableQuant: Boolean = false
+      enableQuant: Boolean = false,
+      enableTokenize: Boolean = false,
+      tokenSelect: Int = TokenTraceSelect.Dc
   ): Unit = {
     dut.io.config.xsize.poke(1.U)
     dut.io.config.ysize.poke(1.U)
@@ -23,7 +25,8 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     dut.io.config.enableXyb.poke(enableXyb.B)
     dut.io.config.enableDct.poke(enableDct.B)
     dut.io.config.enableQuant.poke(enableQuant.B)
-    dut.io.config.enableTokenize.poke(false.B)
+    dut.io.config.enableTokenize.poke(enableTokenize.B)
+    dut.io.config.tokenSelect.poke(tokenSelect.U)
   }
 
   private def driveOnePixel(dut: HjxlCore): Unit = {
@@ -100,7 +103,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
-  "HjxlCore gives raw DCT trace priority over AC strategy trace" in {
+  "HjxlCore routes to DCT-only quantized traces when DCT and quantization are enabled" in {
     simulate(new HjxlCore(config)) { dut =>
       pokeConfig(dut, enableXyb = true, enableDct = true, enableQuant = true)
       dut.io.input.valid.poke(false.B)
@@ -110,8 +113,40 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       driveOnePixel(dut)
       dut.io.trace.ready.poke(true.B)
       dut.io.trace.valid.expect(true.B)
-      dut.io.trace.bits.stage.expect(TraceStage.RawDct8x8.U)
+      dut.io.trace.bits.stage.expect(TraceStage.QuantizedAc.U)
       dut.io.trace.bits.index.expect(0.U)
+    }
+  }
+
+  "HjxlCore routes to DC token traces when tokenization is enabled" in {
+    simulate(new HjxlCore(config)) { dut =>
+      pokeConfig(dut, enableXyb = true, enableDct = true, enableQuant = true, enableTokenize = true)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      driveOnePixel(dut)
+      dut.io.trace.ready.poke(true.B)
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.stage.expect(TraceStage.DcTokens.U)
+      dut.io.trace.bits.group.expect(0.U)
+    }
+  }
+
+  "HjxlCore routes to AC metadata token traces when quantized tokenization is enabled without DCT" in {
+    simulate(new HjxlCore(config)) { dut =>
+      pokeConfig(dut, enableXyb = true, enableQuant = true, enableTokenize = true, tokenSelect = TokenTraceSelect.AcMetadata)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      driveOnePixel(dut)
+      dut.io.trace.ready.poke(true.B)
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.stage.expect(TraceStage.AcMetadataTokens.U)
+      dut.io.trace.bits.group.expect(0.U)
+      dut.io.trace.bits.index.expect(2.U)
+      dut.io.trace.bits.value.expect(0.S)
     }
   }
 }

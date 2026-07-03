@@ -19,6 +19,7 @@ class FrameAcStrategyTraceStageSpec extends AnyFreeSpec with Matchers with Chise
     dut.io.config.enableDct.poke(false.B)
     dut.io.config.enableQuant.poke(true.B)
     dut.io.config.enableTokenize.poke(false.B)
+    dut.io.config.tokenSelect.poke(TokenTraceSelect.Dc.U)
   }
 
   private def drivePixel(dut: FrameAcStrategyTraceStage, x: Int, y: Int): Unit = {

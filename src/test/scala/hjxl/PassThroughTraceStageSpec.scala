@@ -17,6 +17,7 @@ class PassThroughTraceStageSpec extends AnyFreeSpec with Matchers with ChiselSim
     dut.io.config.enableDct.poke(false.B)
     dut.io.config.enableQuant.poke(false.B)
     dut.io.config.enableTokenize.poke(false.B)
+    dut.io.config.tokenSelect.poke(TokenTraceSelect.Dc.U)
   }
 
   "PassThroughTraceStage emits one trace sample per RGB channel" in {

@@ -13,6 +13,7 @@ class FrameConfig(c: HjxlConfig) extends Bundle {
   val enableDct = Bool()
   val enableQuant = Bool()
   val enableTokenize = Bool()
+  val tokenSelect = UInt(2.W)
 }
 
 class RgbPixel(c: HjxlConfig) extends Bundle {

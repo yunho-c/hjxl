@@ -127,6 +127,44 @@ Read these libjxl-tiny files before making architectural changes:
   `DctOnlyQuantizeBlock`. It emits all `QuantizedAc` records first, then
   `QuantDc`, then `NumNonzeros`; keep this order when building frame-level
   quant traces.
+- `FrameDctOnlyQuantizeTraceStage` is the current frame-level quant trace
+  scheduler. It buffers/pads RGB, computes approximate XYB and DCT per raster
+  8x8 block, then emits 192 `QuantizedAc`, three `QuantDc`, and three
+  `NumNonzeros` records per block. It intentionally uses fixed defaults:
+  adjusted raw quant 5, distance-1 DC factors, default X QM scale, zero CFL
+  multipliers, and `FrameConfig.fixedPointScale` as AC scale Q16 with zero
+  selecting 7340. Do not describe it as adaptive-quantization parity.
+- `DcTokenize` provides libjxl-tiny DC token helpers: signed-token packing,
+  clamped-gradient prediction, and the compressed gradient-context LUT.
+- `FrameDctOnlyDcTokenTraceStage` is the first token trace stage. It uses the
+  same fixed-parameter DCT-only frame path and emits only DC tokens, in Y/X/B
+  plane order. For token traces, `trace.group` is the token ordinal,
+  `trace.index` is the token context, and `trace.value` is the packed residual.
+- `FrameDctOnlyAcMetadataTokenTraceStage` emits the fixed-path AC metadata
+  tokens: zero CFL tile maps, all-DCT strategy choices, fixed raw quant-field
+  values, and fixed block metadata literals. It uses
+  `trace.stage = AcMetadataTokens`, `trace.group = token ordinal`,
+  `trace.index = context`, and `trace.value = packed residual or literal`.
+- `FrameDctOnlyAcNonzeroTokenTraceStage` emits the nonzero-count prefix tokens
+  for AC coefficient tokenization in ordinary-DCT block/channel order. It uses
+  `trace.stage = AcTokens`, `trace.group = token ordinal`, `trace.index =
+  context`, and `trace.value = nonzero count`. It does not emit coefficient
+  scan/value tokens yet. It is currently a standalone frame stage; do not claim
+  it is selected by `HjxlCore`.
+- `AcCoefficientTokenTraceStage` emits prepared-block ordinary-DCT coefficient
+  scan/value tokens after the nonzero-count prefix. Feed it quantized
+  coefficients, channel, nonzero count, and the first token ordinal; it emits
+  `trace.stage = AcTokens`, `trace.group = token ordinal`, `trace.index =
+  zero-density context`, and `trace.value = packed coefficient`. It is not yet
+  frame-scheduled.
+- `AcBlockTokenTraceStage` wraps the nonzero-count prefix and prepared
+  coefficient scan tokens for one ordinary-DCT block/channel. It still expects
+  the caller to provide the predicted nonzero count from frame/block neighbors.
+- `DctOnlyAcBlockTokenTraceStage` sequences prepared AC token streams for one
+  X/Y/B ordinary-DCT block in libjxl-tiny channel order: Y, X, then B. It still
+  expects caller-provided predicted nonzero counts and first token ordinal.
+- Frame-level AC coefficient token scheduling, entropy coding, and bitstream
+  assembly are still future work.
 - `FrameAcStrategyTraceStage` emits one default DCT-first AC strategy value per
   padded block. This matches the current all-8x8-DCT transform path but not
   libjxl-tiny's adaptive 16x8/8x16 strategy search.
@@ -147,10 +185,16 @@ Read these libjxl-tiny files before making architectural changes:
   values as a floating-reference oracle; current RTL comparisons may still need
   explicit tolerance because the hardware boundary uses rounded fixed-point DCT
   coefficients.
-- `HjxlCore` currently exposes padded-input, XYB, raw-DCT, or default
-  AC-strategy trace streams. `enableDct` has priority over `enableQuant`, which
-  has priority over `enableXyb`. Do not describe it as an encoder yet; these
-  are traceable pipeline slices.
+- `HjxlCore` currently exposes padded-input, XYB, raw-DCT, fixed-parameter
+  quantized-DCT, fixed-parameter DC-token, fixed AC-metadata-token, or default
+  AC-strategy trace streams. `FrameConfig.tokenSelect` chooses token substreams:
+  currently `Dc` or `AcMetadata`.
+  `enableDct && enableQuant && enableTokenize && tokenSelect=Dc` selects the
+  DC-token frame trace; `enableDct && enableQuant` selects the quantized-DCT
+  frame trace; `enableDct` alone selects raw DCT;
+  `enableQuant && enableTokenize && tokenSelect=AcMetadata` selects AC metadata
+  tokens; `enableQuant` alone selects AC strategy metadata. Do not describe it
+  as an encoder yet; these are traceable pipeline slices.
 
 ## Verification Commands
 

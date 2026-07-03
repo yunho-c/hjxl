@@ -30,7 +30,8 @@ Internal Chisel modules should use `Decoupled` streams. The first public-facing
 contract is intentionally simple:
 
 - `FrameConfig` carries image size, distance, fixed-point scale, and feature
-  flags.
+  flags. `tokenSelect` chooses which logical token substream a token trace
+  emits at the top level: currently `Dc` or `AcMetadata`.
 - `RgbPixel` carries fixed-point linear RGB samples and image coordinates.
 - `StageTrace` carries a stage id, group id, element index, and value.
 - `HjxlCore` is the integration shell where stage modules will be wired.
@@ -48,10 +49,12 @@ AXI wrappers.
   policy, then emits approximate Q12 XYB samples in channel-first order.
 - `HjxlCore` currently routes input RGB samples into `FramePadTraceStage` by
   default, into `FrameXybTraceStage` when `FrameConfig.enableXyb` is true, and
-  into `FrameDct8x8TraceStage` when `FrameConfig.enableDct` is true. DCT routing
-  has priority over AC-strategy and XYB routing because it consumes the XYB
-  approximation internally. `FrameConfig.enableQuant` currently selects
-  `FrameAcStrategyTraceStage` when DCT tracing is disabled.
+  into `FrameDct8x8TraceStage` when `FrameConfig.enableDct` is true. When both
+  `enableDct` and `enableQuant` are true, it routes into
+  `FrameDctOnlyQuantizeTraceStage`; when `enableTokenize` is also true, it
+  uses `tokenSelect` to route into `FrameDctOnlyDcTokenTraceStage`,
+  or `FrameDctOnlyAcMetadataTokenTraceStage`. When only `enableQuant` is true,
+  it routes into `FrameAcStrategyTraceStage`.
 - `tools/hjxl_reference.py --input-padded-npy ...` writes the matching
   libjxl-tiny padded-input oracle artifact for small fixtures.
 - `RgbToXybApprox` is a standalone Q8-to-Q12 fixed-point approximation of
@@ -112,10 +115,57 @@ AXI wrappers.
   (`trace.index = channel`), then three `NumNonzeros` records
   (`trace.index = channel`). `trace.group` is the caller-provided block/group
   id.
-- The frame-level quantized-block stage remains open: AQ/CFL map plumbing,
-  reciprocal/distance scale generation, raster block scheduling, trace emission
-  across a frame, and comparison against `tools/hjxl_reference.py` DCT-only
-  whole-frame artifacts are still separate work.
+- `FrameDctOnlyQuantizeTraceStage` is the first frame-level quantized-block
+  scheduler. It buffers and pads RGB like `FrameDct8x8TraceStage`, converts
+  each raster block through approximate XYB and DCT, then emits 198 records per
+  block: 192 `QuantizedAc`, three `QuantDc`, and three `NumNonzeros` records.
+  This stage deliberately uses fixed defaults: adjusted raw quant 5, distance-1
+  inverse DC factors, default X quant-matrix scale, zero tile CFL multipliers,
+  and `FrameConfig.fixedPointScale` as AC scale Q16 with zero selecting 7340.
+- `DcTokenize` implements the libjxl-tiny signed-token packing, clamped
+  gradient predictor, and compressed 1024-entry gradient-context lookup used by
+  DC tokenization.
+- `FrameDctOnlyDcTokenTraceStage` emits DC residual token traces from the same
+  fixed-parameter DCT-only frame path. It emits tokens in libjxl-tiny order:
+  Y plane, X plane, then B plane, each in raster block order. Token traces use
+  `trace.stage = DcTokens`, `trace.group = token ordinal`,
+  `trace.index = context`, and `trace.value = packed residual`.
+- `FrameDctOnlyAcMetadataTokenTraceStage` emits AC-metadata token traces for the
+  current fixed all-DCT path. It emits zero CFL tile-map tokens, all-DCT
+  strategy tokens, fixed raw-quant-field tokens, and fixed block-metadata
+  literals in libjxl-tiny order. Token traces use
+  `trace.stage = AcMetadataTokens`, `trace.group = token ordinal`,
+  `trace.index = context`, and `trace.value = packed residual or literal`.
+- `FrameDctOnlyAcNonzeroTokenTraceStage` emits the mandatory nonzero-count
+  prefix tokens of AC coefficient tokenization for the current fixed all-DCT
+  path. It predicts each count from top/left block nonzero history, applies
+  libjxl-tiny's nonzero bucket context formula for ordinary DCT, and emits
+  `trace.stage = AcTokens`, `trace.group = token ordinal`, `trace.index =
+  context`, and `trace.value = nonzero count`. It is currently a standalone
+  frame stage rather than an `HjxlCore` route, and it does not yet emit
+  coefficient scan tokens.
+- `AcCoefficientTokenTraceStage` emits prepared-block ordinary-DCT AC
+  coefficient scan tokens. The caller provides quantized coefficients, channel,
+  nonzero count, and first token ordinal; the stage walks libjxl-tiny's 8x8 DCT
+  coefficient order, applies the zero-density context formula, packs signed
+  coefficients, and stops after consuming all nonzero AC coefficients. This is
+  the block primitive needed before frame-level AC coefficient token scheduling.
+- `AcBlockTokenTraceStage` wraps the prepared AC coefficient-token primitive
+  with the required nonzero-count prefix token for one ordinary-DCT
+  block/channel. The caller supplies the predicted nonzero count from the
+  frame scheduler plus the actual count and quantized coefficients; the wrapper
+  emits a complete prepared block/channel AC token stream.
+- `DctOnlyAcBlockTokenTraceStage` sequences `AcBlockTokenTraceStage` over one
+  prepared X/Y/B ordinary-DCT block in libjxl-tiny channel order: Y, X, then B.
+  The caller supplies predicted nonzero counts, actual nonzero counts, quantized
+  coefficients, and the first token ordinal. This is the block-level AC token
+  handoff expected from a future frame scheduler.
+- Full frame-level quantized-block parity remains open: AQ/CFL map plumbing,
+  distance parameter generation, dynamic reciprocal scaling, rectangular
+  strategy scheduling, and comparison against `tools/hjxl_reference.py`
+  DCT-only whole-frame artifacts are still separate work. Full token parity
+  also still needs frame-level AC coefficient token scheduling and entropy
+  table/bitstream assembly.
 - `FrameAcStrategyTraceStage` emits one `AcStrategy` value per padded 8x8 block,
   currently always ordinary DCT with the libjxl-tiny encoding
   `(raw_strategy << 1) | is_first_block == 1`. This matches the current
