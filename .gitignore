@@ -2,6 +2,10 @@
 test_run_dir/*
 target/
 out/
+generated/
+build-codex/
+__pycache__/
+*.py[cod]
 .bsp/
 .metals/
 .scala-build/

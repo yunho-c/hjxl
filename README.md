@@ -1,7 +1,9 @@
 # hjxl
 
-Chisel hardware project scaffolded from
-[chipsalliance/chisel-template](https://github.com/chipsalliance/chisel-template).
+Chisel RTL for a hardware-accelerated JPEG XL encoder targeting practical
+parity with
+[libjxl-tiny](https://github.com/libjxl/libjxl-tiny), not the full JPEG XL
+encoder surface.
 
 ## Requirements
 
@@ -11,7 +13,7 @@ Chisel hardware project scaffolded from
 
 ## Build
 
-Run the example test suite with sbt:
+Run the RTL test suite with sbt:
 
 ```sh
 sbt test
@@ -23,11 +25,22 @@ Or with Mill:
 ./mill hjxl.test
 ```
 
-Generate the example GCD SystemVerilog:
+Generate the current top-level SystemVerilog:
 
 ```sh
-sbt 'runMain gcd.GCD'
+sbt 'runMain hjxl.Elaborate'
 ```
+
+Generate a small libjxl-tiny reference fixture:
+
+```sh
+python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
+  --pfm build-codex/fixtures/gradient-17x9.pfm \
+  --jxl build-codex/fixtures/gradient-17x9.jxl
+```
+
+Set `LIBJXL_TINY` if the reference checkout is not at
+`/Users/yunhocho/GitHub/libjxl-tiny`.
 
 ## Versions
 
