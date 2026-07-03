@@ -15,3 +15,15 @@ object Elaborate extends App {
     )
   )
 }
+
+object ElaborateAcTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlAcTokenCore(),
+    args = Array("--target-dir", "generated-ac-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}

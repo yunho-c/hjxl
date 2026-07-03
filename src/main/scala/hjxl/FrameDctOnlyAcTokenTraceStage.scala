@@ -5,14 +5,17 @@ package hjxl
 import chisel3._
 import chisel3.util._
 
-/** Emits DC residual tokens from the fixed-parameter DCT-only frame path.
+/** Emits complete AC coefficient-token traces for the fixed DCT-only frame path.
   *
-  * Token traces use `trace.stage = DcTokens`, `trace.group = token ordinal`,
-  * `trace.index = token context`, and `trace.value = packed residual`.
-  * Tokens are emitted in libjxl-tiny DC order: Y plane, X plane, then B plane,
-  * each in raster block order.
+  * This stage extends `FrameDctOnlyAcNonzeroTokenTraceStage` by feeding each
+  * quantized X/Y/B raster block into `DctOnlyAcBlockTokenTraceStage`, so each
+  * block emits the nonzero-count prefixes and the coefficient scan/value tokens.
+  * It intentionally keeps the same fixed quantization defaults as
+  * `FrameDctOnlyQuantizeTraceStage`: adjusted raw quant 5, distance-1 DC
+  * factors, default X quant-matrix scale, zero CFL, and `fixedPointScale` as
+  * the AC scale Q16 with zero selecting the distance-1 default.
   */
-class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FrameDctOnlyAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   private val blockDim = HjxlConstants.BlockDim
   private val blockSize = blockDim * blockDim
   private val numPixels = c.maxFrameWidth * c.maxFrameHeight
@@ -33,10 +36,11 @@ class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   val green = Reg(Vec(numPixels, SInt(c.pixelBits.W)))
   val blue = Reg(Vec(numPixels, SInt(c.pixelBits.W)))
 
-  val receiving :: emitting :: Nil = Enum(2)
+  val receiving :: startBlock :: emitBlock :: Nil = Enum(3)
   val state = RegInit(receiving)
   val received = RegInit(0.U(frameCountBits.W))
-  val emitIndex = RegInit(0.U(32.W))
+  val blockOrdinal = RegInit(0.U(32.W))
+  val tokenOrdinal = RegInit(0.U(c.groupBits.W))
   val latchedWidth = RegInit(0.U(widthBits.W))
   val latchedHeight = RegInit(0.U(heightBits.W))
   val xBlocks = RegInit(0.U(32.W))
@@ -48,7 +52,7 @@ class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
     ((value + (block - 1.U)) / block) * block
   }
 
-  private def quantizedDcForBlock(blockX: UInt, blockY: UInt): (Seq[SInt], Bool) = {
+  private def quantizedBlockFor(blockX: UInt, blockY: UInt): (Vec[Vec[SInt]], Vec[UInt], Bool) = {
     val blockBaseX = blockX << log2Ceil(blockDim)
     val blockBaseY = blockY << log2Ceil(blockDim)
     val xybPixels = Seq.tabulate(blockSize) { i =>
@@ -61,7 +65,7 @@ class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
       val sourceIndex = sourceY * latchedWidth + sourceX
       val sourceIndexFixed = sourceIndex(frameIndexBits - 1, 0)
       val xyb = Module(new RgbToXybApprox(c))
-      xyb.io.input.valid := state === emitting
+      xyb.io.input.valid := state === startBlock
       xyb.io.input.bits.x := paddedX
       xyb.io.input.bits.y := paddedY
       xyb.io.input.bits.r := red(sourceIndexFixed)
@@ -76,7 +80,7 @@ class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
     val dctB = Module(new Dct8x8Approx(c))
     val dcts = Seq(dctX, dctY, dctB)
     for (dct <- dcts) {
-      dct.io.input.valid := state === emitting
+      dct.io.input.valid := state === startBlock
       dct.io.output.ready := true.B
     }
     for (i <- 0 until blockSize) {
@@ -85,34 +89,46 @@ class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
       dctB.io.input.bits(i) := xybPixels(i).xybB
     }
 
-    val yDc = Module(new QuantizeDcDct8x8Block(c))
-    val xDc = Module(new QuantizeDcDct8x8Block(c))
-    val bDc = Module(new QuantizeDcDct8x8Block(c))
-    val dcModules = Seq(xDc, yDc, bDc)
-    for (dc <- dcModules) {
-      dc.io.input.valid := state === emitting
-      dc.io.output.ready := true.B
+    val scaleQ16 = Mux(
+      io.config.fixedPointScale === 0.U,
+      QuantizeDct8x8Block.DefaultScaleQ16.U(16.W),
+      io.config.fixedPointScale
+    )
+    val quant = QuantizeDct8x8Block.DefaultRawQuant.U(8.W)
+    val invQacQ16 = ((BigInt(1) << 32).U(64.W) / (scaleQ16 * quant))(31, 0)
+
+    val quantizer = Module(new DctOnlyQuantizeBlock(c))
+    quantizer.io.input.valid := state === startBlock
+    quantizer.io.output.ready := true.B
+    quantizer.io.input.bits.quant := quant
+    quantizer.io.input.bits.scaleQ16 := scaleQ16
+    quantizer.io.input.bits.invQacQ16 := invQacQ16
+    quantizer.io.input.bits.xQmMultiplierQ16 := QuantizeDct8x8Block.DefaultQmMultiplierQ16.U
+    quantizer.io.input.bits.ytox := 0.S
+    quantizer.io.input.bits.ytob := 0.S
+    for (channel <- 0 until 3) {
+      quantizer.io.input.bits.invDcFactorQ16(channel) :=
+        QuantizeDct8x8Block.DefaultInvDcFactorQ16(channel).U
+    }
+    for (i <- 0 until blockSize) {
+      quantizer.io.input.bits.coefficients(0)(i) := dctX.io.output.bits(i)
+      quantizer.io.input.bits.coefficients(1)(i) := dctY.io.output.bits(i)
+      quantizer.io.input.bits.coefficients(2)(i) := dctB.io.output.bits(i)
     }
 
-    yDc.io.input.bits.dcCoefficient := dctY.io.output.bits(0)
-    yDc.io.input.bits.channel := 1.U
-    yDc.io.input.bits.invDcFactorQ16 := QuantizeDct8x8Block.DefaultInvDcFactorQ16(1).U
-    yDc.io.input.bits.quantizedYDc := 0.S
-
-    xDc.io.input.bits.dcCoefficient := dctX.io.output.bits(0)
-    xDc.io.input.bits.channel := 0.U
-    xDc.io.input.bits.invDcFactorQ16 := QuantizeDct8x8Block.DefaultInvDcFactorQ16(0).U
-    xDc.io.input.bits.quantizedYDc := yDc.io.output.bits.quantizedDc
-
-    bDc.io.input.bits.dcCoefficient := dctB.io.output.bits(0)
-    bDc.io.input.bits.channel := 2.U
-    bDc.io.input.bits.invDcFactorQ16 := QuantizeDct8x8Block.DefaultInvDcFactorQ16(2).U
-    bDc.io.input.bits.quantizedYDc := yDc.io.output.bits.quantizedDc
+    val quantized = Wire(Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))
+    val numNonzeros = Wire(Vec(3, UInt(8.W)))
+    for (channel <- 0 until 3) {
+      numNonzeros(channel) := quantizer.io.output.bits.numNonzeros(channel)
+      for (i <- 0 until blockSize) {
+        quantized(channel)(i) := quantizer.io.output.bits.quantizedAc(channel)(i)
+      }
+    }
 
     (
-      Seq(xDc.io.output.bits.quantizedDc, yDc.io.output.bits.quantizedDc, bDc.io.output.bits.quantizedDc),
-      dctX.io.output.valid && dctY.io.output.valid && dctB.io.output.valid &&
-        xDc.io.output.valid && yDc.io.output.valid && bDc.io.output.valid
+      quantized,
+      numNonzeros,
+      dctX.io.output.valid && dctY.io.output.valid && dctB.io.output.valid && quantizer.io.output.valid
     )
   }
 
@@ -129,53 +145,36 @@ class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
       nextPaddedWidth > c.maxFrameWidth.U || nextPaddedHeight > c.maxFrameHeight.U
 
   val xBlocksSafe = Mux(xBlocks === 0.U, 1.U, xBlocks)
-  val totalBlocksSafe = Mux(totalBlocks === 0.U, 1.U, totalBlocks)
-  val plane = emitIndex / totalBlocksSafe
-  val blockOrdinal = emitIndex - plane * totalBlocksSafe
   val blockX = blockOrdinal - (blockOrdinal / xBlocksSafe) * xBlocksSafe
   val blockY = blockOrdinal / xBlocksSafe
-  val channel = MuxLookup(plane, 2.U)(
-    Seq(
-      0.U -> 1.U,
-      1.U -> 0.U,
-      2.U -> 2.U
-    )
-  )
-  val channelSafe = channel(1, 0)
-
   val westBlockX = Mux(blockX === 0.U, blockX, blockX - 1.U)
   val northBlockY = Mux(blockY === 0.U, blockY, blockY - 1.U)
-  val northwestBlockX = westBlockX
-  val northwestBlockY = northBlockY
 
-  val (currentDc, currentValid) = quantizedDcForBlock(blockX, blockY)
-  val (westDc, westValid) = quantizedDcForBlock(westBlockX, blockY)
-  val (northDc, northValid) = quantizedDcForBlock(blockX, northBlockY)
-  val (northwestDc, northwestValid) = quantizedDcForBlock(northwestBlockX, northwestBlockY)
+  val (currentQuantized, currentNonzeros, currentValid) = quantizedBlockFor(blockX, blockY)
+  val (_, westNonzeros, westValid) = quantizedBlockFor(westBlockX, blockY)
+  val (_, northNonzeros, northValid) = quantizedBlockFor(blockX, northBlockY)
+  val predictedNonzeros = Wire(Vec(3, UInt(8.W)))
+  for (channel <- 0 until 3) {
+    predictedNonzeros(channel) := Mux(
+      blockX === 0.U,
+      Mux(blockY === 0.U, 32.U, northNonzeros(channel)),
+      Mux(blockY === 0.U, westNonzeros(channel), (northNonzeros(channel) +& westNonzeros(channel) + 1.U) >> 1)
+    )
+  }
 
-  val current = VecInit(currentDc)(channelSafe)
-  val westCandidate = VecInit(westDc)(channelSafe)
-  val northCandidate = VecInit(northDc)(channelSafe)
-  val northwestCandidate = VecInit(northwestDc)(channelSafe)
-
-  val left = Mux(blockX =/= 0.U, westCandidate, Mux(blockY =/= 0.U, northCandidate, 0.S))
-  val top = Mux(blockY =/= 0.U, northCandidate, left)
-  val topLeft = Mux(blockX =/= 0.U && blockY =/= 0.U, northwestCandidate, left)
-
-  val dcTokens = Module(new DcTokenTraceStage(c))
-  dcTokens.io.input.valid := state === emitting && currentValid && westValid && northValid && northwestValid
-  dcTokens.io.input.bits.group := emitIndex(c.groupBits - 1, 0)
-  dcTokens.io.input.bits.current := current
-  dcTokens.io.input.bits.west := left
-  dcTokens.io.input.bits.north := top
-  dcTokens.io.input.bits.northwest := topLeft
-  dcTokens.io.trace.ready := io.trace.ready
+  val blockTokens = Module(new DctOnlyAcBlockTokenTraceStage(c))
+  blockTokens.io.input.valid := state === startBlock && currentValid && westValid && northValid
+  blockTokens.io.input.bits.group := tokenOrdinal
+  blockTokens.io.input.bits.predictedNonzeros := predictedNonzeros
+  blockTokens.io.input.bits.numNonzeros := currentNonzeros
+  blockTokens.io.input.bits.quantized := currentQuantized
+  blockTokens.io.trace.ready := io.trace.ready && state === emitBlock
 
   io.input.ready := state === receiving && !configOutOfRange
-  io.trace.valid := dcTokens.io.trace.valid
-  io.busy := state === emitting || received =/= 0.U
+  io.trace.valid := state === emitBlock && blockTokens.io.trace.valid
+  io.trace.bits := blockTokens.io.trace.bits
+  io.busy := state =/= receiving || received =/= 0.U
   io.overflow := overflow || configOutOfRange
-  io.trace.bits := dcTokens.io.trace.bits
 
   when(configOutOfRange) {
     received := 0.U
@@ -189,8 +188,9 @@ class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
     received := nextReceived
 
     when(nextReceived === expectedPixels) {
-      state := emitting
-      emitIndex := 0.U
+      state := startBlock
+      blockOrdinal := 0.U
+      tokenOrdinal := 0.U
       latchedWidth := configWidth
       latchedHeight := configHeight
       xBlocks := nextPaddedWidth >> log2Ceil(blockDim)
@@ -198,15 +198,26 @@ class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
     }
   }
 
+  when(state === startBlock && blockTokens.io.input.fire) {
+    state := emitBlock
+  }
+
   when(io.trace.fire) {
-    val nextEmit = emitIndex + 1.U
-    emitIndex := nextEmit
-    when(nextEmit === totalBlocks * 3.U) {
+    tokenOrdinal := io.trace.bits.group + 1.U
+  }
+
+  when(state === emitBlock && !blockTokens.io.busy && !blockTokens.io.trace.valid) {
+    val nextBlock = blockOrdinal + 1.U
+    when(nextBlock === totalBlocks) {
       state := receiving
       received := 0.U
-      emitIndex := 0.U
+      blockOrdinal := 0.U
+      tokenOrdinal := 0.U
       xBlocks := 0.U
       totalBlocks := 0.U
+    }.otherwise {
+      blockOrdinal := nextBlock
+      state := startBlock
     }
   }
 

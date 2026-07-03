@@ -136,10 +136,15 @@ Read these libjxl-tiny files before making architectural changes:
   selecting 7340. Do not describe it as adaptive-quantization parity.
 - `DcTokenize` provides libjxl-tiny DC token helpers: signed-token packing,
   clamped-gradient prediction, and the compressed gradient-context LUT.
+- `DcTokenTraceStage` is the prepared quantized-DC token primitive. Feed it a
+  current quantized DC sample plus west/north/northwest predictor neighbors; it
+  emits exactly one `DcTokens` trace record. Its spec is oracle-backed against
+  libjxl-tiny for a constant-frame prepared DC plane.
 - `FrameDctOnlyDcTokenTraceStage` is the first token trace stage. It uses the
   same fixed-parameter DCT-only frame path and emits only DC tokens, in Y/X/B
   plane order. For token traces, `trace.group` is the token ordinal,
   `trace.index` is the token context, and `trace.value` is the packed residual.
+  It delegates predictor/context/residual packing to `DcTokenTraceStage`.
 - `FrameDctOnlyAcMetadataTokenTraceStage` emits the fixed-path AC metadata
   tokens: zero CFL tile maps, all-DCT strategy choices, fixed raw quant-field
   values, and fixed block metadata literals. It uses
@@ -163,8 +168,18 @@ Read these libjxl-tiny files before making architectural changes:
 - `DctOnlyAcBlockTokenTraceStage` sequences prepared AC token streams for one
   X/Y/B ordinary-DCT block in libjxl-tiny channel order: Y, X, then B. It still
   expects caller-provided predicted nonzero counts and first token ordinal.
-- Frame-level AC coefficient token scheduling, entropy coding, and bitstream
-  assembly are still future work.
+- `FrameDctOnlyAcTokenTraceStage` is the complete standalone frame scheduler
+  for fixed all-DCT AC tokens. It recomputes the current fixed DCT-only
+  quantized block stream, predicts nonzero counts from west/north block
+  history, and emits full Y/X/B block AC streams through
+  `DctOnlyAcBlockTokenTraceStage`. It is not selected by `HjxlCore`; keep it
+  standalone until the top-level no longer instantiates every heavy trace path.
+- `HjxlAcTokenCore` wraps the full AC-token frame scheduler as a dedicated
+  compile-time top. Use `sbt 'runMain hjxl.ElaborateAcTokens'` for this path
+  instead of routing it through `HjxlCore`; attempting to runtime-mux it into
+  `HjxlCore` makes unrelated Verilator top-level tests impractical.
+- Entropy coding, entropy table optimization, and bitstream assembly are still
+  future work.
 - `FrameAcStrategyTraceStage` emits one default DCT-first AC strategy value per
   padded block. This matches the current all-8x8-DCT transform path but not
   libjxl-tiny's adaptive 16x8/8x16 strategy search.
@@ -185,10 +200,28 @@ Read these libjxl-tiny files before making architectural changes:
   values as a floating-reference oracle; current RTL comparisons may still need
   explicit tolerance because the hardware boundary uses rounded fixed-point DCT
   coefficients.
+- `--fixed-dct-only-dc-tokens-npy`,
+  `--fixed-dct-only-ac-metadata-tokens-npy`, and
+  `--fixed-dct-only-ac-tokens-npy` export logical `(context, value)` token
+  streams for raw-quant-5, zero-CFL, all-DCT fixtures. Use these to cross-check
+  token order and context formulas against libjxl-tiny. For nontrivial images,
+  exact value parity still depends on improving the fixed-point transform and
+  quantization path. Current Scala tests use the AC-metadata oracle directly
+  and use the AC oracle for a constant frame where all AC coefficients are zero
+  and the token stream is exactly comparable.
+- `--fixed-dct-only-frame-bin` and `--fixed-dct-only-codestream-bin` serialize
+  the fixed logical tokens through libjxl-tiny's entropy optimizer and bitstream
+  writer. Treat these as host-side oracle artifacts for the near-term
+  hardware/software split, not as evidence that RTL emits final `.jxl` bytes.
+- `--token-input-dc-tokens-npy`, `--token-input-ac-metadata-tokens-npy`,
+  `--token-input-ac-tokens-npy`, and `--token-input-ac-strategy-npy` let the
+  helper assemble frame/codestream bytes from precomputed logical tokens. Use
+  this path for future RTL trace dumps before attempting an RTL entropy coder.
 - `HjxlCore` currently exposes padded-input, XYB, raw-DCT, fixed-parameter
   quantized-DCT, fixed-parameter DC-token, fixed AC-metadata-token, or default
   AC-strategy trace streams. `FrameConfig.tokenSelect` chooses token substreams:
-  currently `Dc` or `AcMetadata`.
+  currently `Dc` or `AcMetadata` through `HjxlCore`; AC nonzero/full AC token
+  streams are standalone trace stages.
   `enableDct && enableQuant && enableTokenize && tokenSelect=Dc` selects the
   DC-token frame trace; `enableDct && enableQuant` selects the quantized-DCT
   frame trace; `enableDct` alone selects raw DCT;

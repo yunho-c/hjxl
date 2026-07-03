@@ -14,8 +14,8 @@ records when `enableDct && enableQuant` are set, DC residual tokens when
 AC-metadata tokens when `enableQuant && enableTokenize &&
 tokenSelect=AcMetadata` are set, or the current all-DCT AC strategy map when
 only `enableQuant` is set. Later stages will replace the fixed quantization
-defaults with adaptive quantization/CFL metadata and extend the token path to
-AC coefficient scan tokens. Standalone fixed-point primitives exist for
+defaults with adaptive quantization/CFL metadata, entropy coding, and bitstream
+assembly. Standalone fixed-point primitives exist for
 approximate RGB-to-XYB, 1D DCT-8, and the scaled 8x8 DCT block layout used by
 libjxl-tiny.
 There is also a standalone DCT-only 8x8 AC quantization primitive that consumes
@@ -35,6 +35,8 @@ blocks through that path with fixed distance-1 quantization defaults so future
 token stages have a frame-shaped trace source before full AQ/CFL hardware is
 available. `FrameDctOnlyDcTokenTraceStage` emits the first logical token stream:
 DC predictor contexts and packed residuals in libjxl-tiny Y/X/B plane order.
+`DcTokenTraceStage` exposes the same DC predictor/token packing as a prepared
+single-sample boundary once quantized DC planes already exist.
 `FrameDctOnlyAcMetadataTokenTraceStage` emits fixed-path CFL, AC-strategy,
 quant-field, and block-metadata tokens.
 `FrameDctOnlyAcNonzeroTokenTraceStage` is a directly tested standalone frame
@@ -44,7 +46,11 @@ coefficient scan tokens with libjxl-tiny's DCT coefficient order and
 zero-density contexts, and `AcBlockTokenTraceStage` combines the nonzero prefix
 with those coefficient tokens for one prepared block/channel.
 `DctOnlyAcBlockTokenTraceStage` sequences the prepared Y/X/B channel streams
-for one all-DCT block.
+for one all-DCT block. `FrameDctOnlyAcTokenTraceStage` is the first full
+standalone frame scheduler for `AcTokens`: it emits nonzero prefixes and
+coefficient scan/value tokens for every fixed all-DCT raster block/channel. It
+is directly tested and exposed through the dedicated `HjxlAcTokenCore` wrapper,
+but not routed through the runtime-multiplexed `HjxlCore`.
 
 ## Requirements
 
@@ -72,6 +78,12 @@ Generate the current top-level SystemVerilog:
 sbt 'runMain hjxl.Elaborate'
 ```
 
+Generate the standalone full AC-token trace top-level:
+
+```sh
+sbt 'runMain hjxl.ElaborateAcTokens'
+```
+
 Generate a small libjxl-tiny reference fixture:
 
 ```sh
@@ -89,11 +101,28 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --dct-only-num-nonzeros-npy build-codex/fixtures/gradient-17x9-dct-only-nnz.npy \
   --dct-only-quant-dc-npy build-codex/fixtures/gradient-17x9-dct-only-qdc.npy \
   --dct-only-prepared-blocks-json build-codex/fixtures/gradient-17x9-dct-only-prepared-blocks.json \
+  --fixed-dct-only-dc-tokens-npy build-codex/fixtures/gradient-17x9-fixed-dc-tokens.npy \
+  --fixed-dct-only-ac-metadata-tokens-npy build-codex/fixtures/gradient-17x9-fixed-acmeta-tokens.npy \
+  --fixed-dct-only-ac-tokens-npy build-codex/fixtures/gradient-17x9-fixed-ac-tokens.npy \
+  --fixed-dct-only-frame-bin build-codex/fixtures/gradient-17x9-fixed-frame.bin \
+  --fixed-dct-only-codestream-bin build-codex/fixtures/gradient-17x9-fixed.jxl \
   --jxl build-codex/fixtures/gradient-17x9.jxl
 ```
 
 Set `LIBJXL_TINY` if the reference checkout is not at
 `/Users/yunhocho/GitHub/libjxl-tiny`.
+
+Assemble a frame and bare codestream from precomputed logical token arrays:
+
+```sh
+python3 tools/hjxl_reference.py --width 17 --height 9 --distance 1.0 \
+  --token-input-dc-tokens-npy build-codex/fixtures/gradient-17x9-fixed-dc-tokens.npy \
+  --token-input-ac-metadata-tokens-npy build-codex/fixtures/gradient-17x9-fixed-acmeta-tokens.npy \
+  --token-input-ac-tokens-npy build-codex/fixtures/gradient-17x9-fixed-ac-tokens.npy \
+  --token-input-ac-strategy-npy build-codex/fixtures/gradient-17x9-ac-strategy.npy \
+  --token-input-frame-bin build-codex/fixtures/gradient-17x9-token-frame.bin \
+  --token-input-codestream-bin build-codex/fixtures/gradient-17x9-token.jxl
+```
 
 ## Versions
 
