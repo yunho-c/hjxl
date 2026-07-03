@@ -70,6 +70,52 @@ AXI wrappers.
   is `channel * 64 + coefficient`.
 - `tools/hjxl_reference.py --dct8x8-npy ...` writes raster 8x8 XYB DCT blocks as
   `(block, channel, coefficient)` float32 arrays.
+- `QuantizeDct8x8Block` is the first AC quantization primitive. It consumes one
+  DCT-only 8x8 coefficient block in Q12, an adjusted raw quant-field byte, the
+  distance-derived AC scale in Q16, and an optional X-channel quant-matrix
+  multiplier. It applies libjxl-tiny's DCT inverse quant matrices, quadrant
+  thresholds, integer rounding, and DC-excluding nonzero count for one channel.
+  This is intentionally a block primitive; whole-frame quantization still needs
+  AQ/CFL fields, Y roundtrip reconstruction, chroma residual subtraction, and
+  quantized DC plane handling before it can claim libjxl-tiny quantized-block
+  parity.
+- `DctQuantizeTraceStage` wraps `QuantizeDct8x8Block` as a prepared-block trace
+  boundary. It accepts one block's coefficients and quant parameters, emits 64
+  `QuantizedAc` records with `trace.index = channel * 64 + coefficient`, then
+  emits one `NumNonzeros` record with `trace.index = channel`. This is for
+  quantization simulation and validation; it is not a substitute for the missing
+  frame-level AQ/CFL integration.
+- `QuantizeRoundtripYDct8x8Block` builds on the DCT-only Y quantizer by applying
+  libjxl-tiny's quantization-bias adjustment and Y DCT weight matrix, then
+  dequantizing through an explicit reciprocal AC scale input. This produces the
+  reconstructed Y coefficients that X/B quantization must use for CFL residual
+  subtraction. The reciprocal is currently supplied by the caller; distance
+  parameter hardware is still future work.
+- `QuantizeChromaResidualDct8x8Block` consumes X or B coefficients, the
+  reconstructed Y coefficients, a signed CFL multiplier, and quantization
+  parameters. It subtracts `ytox / 84 * Y` for X or `(1 + ytob / 84) * Y` for B,
+  then reuses `QuantizeDct8x8Block` for AC quantization and nonzero counting.
+- `QuantizeDcDct8x8Block` quantizes one DCT-only DC coefficient using an
+  explicit inverse DC factor. For B it subtracts half of the already-quantized Y
+  DC value, matching libjxl-tiny's chroma DC storage convention. This completes
+  the current DCT-only per-channel AC/DC block quantization math.
+- `DctOnlyQuantizeBlock` composes the DCT-only block primitives for one prepared
+  X/Y/B 8x8 coefficient triplet. The caller supplies the raw quant value, AC
+  scale, reciprocal AC scale, inverse DC factors, X quant-matrix multiplier, and
+  tile CFL multipliers; the module emits quantized AC coefficients, quantized DC
+  coefficients, and nonzero counts for all channels. This is the block-level
+  shape a future frame scheduler should use after AQ/CFL/distance parameter
+  generation exists.
+- `DctOnlyQuantizeTraceStage` wraps `DctOnlyQuantizeBlock` for prepared-block
+  trace validation. It emits 192 `QuantizedAc` records first
+  (`trace.index = channel * 64 + coefficient`), then three `QuantDc` records
+  (`trace.index = channel`), then three `NumNonzeros` records
+  (`trace.index = channel`). `trace.group` is the caller-provided block/group
+  id.
+- The frame-level quantized-block stage remains open: AQ/CFL map plumbing,
+  reciprocal/distance scale generation, raster block scheduling, trace emission
+  across a frame, and comparison against `tools/hjxl_reference.py` DCT-only
+  whole-frame artifacts are still separate work.
 - `FrameAcStrategyTraceStage` emits one `AcStrategy` value per padded 8x8 block,
   currently always ordinary DCT with the libjxl-tiny encoding
   `(raw_strategy << 1) | is_first_block == 1`. This matches the current
@@ -83,6 +129,19 @@ AXI wrappers.
   maps for small whole-frame fixtures. These are oracle artifacts for the future
   adaptive-quantization/strategy implementation, not claims about current RTL
   parity.
+- `tools/hjxl_reference.py --dct-only-quantized-ac-npy ...`,
+  `--dct-only-num-nonzeros-npy ...`, `--dct-only-num-nonzeros-map-npy ...`, and
+  `--dct-only-quant-dc-npy ...` write libjxl-tiny quantization outputs while
+  forcing the default all-8x8-DCT strategy. Use these to validate the current
+  transform/quantization direction before rectangular strategy search is
+  implemented.
+- `tools/hjxl_reference.py --dct-only-prepared-blocks-json ...` writes a
+  structured per-block oracle for the prepared `DctOnlyQuantizeBlock` boundary:
+  Q12 coefficients, raw quant, AC/DC scale reciprocals, CFL scalars, and
+  libjxl-tiny's expected quantized AC/DC/nonzero outputs. The expected outputs
+  come from libjxl-tiny's floating reference path, so comparisons against RTL
+  should account for the current fixed-point Q12 coefficient input tolerance
+  until frame-level fixed-point staging is locked down.
 
 ## Accuracy Policy
 

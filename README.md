@@ -12,6 +12,19 @@ XYB when `enableXyb` is set, raster 8x8-block raw scaled-DCT coefficients when
 set. Later stages will extend that transform path into adaptive quantization and
 tokenization. Standalone fixed-point primitives exist for approximate
 RGB-to-XYB, 1D DCT-8, and the scaled 8x8 DCT block layout used by libjxl-tiny.
+There is also a standalone DCT-only 8x8 AC quantization primitive that consumes
+the adjusted raw quant value and distance-derived AC scale; it is not yet wired
+as a whole-frame trace mode. Prepared DCT blocks can be run through
+`DctQuantizeTraceStage` to emit `QuantizedAc` and `NumNonzeros` traces for
+block-level validation. `QuantizeRoundtripYDct8x8Block` adds the Y-channel
+quantize/dequantize roundtrip used before chroma residual quantization, and
+`QuantizeChromaResidualDct8x8Block` applies the X/B CFL residual step before
+quantizing chroma coefficients. `QuantizeDcDct8x8Block` covers the DCT-only
+quantized DC coefficient path, including B's correction from quantized Y DC.
+`DctOnlyQuantizeBlock` composes those pieces for one prepared X/Y/B 8x8 DCT
+block and emits quantized AC, quantized DC, and nonzero counts for all channels.
+`DctOnlyQuantizeTraceStage` exposes the same prepared-block result as trace
+records for simulation and future frame-scheduler validation.
 
 ## Requirements
 
@@ -52,6 +65,10 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --libjxl-ac-strategy-npy build-codex/fixtures/gradient-17x9-libjxl-ac-strategy.npy \
   --ytox-map-npy build-codex/fixtures/gradient-17x9-ytox.npy \
   --ytob-map-npy build-codex/fixtures/gradient-17x9-ytob.npy \
+  --dct-only-quantized-ac-npy build-codex/fixtures/gradient-17x9-dct-only-qac.npy \
+  --dct-only-num-nonzeros-npy build-codex/fixtures/gradient-17x9-dct-only-nnz.npy \
+  --dct-only-quant-dc-npy build-codex/fixtures/gradient-17x9-dct-only-qdc.npy \
+  --dct-only-prepared-blocks-json build-codex/fixtures/gradient-17x9-dct-only-prepared-blocks.json \
   --jxl build-codex/fixtures/gradient-17x9.jxl
 ```
 

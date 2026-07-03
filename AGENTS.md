@@ -98,6 +98,35 @@ Read these libjxl-tiny files before making architectural changes:
   to approximate XYB, runs `Dct8x8Approx` for all three channels, and emits
   `RawDct8x8` trace samples. `trace.group` is the raster block index and
   `trace.index` is `channel * 64 + coefficient`.
+- `QuantizeDct8x8Block` is a standalone DCT-only AC quantization primitive. It
+  takes one channel's Q12 DCT coefficients plus raw quant, AC scale Q16, and QM
+  multiplier Q16 inputs, then emits quantized coefficients and a DC-excluding
+  nonzero count. It does not replace the missing whole-frame AQ/CFL/Y-roundtrip
+  quantization path.
+- `DctQuantizeTraceStage` is the prepared-block trace wrapper for that
+  primitive. It emits 64 `QuantizedAc` trace records followed by one
+  `NumNonzeros` record. Use it to validate quantization streams without wiring
+  fake AQ/CFL values through `HjxlCore`.
+- `QuantizeRoundtripYDct8x8Block` implements libjxl-tiny's Y quantize,
+  quant-bias, and dequantize roundtrip for DCT-only 8x8 blocks. It needs an
+  explicit reciprocal AC scale input; do not hide that with a constant unless a
+  test fixture is intentionally fixed to one distance and quant value.
+- `QuantizeChromaResidualDct8x8Block` implements the X/B CFL residual step
+  before quantization. It expects reconstructed Y coefficients from
+  `QuantizeRoundtripYDct8x8Block`, a signed CFL multiplier, and the same raw
+  quant/scale/QM inputs as `QuantizeDct8x8Block`.
+- `QuantizeDcDct8x8Block` implements DCT-only quantized DC for one channel. Feed
+  it an explicit inverse DC factor from distance parameters; for B, also feed
+  the already-quantized Y DC so it can subtract the libjxl-tiny half-Y
+  correction.
+- `DctOnlyQuantizeBlock` composes the prepared X/Y/B block path and emits
+  quantized AC, quantized DC, and nonzero counts for one all-DCT 8x8 block. It
+  still expects caller-provided AQ/CFL/distance-derived scalar inputs; do not
+  treat it as frame-level quantization.
+- `DctOnlyQuantizeTraceStage` is the prepared-block trace wrapper for
+  `DctOnlyQuantizeBlock`. It emits all `QuantizedAc` records first, then
+  `QuantDc`, then `NumNonzeros`; keep this order when building frame-level
+  quant traces.
 - `FrameAcStrategyTraceStage` emits one default DCT-first AC strategy value per
   padded block. This matches the current all-8x8-DCT transform path but not
   libjxl-tiny's adaptive 16x8/8x16 strategy search.
@@ -106,6 +135,18 @@ Read these libjxl-tiny files before making architectural changes:
   `--ytob-map-npy`. Use those artifacts as the oracle before implementing AQ,
   CFL, or transform-strategy RTL; do not compare those outputs against the
   current default AC-strategy trace as if they were equivalent.
+- The same helper can export all-DCT quantization oracle outputs with
+  `--dct-only-raw-quant-field-npy`, `--dct-only-ytox-map-npy`,
+  `--dct-only-ytob-map-npy`, `--dct-only-quantized-ac-npy`,
+  `--dct-only-num-nonzeros-npy`, `--dct-only-num-nonzeros-map-npy`, and
+  `--dct-only-quant-dc-npy`. Prefer these artifacts when validating the current
+  DCT-only quantization path before adaptive rectangular strategy search exists.
+- `--dct-only-prepared-blocks-json` exports the prepared-block interface for
+  `DctOnlyQuantizeBlock`: Q12 coefficients, quant/scaling/CFL inputs, and
+  libjxl-tiny expected quantized AC/DC/nonzero results. Treat the expected
+  values as a floating-reference oracle; current RTL comparisons may still need
+  explicit tolerance because the hardware boundary uses rounded fixed-point DCT
+  coefficients.
 - `HjxlCore` currently exposes padded-input, XYB, raw-DCT, or default
   AC-strategy trace streams. `enableDct` has priority over `enableQuant`, which
   has priority over `enableXyb`. Do not describe it as an encoder yet; these
