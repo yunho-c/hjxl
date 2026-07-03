@@ -82,9 +82,10 @@ Read these libjxl-tiny files before making architectural changes:
 - `FramePadTraceStage` is the first real libjxl-tiny stage. It emits
   `input_padded` samples in channel-first order and implements right/bottom edge
   replication to the next 8x8 block boundary.
-- `RgbToXybApprox` is a standalone Q8 linear-RGB to Q12 XYB approximation with a
-  cube-root lookup table. Treat it as an accuracy-tunable first pass, not final
-  bit-exact libjxl-tiny parity.
+- `RgbToXybApprox` is a standalone Q8 linear-RGB to Q12 XYB approximation. It
+  computes mixed absorbance at Q10 precision, linearly interpolates a Q8
+  cube-root lookup table, then emits Q12 XYB. Treat it as an accuracy-tunable
+  first pass, not final bit-exact libjxl-tiny parity.
 - `FrameXybTraceStage` buffers and pads the frame, reuses `RgbToXybApprox`, and
   emits channel-first XYB trace samples. `HjxlCore` selects this stage when
   `FrameConfig.enableXyb` is true.
@@ -94,6 +95,13 @@ Read these libjxl-tiny files before making architectural changes:
 - `Dct8x8Approx` is the first block-level transform primitive. It uses
   `Dct8Approx` for both dimensions, applies libjxl-tiny's per-dimension 1/8
   scale, and emits the scaled 8x8 coefficient layout used before quantization.
+- `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny
+  distance-derived scalar parameters. It supports common Q8 distances
+  `64`, `128`, `256`, `512`, `1024`, and `2048`, defaulting unsupported values
+  to distance 1. It emits global AC scale, quantized DC scale, inverse DC
+  factors, X quant-matrix multiplier, and EPF iterations. Use
+  `tools/hjxl_reference.py --distance-params-json ...` to regenerate or check
+  entries against the local libjxl-tiny Python port.
 - `FrameDct8x8TraceStage` buffers the RGB frame, converts each padded 8x8 block
   to approximate XYB, runs `Dct8x8Approx` for all three channels, and emits
   `RawDct8x8` trace samples. `trace.group` is the raster block index and
@@ -130,10 +138,11 @@ Read these libjxl-tiny files before making architectural changes:
 - `FrameDctOnlyQuantizeTraceStage` is the current frame-level quant trace
   scheduler. It buffers/pads RGB, computes approximate XYB and DCT per raster
   8x8 block, then emits 192 `QuantizedAc`, three `QuantDc`, and three
-  `NumNonzeros` records per block. It intentionally uses fixed defaults:
-  adjusted raw quant 5, distance-1 DC factors, default X QM scale, zero CFL
-  multipliers, and `FrameConfig.fixedPointScale` as AC scale Q16 with zero
-  selecting 7340. Do not describe it as adaptive-quantization parity.
+  `NumNonzeros` records per block. It intentionally still uses fixed adjusted
+  raw quant 5 and zero CFL multipliers, but it now consumes distance-derived
+  AC/DC scalar parameters from `DistanceParamsLookup`. `FrameConfig.fixedPointScale`
+  overrides only the AC scale Q16; zero uses the distance lookup. Do not
+  describe it as adaptive-quantization parity.
 - `DcTokenize` provides libjxl-tiny DC token helpers: signed-token packing,
   clamped-gradient prediction, and the compressed gradient-context LUT.
 - `DcTokenTraceStage` is the prepared quantized-DC token primitive. Feed it a
@@ -200,6 +209,8 @@ Read these libjxl-tiny files before making architectural changes:
   values as a floating-reference oracle; current RTL comparisons may still need
   explicit tolerance because the hardware boundary uses rounded fixed-point DCT
   coefficients.
+- `--distance-params-json` exports libjxl-tiny distance parameters. Use it to
+  update or audit `DistanceParamsLookup` entries.
 - `--fixed-dct-only-dc-tokens-npy`,
   `--fixed-dct-only-ac-metadata-tokens-npy`, and
   `--fixed-dct-only-ac-tokens-npy` export logical `(context, value)` token
@@ -217,11 +228,27 @@ Read these libjxl-tiny files before making architectural changes:
   `--token-input-ac-tokens-npy`, and `--token-input-ac-strategy-npy` let the
   helper assemble frame/codestream bytes from precomputed logical tokens. Use
   this path for future RTL trace dumps before attempting an RTL entropy coder.
+- `tools/hjxl_trace_tokens.py` converts `StageTrace` CSV dumps with
+  `stage,group,index,value` columns into those token-input NumPy arrays. Token
+  stages require contiguous `group` ordinals; AC strategy traces use `index` as
+  the raster block ordinal and require image width/height for reshaping.
+- `FixedDctOnlyTokenAssemblySpec` is the current host-boundary regression. It
+  emits NumPy token arrays from the prepared DC-token primitive plus the
+  frame-level AC metadata and AC token stages for a constant 9x1 fixture, then
+  verifies that `tools/hjxl_reference.py` assembles the same frame and bare
+  codestream bytes as the direct fixed-token libjxl-tiny oracle. Do not treat
+  this as full frame-level DC parity: `FrameDctOnlyDcTokenTraceStage` still goes
+  through the approximate fixed-point RGB/XYB/DCT path, so closing that parity
+  gap remains separate work.
 - `HjxlCore` currently exposes padded-input, XYB, raw-DCT, fixed-parameter
   quantized-DCT, fixed-parameter DC-token, fixed AC-metadata-token, or default
   AC-strategy trace streams. `FrameConfig.tokenSelect` chooses token substreams:
   currently `Dc` or `AcMetadata` through `HjxlCore`; AC nonzero/full AC token
   streams are standalone trace stages.
+  `HjxlCore(traceRoute = ...)` can restrict elaboration to one compile-time
+  trace route while preserving the same public IO and runtime config contract
+  for that route. Use this form in focused tests; compiling the all-route shell
+  under Verilator is expensive as the frame schedulers grow.
   `enableDct && enableQuant && enableTokenize && tokenSelect=Dc` selects the
   DC-token frame trace; `enableDct && enableQuant` selects the quantized-DCT
   frame trace; `enableDct` alone selects raw DCT;

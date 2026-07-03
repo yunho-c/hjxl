@@ -43,6 +43,9 @@ class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   val totalBlocks = RegInit(0.U(32.W))
   val overflow = RegInit(false.B)
 
+  val distanceParams = Module(new DistanceParamsLookup)
+  distanceParams.io.distanceQ8 := io.config.distanceQ8
+
   private def ceilToBlock(value: UInt): UInt = {
     val block = blockDim.U
     ((value + (block - 1.U)) / block) * block
@@ -96,17 +99,17 @@ class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
 
     yDc.io.input.bits.dcCoefficient := dctY.io.output.bits(0)
     yDc.io.input.bits.channel := 1.U
-    yDc.io.input.bits.invDcFactorQ16 := QuantizeDct8x8Block.DefaultInvDcFactorQ16(1).U
+    yDc.io.input.bits.invDcFactorQ16 := distanceParams.io.params.invDcFactorQ16(1)
     yDc.io.input.bits.quantizedYDc := 0.S
 
     xDc.io.input.bits.dcCoefficient := dctX.io.output.bits(0)
     xDc.io.input.bits.channel := 0.U
-    xDc.io.input.bits.invDcFactorQ16 := QuantizeDct8x8Block.DefaultInvDcFactorQ16(0).U
+    xDc.io.input.bits.invDcFactorQ16 := distanceParams.io.params.invDcFactorQ16(0)
     xDc.io.input.bits.quantizedYDc := yDc.io.output.bits.quantizedDc
 
     bDc.io.input.bits.dcCoefficient := dctB.io.output.bits(0)
     bDc.io.input.bits.channel := 2.U
-    bDc.io.input.bits.invDcFactorQ16 := QuantizeDct8x8Block.DefaultInvDcFactorQ16(2).U
+    bDc.io.input.bits.invDcFactorQ16 := distanceParams.io.params.invDcFactorQ16(2)
     bDc.io.input.bits.quantizedYDc := yDc.io.output.bits.quantizedDc
 
     (

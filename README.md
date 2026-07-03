@@ -17,7 +17,13 @@ only `enableQuant` is set. Later stages will replace the fixed quantization
 defaults with adaptive quantization/CFL metadata, entropy coding, and bitstream
 assembly. Standalone fixed-point primitives exist for
 approximate RGB-to-XYB, 1D DCT-8, and the scaled 8x8 DCT block layout used by
-libjxl-tiny.
+libjxl-tiny. The RGB-to-XYB primitive keeps Q10 mixed-absorbance precision and
+linearly interpolates a Q8 cube-root table before emitting Q12 XYB samples.
+`DistanceParamsLookup` provides the first hardware distance-parameter boundary
+for common Q8 distances `64`, `128`, `256`, `512`, `1024`, and `2048`, with
+unsupported values falling back to distance 1. The fixed DCT-only quant/token
+frame schedulers use those distance-derived AC/DC scalar parameters, while
+`fixedPointScale` remains an AC-scale override for trace experiments.
 There is also a standalone DCT-only 8x8 AC quantization primitive that consumes
 the adjusted raw quant value and distance-derived AC scale. Prepared DCT blocks
 can be run through `DctQuantizeTraceStage` to emit `QuantizedAc` and
@@ -51,6 +57,9 @@ standalone frame scheduler for `AcTokens`: it emits nonzero prefixes and
 coefficient scan/value tokens for every fixed all-DCT raster block/channel. It
 is directly tested and exposed through the dedicated `HjxlAcTokenCore` wrapper,
 but not routed through the runtime-multiplexed `HjxlCore`.
+`HjxlCore` also accepts an optional compile-time `traceRoute` parameter used by
+simulation tests to instantiate only the selected route. The default still
+builds the all-route integration shell.
 
 ## Requirements
 
@@ -101,6 +110,7 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --dct-only-num-nonzeros-npy build-codex/fixtures/gradient-17x9-dct-only-nnz.npy \
   --dct-only-quant-dc-npy build-codex/fixtures/gradient-17x9-dct-only-qdc.npy \
   --dct-only-prepared-blocks-json build-codex/fixtures/gradient-17x9-dct-only-prepared-blocks.json \
+  --distance-params-json build-codex/fixtures/distance-1-params.json \
   --fixed-dct-only-dc-tokens-npy build-codex/fixtures/gradient-17x9-fixed-dc-tokens.npy \
   --fixed-dct-only-ac-metadata-tokens-npy build-codex/fixtures/gradient-17x9-fixed-acmeta-tokens.npy \
   --fixed-dct-only-ac-tokens-npy build-codex/fixtures/gradient-17x9-fixed-ac-tokens.npy \
@@ -123,6 +133,32 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --distance 1.0 \
   --token-input-frame-bin build-codex/fixtures/gradient-17x9-token-frame.bin \
   --token-input-codestream-bin build-codex/fixtures/gradient-17x9-token.jxl
 ```
+
+Convert RTL or simulator `StageTrace` CSV dumps into those token arrays:
+
+```sh
+python3 tools/hjxl_trace_tokens.py \
+  --trace-csv build-codex/traces/gradient-17x9-stage-trace.csv \
+  --width 17 --height 9 \
+  --dc-tokens-npy build-codex/traces/gradient-17x9-rtl-dc-tokens.npy \
+  --ac-metadata-tokens-npy build-codex/traces/gradient-17x9-rtl-acmeta-tokens.npy \
+  --ac-tokens-npy build-codex/traces/gradient-17x9-rtl-ac-tokens.npy \
+  --ac-strategy-npy build-codex/traces/gradient-17x9-rtl-ac-strategy.npy
+```
+
+The CSV must have `stage,group,index,value` columns. Token rows use `group` as
+the token ordinal and are written as `(context, value)` NumPy arrays. AC
+strategy rows use `index` as the raster block ordinal and are reshaped using
+`--width` and `--height`.
+
+`FixedDctOnlyTokenAssemblySpec` is the current regression for that
+hardware/software boundary. It writes NumPy token arrays from RTL logical token
+outputs for a constant 9x1 fixture, feeds them to `tools/hjxl_reference.py`, and
+checks that the assembled frame and codestream bytes match the direct
+libjxl-tiny fixed-token oracle. The exact DC slice in that test uses the
+prepared `DcTokenTraceStage` boundary; the full frame DC-token scheduler still
+depends on the approximate fixed-point RGB/XYB/DCT path and is tracked as a
+separate parity gap.
 
 ## Versions
 

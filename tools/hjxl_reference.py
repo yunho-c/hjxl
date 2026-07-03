@@ -227,6 +227,36 @@ def dct_only_quant_outputs_from_python_port(image, distance: float):
     return raw_quant_field, ytox_map, ytob_map, quantized_ac, num_nonzeros, num_nonzeros_map, quant_dc
 
 
+def distance_params_from_python_port(distance: float):
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.quantization import (  # pylint: disable=import-outside-toplevel
+        K_INV_DC_QUANT,
+        compute_distance_params,
+    )
+
+    params = compute_distance_params(distance)
+    inv_dc_factor_q16 = [
+        int(round(float(value) * float(params.scale_dc) * (1 << 16)))
+        for value in K_INV_DC_QUANT
+    ]
+    x_qm_multiplier_q16 = int(round(math.pow(1.25, params.x_qm_scale - 2.0) * (1 << 16)))
+    return {
+        "format": "hjxl.distance_params.v1",
+        "distance": float(distance),
+        "distance_q8": int(round(float(distance) * 256.0)),
+        "global_scale": int(params.global_scale),
+        "quant_dc": int(params.quant_dc),
+        "scale_q16": int(params.global_scale),
+        "scale": float(params.scale),
+        "scale_dc": float(params.scale_dc),
+        "inv_dc_factor_q16": inv_dc_factor_q16,
+        "x_qm_scale": int(params.x_qm_scale),
+        "x_qm_multiplier_q16": x_qm_multiplier_q16,
+        "epf_iters": int(params.epf_iters),
+    }
+
+
 def dct_only_prepared_blocks_from_python_port(image, distance: float):
     np = _load_numpy()
     root = _libjxl_tiny_root()
@@ -527,6 +557,11 @@ def main() -> int:
         help="optional prepared-block JSON oracle for the default all-DCT strategy",
     )
     parser.add_argument(
+        "--distance-params-json",
+        type=Path,
+        help="optional libjxl-tiny distance parameter JSON for the requested distance",
+    )
+    parser.add_argument(
         "--fixed-dct-only-dc-tokens-npy",
         type=Path,
         help="optional fixed-quant all-DCT DC token oracle with rows (context, value)",
@@ -726,6 +761,12 @@ def main() -> int:
             json.dumps(dct_only_prepared_blocks_from_python_port(image, args.distance), indent=2),
             encoding="utf-8",
         )
+    if args.distance_params_json is not None:
+        args.distance_params_json.parent.mkdir(parents=True, exist_ok=True)
+        args.distance_params_json.write_text(
+            json.dumps(distance_params_from_python_port(args.distance), indent=2),
+            encoding="utf-8",
+        )
     if args.fixed_dct_only_dc_tokens_npy is not None:
         np = _load_numpy()
         args.fixed_dct_only_dc_tokens_npy.parent.mkdir(parents=True, exist_ok=True)
@@ -776,6 +817,7 @@ def main() -> int:
         and args.dct_only_num_nonzeros_map_npy is None
         and args.dct_only_quant_dc_npy is None
         and args.dct_only_prepared_blocks_json is None
+        and args.distance_params_json is None
         and args.fixed_dct_only_dc_tokens_npy is None
         and args.fixed_dct_only_ac_metadata_tokens_npy is None
         and args.fixed_dct_only_ac_tokens_npy is None

@@ -11,9 +11,9 @@ import chisel3.util._
   * quantized X/Y/B raster block into `DctOnlyAcBlockTokenTraceStage`, so each
   * block emits the nonzero-count prefixes and the coefficient scan/value tokens.
   * It intentionally keeps the same fixed quantization defaults as
-  * `FrameDctOnlyQuantizeTraceStage`: adjusted raw quant 5, distance-1 DC
-  * factors, default X quant-matrix scale, zero CFL, and `fixedPointScale` as
-  * the AC scale Q16 with zero selecting the distance-1 default.
+  * `FrameDctOnlyQuantizeTraceStage`: adjusted raw quant 5, zero CFL, and
+  * distance-derived scalar parameters from `DistanceParamsLookup`, with
+  * `fixedPointScale` still able to override only the AC scale Q16.
   */
 class FrameDctOnlyAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   private val blockDim = HjxlConstants.BlockDim
@@ -46,6 +46,9 @@ class FrameDctOnlyAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   val xBlocks = RegInit(0.U(32.W))
   val totalBlocks = RegInit(0.U(32.W))
   val overflow = RegInit(false.B)
+
+  val distanceParams = Module(new DistanceParamsLookup)
+  distanceParams.io.distanceQ8 := io.config.distanceQ8
 
   private def ceilToBlock(value: UInt): UInt = {
     val block = blockDim.U
@@ -91,7 +94,7 @@ class FrameDctOnlyAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
 
     val scaleQ16 = Mux(
       io.config.fixedPointScale === 0.U,
-      QuantizeDct8x8Block.DefaultScaleQ16.U(16.W),
+      distanceParams.io.params.scaleQ16,
       io.config.fixedPointScale
     )
     val quant = QuantizeDct8x8Block.DefaultRawQuant.U(8.W)
@@ -103,12 +106,11 @@ class FrameDctOnlyAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
     quantizer.io.input.bits.quant := quant
     quantizer.io.input.bits.scaleQ16 := scaleQ16
     quantizer.io.input.bits.invQacQ16 := invQacQ16
-    quantizer.io.input.bits.xQmMultiplierQ16 := QuantizeDct8x8Block.DefaultQmMultiplierQ16.U
+    quantizer.io.input.bits.xQmMultiplierQ16 := distanceParams.io.params.xQmMultiplierQ16
     quantizer.io.input.bits.ytox := 0.S
     quantizer.io.input.bits.ytob := 0.S
     for (channel <- 0 until 3) {
-      quantizer.io.input.bits.invDcFactorQ16(channel) :=
-        QuantizeDct8x8Block.DefaultInvDcFactorQ16(channel).U
+      quantizer.io.input.bits.invDcFactorQ16(channel) := distanceParams.io.params.invDcFactorQ16(channel)
     }
     for (i <- 0 until blockSize) {
       quantizer.io.input.bits.coefficients(0)(i) := dctX.io.output.bits(i)

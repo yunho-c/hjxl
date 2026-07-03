@@ -55,11 +55,23 @@ AXI wrappers.
   uses `tokenSelect` to route into `FrameDctOnlyDcTokenTraceStage`,
   or `FrameDctOnlyAcMetadataTokenTraceStage`. When only `enableQuant` is true,
   it routes into `FrameAcStrategyTraceStage`.
+  The optional compile-time `traceRoute` constructor argument restricts
+  elaboration to one route for focused simulation while keeping the same public
+  IO shape. Use it for tests and route-specific experiments; the default
+  constructor still instantiates the all-route shell.
 - `tools/hjxl_reference.py --input-padded-npy ...` writes the matching
   libjxl-tiny padded-input oracle artifact for small fixtures.
 - `RgbToXybApprox` is a standalone Q8-to-Q12 fixed-point approximation of
-  libjxl-tiny XYB conversion. `tools/hjxl_reference.py --xyb-npy ...` writes the
+  libjxl-tiny XYB conversion. It keeps Q10 precision for the mixed absorbance
+  values and linearly interpolates a Q8 cube-root lookup table before emitting
+  Q12 XYB samples. `tools/hjxl_reference.py --xyb-npy ...` writes the
   floating-point oracle artifact used to tune and validate future stage tests.
+- `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny's
+  distance-derived scalar parameters. It supports common Q8 distances
+  `64`, `128`, `256`, `512`, `1024`, and `2048`; unsupported values currently
+  fall back to distance 1. It emits the global AC scale, quantized DC scale,
+  X/Y/B inverse DC factors, X quant-matrix multiplier, and EPF iteration count
+  generated from the current libjxl-tiny Python formula.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive matching libjxl-tiny's
   recursive scaled-DCT structure within fixed-point tolerance. It is the kernel
   for the future 8x8 and rectangular transform stages.
@@ -119,9 +131,10 @@ AXI wrappers.
   scheduler. It buffers and pads RGB like `FrameDct8x8TraceStage`, converts
   each raster block through approximate XYB and DCT, then emits 198 records per
   block: 192 `QuantizedAc`, three `QuantDc`, and three `NumNonzeros` records.
-  This stage deliberately uses fixed defaults: adjusted raw quant 5, distance-1
-  inverse DC factors, default X quant-matrix scale, zero tile CFL multipliers,
-  and `FrameConfig.fixedPointScale` as AC scale Q16 with zero selecting 7340.
+  This stage deliberately still fixes adjusted raw quant to 5 and tile CFL
+  multipliers to zero, but it now takes distance-derived AC/DC scalar
+  parameters from `DistanceParamsLookup`. `FrameConfig.fixedPointScale` can
+  override only the AC scale Q16; a zero value uses the lookup scale.
 - `DcTokenize` implements the libjxl-tiny signed-token packing, clamped
   gradient predictor, and compressed 1024-entry gradient-context lookup used by
   DC tokenization.
@@ -208,6 +221,9 @@ AXI wrappers.
   come from libjxl-tiny's floating reference path, so comparisons against RTL
   should account for the current fixed-point Q12 coefficient input tolerance
   until frame-level fixed-point staging is locked down.
+- `tools/hjxl_reference.py --distance-params-json ...` writes the libjxl-tiny
+  distance parameters used to populate `DistanceParamsLookup`. Regenerate this
+  when updating lookup entries or when the local reference changes.
 - `tools/hjxl_reference.py --fixed-dct-only-dc-tokens-npy ...`,
   `--fixed-dct-only-ac-metadata-tokens-npy ...`, and
   `--fixed-dct-only-ac-tokens-npy ...` write logical `(context, value)` token
@@ -231,6 +247,21 @@ AXI wrappers.
   precomputed logical token arrays. This is the first explicit software
   consumer boundary for future RTL trace dumps; current smoke checks verify it
   reproduces the direct fixed-token oracle bytes exactly.
+- `tools/hjxl_trace_tokens.py` converts `StageTrace` CSV dumps with
+  `stage,group,index,value` columns into the token-input arrays consumed by
+  `tools/hjxl_reference.py`. For token stages, `group` must be a contiguous
+  token ordinal and output rows are `(context, value)`. For `AcStrategy`, the
+  trace `index` is the raster block ordinal and the tool reshapes it with the
+  supplied image width and height.
+- `FixedDctOnlyTokenAssemblySpec` exercises that boundary with generated NumPy
+  token arrays. It obtains exact constant-fixture DC tokens from the prepared
+  `DcTokenTraceStage` primitive, exact AC metadata from
+  `FrameDctOnlyAcMetadataTokenTraceStage`, and exact constant-frame AC tokens
+  from `FrameDctOnlyAcTokenTraceStage`, then verifies that
+  `tools/hjxl_reference.py` assembles byte-identical frame and bare-codestream
+  outputs. This proves the logical-token software boundary, not full frame-level
+  DC parity: `FrameDctOnlyDcTokenTraceStage` still uses the approximate
+  fixed-point RGB/XYB/DCT path.
 
 ## Accuracy Policy
 

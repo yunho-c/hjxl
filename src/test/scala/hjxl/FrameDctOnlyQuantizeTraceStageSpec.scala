@@ -12,11 +12,17 @@ class FrameDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers with 
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
   private val recordsPerBlock = 3 * blockSize + 3 + 3
 
-  private def pokeConfig(dut: FrameDctOnlyQuantizeTraceStage, width: Int, height: Int): Unit = {
+  private def pokeConfig(
+      dut: FrameDctOnlyQuantizeTraceStage,
+      width: Int,
+      height: Int,
+      distanceQ8: Int = DistanceParamsLookup.Distance1Q8,
+      fixedPointScale: Int = QuantizeDct8x8Block.DefaultScaleQ16
+  ): Unit = {
     dut.io.config.xsize.poke(width.U)
     dut.io.config.ysize.poke(height.U)
-    dut.io.config.distanceQ8.poke(256.U)
-    dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
+    dut.io.config.distanceQ8.poke(distanceQ8.U)
+    dut.io.config.fixedPointScale.poke(fixedPointScale.U)
     dut.io.config.enableXyb.poke(true.B)
     dut.io.config.enableDct.poke(true.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -35,22 +41,23 @@ class FrameDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers with 
     dut.clock.step()
   }
 
-  private def mixedQ8(r: Int, g: Int, b: Int, m0: Int, m1: Int, m2: Int): Int = {
+  private def mixedLutIndex(r: Int, g: Int, b: Int, m0: Int, m1: Int, m2: Int): Int = {
+    val shift = RgbToXybApprox.CoefficientFractionBits +
+      RgbToXybApprox.InputFractionBits - RgbToXybApprox.LutInputFractionBits
     val sum = r * m0 + g * m1 + b * m2
-    val rounded = (sum + (1 << (RgbToXybApprox.CoefficientFractionBits - 1))) >>
-      RgbToXybApprox.CoefficientFractionBits
-    math.min(RgbToXybApprox.LutInputMax, rounded + RgbToXybApprox.BiasQ8)
+    val rounded = (sum + (1 << (shift - 1))) >> shift
+    math.min(RgbToXybApprox.LutInputMax, rounded + RgbToXybApprox.BiasQLut)
   }
 
   private def xybExact(r: Int, g: Int, b: Int): (Int, Int, Int) = {
-    val tm0 = RgbToXybApprox.CbrtPlusBiasTable(
-      mixedQ8(r, g, b, RgbToXybApprox.M00, RgbToXybApprox.M01, RgbToXybApprox.M02)
+    val tm0 = RgbToXybApprox.cbrtPlusBiasFromLutIndex(
+      mixedLutIndex(r, g, b, RgbToXybApprox.M00, RgbToXybApprox.M01, RgbToXybApprox.M02)
     )
-    val tm1 = RgbToXybApprox.CbrtPlusBiasTable(
-      mixedQ8(r, g, b, RgbToXybApprox.M10, RgbToXybApprox.M11, RgbToXybApprox.M12)
+    val tm1 = RgbToXybApprox.cbrtPlusBiasFromLutIndex(
+      mixedLutIndex(r, g, b, RgbToXybApprox.M10, RgbToXybApprox.M11, RgbToXybApprox.M12)
     )
-    val tm2 = RgbToXybApprox.CbrtPlusBiasTable(
-      mixedQ8(r, g, b, RgbToXybApprox.M20, RgbToXybApprox.M21, RgbToXybApprox.M22)
+    val tm2 = RgbToXybApprox.cbrtPlusBiasFromLutIndex(
+      mixedLutIndex(r, g, b, RgbToXybApprox.M20, RgbToXybApprox.M21, RgbToXybApprox.M22)
     )
     ((tm0 - tm1) >> 1, (tm0 + tm1) >> 1, tm2)
   }
@@ -77,12 +84,49 @@ class FrameDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers with 
     ).toInt
   }
 
-  private def expectedQuantizedDc(gray: Int): Seq[Int] = {
+  private def expectedQuantizedDc(
+      gray: Int,
+      entry: DistanceParamsEntry = DistanceParamsLookup.Default
+  ): Seq[Int] = {
     val (xybX, xybY, xybB) = xybExact(gray, gray, gray)
-    val yDc = quantizeDcModel(xybY, 1, QuantizeDct8x8Block.DefaultInvDcFactorQ16(1), 0)
-    val xDc = quantizeDcModel(xybX, 0, QuantizeDct8x8Block.DefaultInvDcFactorQ16(0), yDc)
-    val bDc = quantizeDcModel(xybB, 2, QuantizeDct8x8Block.DefaultInvDcFactorQ16(2), yDc)
+    val yDc = quantizeDcModel(xybY, 1, entry.invDcFactorQ16(1), 0)
+    val xDc = quantizeDcModel(xybX, 0, entry.invDcFactorQ16(0), yDc)
+    val bDc = quantizeDcModel(xybB, 2, entry.invDcFactorQ16(2), yDc)
     Seq(xDc, yDc, bDc)
+  }
+
+  private def collectFirstBlockDc(
+      distanceQ8: Int,
+      fixedPointScale: Int,
+      gray: Int
+  ): Seq[Int] = {
+    val observed = Array.fill(3)(0)
+    simulate(new FrameDctOnlyQuantizeTraceStage(config)) { dut =>
+      pokeConfig(dut, width = 8, height = 1, distanceQ8 = distanceQ8, fixedPointScale = fixedPointScale)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      for (x <- 0 until 8) {
+        drivePixel(dut, x, y = 0, gray)
+      }
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+
+      for (_ <- 0 until 3 * blockSize) {
+        dut.io.trace.valid.expect(true.B)
+        dut.io.trace.bits.stage.expect(TraceStage.QuantizedAc.U)
+        dut.clock.step()
+      }
+      for (channel <- 0 until 3) {
+        dut.io.trace.valid.expect(true.B)
+        dut.io.trace.bits.stage.expect(TraceStage.QuantDc.U)
+        observed(channel) = dut.io.trace.bits.value.peekValue().asBigInt.toInt
+        dut.clock.step()
+      }
+      dut.io.overflow.expect(false.B)
+    }
+    observed.toSeq
   }
 
   "FrameDctOnlyQuantizeTraceStage emits fixed-quant traces for padded DCT-only blocks" in {
@@ -134,5 +178,13 @@ class FrameDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers with 
       dut.io.overflow.expect(false.B)
       recordsPerBlock must be(198)
     }
+  }
+
+  "FrameDctOnlyQuantizeTraceStage uses distance parameters when AC scale override is zero" in {
+    val gray = 256
+    val distance2 = DistanceParamsLookup.Entries.find(_.distanceQ8 == 512).get
+    val observed = collectFirstBlockDc(distanceQ8 = distance2.distanceQ8, fixedPointScale = 0, gray = gray)
+    observed mustBe expectedQuantizedDc(gray, distance2)
+    observed must not be expectedQuantizedDc(gray)
   }
 }

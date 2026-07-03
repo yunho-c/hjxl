@@ -42,7 +42,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
   }
 
   "HjxlCore routes to padded trace when XYB is disabled" in {
-    simulate(new HjxlCore(config)) { dut =>
+    simulate(new HjxlCore(config, traceRoute = TraceStage.InputPadded)) { dut =>
       pokeConfig(dut, enableXyb = false)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
@@ -58,7 +58,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
   }
 
   "HjxlCore routes to XYB trace when XYB is enabled" in {
-    simulate(new HjxlCore(config)) { dut =>
+    simulate(new HjxlCore(config, traceRoute = TraceStage.Xyb)) { dut =>
       pokeConfig(dut, enableXyb = true)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
@@ -73,7 +73,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
   }
 
   "HjxlCore routes to raw DCT trace when DCT is enabled" in {
-    simulate(new HjxlCore(config)) { dut =>
+    simulate(new HjxlCore(config, traceRoute = TraceStage.RawDct8x8)) { dut =>
       pokeConfig(dut, enableXyb = true, enableDct = true)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
@@ -88,7 +88,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
   }
 
   "HjxlCore routes to AC strategy trace when quantization metadata is enabled" in {
-    simulate(new HjxlCore(config)) { dut =>
+    simulate(new HjxlCore(config, traceRoute = TraceStage.AcStrategy)) { dut =>
       pokeConfig(dut, enableXyb = true, enableQuant = true)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
@@ -104,7 +104,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
   }
 
   "HjxlCore routes to DCT-only quantized traces when DCT and quantization are enabled" in {
-    simulate(new HjxlCore(config)) { dut =>
+    simulate(new HjxlCore(config, traceRoute = TraceStage.QuantizedAc)) { dut =>
       pokeConfig(dut, enableXyb = true, enableDct = true, enableQuant = true)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
@@ -119,7 +119,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
   }
 
   "HjxlCore routes to DC token traces when tokenization is enabled" in {
-    simulate(new HjxlCore(config)) { dut =>
+    simulate(new HjxlCore(config, traceRoute = TraceStage.DcTokens)) { dut =>
       pokeConfig(dut, enableXyb = true, enableDct = true, enableQuant = true, enableTokenize = true)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
@@ -134,7 +134,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
   }
 
   "HjxlCore routes to AC metadata token traces when quantized tokenization is enabled without DCT" in {
-    simulate(new HjxlCore(config)) { dut =>
+    simulate(new HjxlCore(config, traceRoute = TraceStage.AcMetadataTokens)) { dut =>
       pokeConfig(dut, enableXyb = true, enableQuant = true, enableTokenize = true, tokenSelect = TokenTraceSelect.AcMetadata)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
