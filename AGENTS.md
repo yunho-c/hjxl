@@ -85,11 +85,31 @@ Read these libjxl-tiny files before making architectural changes:
 - `RgbToXybApprox` is a standalone Q8 linear-RGB to Q12 XYB approximation with a
   cube-root lookup table. Treat it as an accuracy-tunable first pass, not final
   bit-exact libjxl-tiny parity.
+- `FrameXybTraceStage` buffers and pads the frame, reuses `RgbToXybApprox`, and
+  emits channel-first XYB trace samples. `HjxlCore` selects this stage when
+  `FrameConfig.enableXyb` is true.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive. It should be reused for
   the future 8x8 transform stage instead of writing a separate transform shape
   from scratch.
-- `HjxlCore` currently exposes that padded-input trace stream. Do not describe
-  it as an encoder yet; it is the first traceable pipeline slice.
+- `Dct8x8Approx` is the first block-level transform primitive. It uses
+  `Dct8Approx` for both dimensions, applies libjxl-tiny's per-dimension 1/8
+  scale, and emits the scaled 8x8 coefficient layout used before quantization.
+- `FrameDct8x8TraceStage` buffers the RGB frame, converts each padded 8x8 block
+  to approximate XYB, runs `Dct8x8Approx` for all three channels, and emits
+  `RawDct8x8` trace samples. `trace.group` is the raster block index and
+  `trace.index` is `channel * 64 + coefficient`.
+- `FrameAcStrategyTraceStage` emits one default DCT-first AC strategy value per
+  padded block. This matches the current all-8x8-DCT transform path but not
+  libjxl-tiny's adaptive 16x8/8x16 strategy search.
+- `tools/hjxl_reference.py` can export real libjxl-tiny quant metadata with
+  `--raw-quant-field-npy`, `--libjxl-ac-strategy-npy`, `--ytox-map-npy`, and
+  `--ytob-map-npy`. Use those artifacts as the oracle before implementing AQ,
+  CFL, or transform-strategy RTL; do not compare those outputs against the
+  current default AC-strategy trace as if they were equivalent.
+- `HjxlCore` currently exposes padded-input, XYB, raw-DCT, or default
+  AC-strategy trace streams. `enableDct` has priority over `enableQuant`, which
+  has priority over `enableXyb`. Do not describe it as an encoder yet; these
+  are traceable pipeline slices.
 
 ## Verification Commands
 

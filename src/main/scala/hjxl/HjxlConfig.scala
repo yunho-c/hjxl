@@ -31,14 +31,24 @@ object HjxlConstants {
 object TraceStage {
   val InputPadded = 0
   val Xyb = 1
-  val RawQuantField = 2
-  val YtoxMap = 3
-  val YtobMap = 4
-  val AcStrategy = 5
-  val QuantDc = 6
-  val QuantizedAc = 7
-  val NumNonzeros = 8
-  val DcTokens = 9
-  val AcMetadataTokens = 10
-  val AcTokens = 11
+  val RawDct8x8 = 2
+  val RawQuantField = 3
+  val YtoxMap = 4
+  val YtobMap = 5
+  val AcStrategy = 6
+  val QuantDc = 7
+  val QuantizedAc = 8
+  val NumNonzeros = 9
+  val DcTokens = 10
+  val AcMetadataTokens = 11
+  val AcTokens = 12
+}
+
+object AcStrategyCode {
+  val Dct = 0
+  val Dct16x8 = 1
+  val Dct8x16 = 2
+
+  def encoded(rawStrategy: Int, isFirstBlock: Boolean): Int =
+    (rawStrategy << 1) | (if (isFirstBlock) 1 else 0)
 }

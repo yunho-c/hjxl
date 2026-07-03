@@ -99,6 +99,57 @@ def xyb_from_python_port(image):
     return to_xyb(copy_and_pad_image(image))
 
 
+def dct8x8_from_python_port(image):
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.transforms import BLOCK_DIM, scaled_dct_8x8  # pylint: disable=import-outside-toplevel
+
+    xyb = xyb_from_python_port(image)
+    blocks = []
+    for y0 in range(0, xyb.shape[1], BLOCK_DIM):
+        for x0 in range(0, xyb.shape[2], BLOCK_DIM):
+            blocks.append(
+                [
+                    scaled_dct_8x8(
+                        xyb[channel, y0 : y0 + BLOCK_DIM, x0 : x0 + BLOCK_DIM]
+                    ).reshape(-1)
+                    for channel in range(3)
+                ]
+            )
+    return np.asarray(
+        blocks,
+        dtype=np.float32,
+    )
+
+
+def default_ac_strategy_from_python_port(image):
+    np = _load_numpy()
+    padded = padded_input_from_python_port(image)
+    y_blocks = padded.shape[1] // 8
+    x_blocks = padded.shape[2] // 8
+    dct_first = (0 << 1) | 1
+    return np.full((y_blocks, x_blocks), dct_first, dtype=np.uint8)
+
+
+def quant_metadata_from_python_port(image, distance: float):
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.encoder import (  # pylint: disable=import-outside-toplevel
+        _compute_ac_group_fields,
+        _effective_distance,
+    )
+
+    xyb = xyb_from_python_port(image)
+    _, ysize, xsize = image.shape
+    return _compute_ac_group_fields(
+        xyb,
+        xsize,
+        ysize,
+        _effective_distance(distance),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--width", type=int, default=17)
@@ -117,9 +168,39 @@ def main() -> int:
         help="optional libjxl-tiny input_padded NumPy output path",
     )
     parser.add_argument("--xyb-npy", type=Path, help="optional libjxl-tiny XYB NumPy output path")
+    parser.add_argument(
+        "--dct8x8-npy",
+        type=Path,
+        help="optional libjxl-tiny raster 8x8 XYB DCT blocks NumPy output path",
+    )
+    parser.add_argument(
+        "--default-ac-strategy-npy",
+        type=Path,
+        help="optional default DCT-first AC strategy map NumPy output path",
+    )
+    parser.add_argument(
+        "--raw-quant-field-npy",
+        type=Path,
+        help="optional libjxl-tiny adjusted raw quant field NumPy output path",
+    )
+    parser.add_argument(
+        "--libjxl-ac-strategy-npy",
+        type=Path,
+        help="optional libjxl-tiny searched AC strategy NumPy output path",
+    )
+    parser.add_argument("--ytox-map-npy", type=Path, help="optional libjxl-tiny Y-to-X CFL map")
+    parser.add_argument("--ytob-map-npy", type=Path, help="optional libjxl-tiny Y-to-B CFL map")
     args = parser.parse_args()
 
     image = generate_fixture(args.width, args.height, args.pattern)
+    quant_metadata = None
+
+    def get_quant_metadata():
+        nonlocal quant_metadata
+        if quant_metadata is None:
+            quant_metadata = quant_metadata_from_python_port(image, args.distance)
+        return quant_metadata
+
     if args.pfm is not None:
         args.pfm.parent.mkdir(parents=True, exist_ok=True)
         write_pfm(args.pfm, image)
@@ -134,11 +215,45 @@ def main() -> int:
         np = _load_numpy()
         args.xyb_npy.parent.mkdir(parents=True, exist_ok=True)
         np.save(args.xyb_npy, xyb_from_python_port(image))
+    if args.dct8x8_npy is not None:
+        np = _load_numpy()
+        args.dct8x8_npy.parent.mkdir(parents=True, exist_ok=True)
+        np.save(args.dct8x8_npy, dct8x8_from_python_port(image))
+    if args.default_ac_strategy_npy is not None:
+        np = _load_numpy()
+        args.default_ac_strategy_npy.parent.mkdir(parents=True, exist_ok=True)
+        np.save(args.default_ac_strategy_npy, default_ac_strategy_from_python_port(image))
+    if args.raw_quant_field_npy is not None:
+        np = _load_numpy()
+        args.raw_quant_field_npy.parent.mkdir(parents=True, exist_ok=True)
+        raw_quant_field, _, _, _ = get_quant_metadata()
+        np.save(args.raw_quant_field_npy, raw_quant_field)
+    if args.libjxl_ac_strategy_npy is not None:
+        np = _load_numpy()
+        args.libjxl_ac_strategy_npy.parent.mkdir(parents=True, exist_ok=True)
+        _, ac_strategy, _, _ = get_quant_metadata()
+        np.save(args.libjxl_ac_strategy_npy, ac_strategy)
+    if args.ytox_map_npy is not None:
+        np = _load_numpy()
+        args.ytox_map_npy.parent.mkdir(parents=True, exist_ok=True)
+        _, _, ytox_map, _ = get_quant_metadata()
+        np.save(args.ytox_map_npy, ytox_map)
+    if args.ytob_map_npy is not None:
+        np = _load_numpy()
+        args.ytob_map_npy.parent.mkdir(parents=True, exist_ok=True)
+        _, _, _, ytob_map = get_quant_metadata()
+        np.save(args.ytob_map_npy, ytob_map)
     if (
         args.pfm is None
         and args.jxl is None
         and args.input_padded_npy is None
         and args.xyb_npy is None
+        and args.dct8x8_npy is None
+        and args.default_ac_strategy_npy is None
+        and args.raw_quant_field_npy is None
+        and args.libjxl_ac_strategy_npy is None
+        and args.ytox_map_npy is None
+        and args.ytob_map_npy is None
     ):
         print(f"generated {args.pattern} fixture: shape={image.shape}, dtype={image.dtype}")
     return 0

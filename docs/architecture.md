@@ -44,9 +44,14 @@ AXI wrappers.
   `input_padded` trace samples in libjxl-tiny channel-first order. It repeats
   the last valid column across the padded right edge and then repeats the last
   padded row across the padded bottom edge.
-- `HjxlCore` currently wires input RGB samples into `FramePadTraceStage`. Later
-  stages should replace or consume this trace stream rather than bypassing the
-  padding behavior.
+- `FrameXybTraceStage` reuses the same bounded frame buffering and padding
+  policy, then emits approximate Q12 XYB samples in channel-first order.
+- `HjxlCore` currently routes input RGB samples into `FramePadTraceStage` by
+  default, into `FrameXybTraceStage` when `FrameConfig.enableXyb` is true, and
+  into `FrameDct8x8TraceStage` when `FrameConfig.enableDct` is true. DCT routing
+  has priority over AC-strategy and XYB routing because it consumes the XYB
+  approximation internally. `FrameConfig.enableQuant` currently selects
+  `FrameAcStrategyTraceStage` when DCT tracing is disabled.
 - `tools/hjxl_reference.py --input-padded-npy ...` writes the matching
   libjxl-tiny padded-input oracle artifact for small fixtures.
 - `RgbToXybApprox` is a standalone Q8-to-Q12 fixed-point approximation of
@@ -55,6 +60,29 @@ AXI wrappers.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive matching libjxl-tiny's
   recursive scaled-DCT structure within fixed-point tolerance. It is the kernel
   for the future 8x8 and rectangular transform stages.
+- `Dct8x8Approx` composes the 1D kernel into libjxl-tiny's scaled 8x8 DCT
+  coefficient layout. It applies the 1/8 scale after each dimension and emits
+  the transposed canonical order consumed by later quantization work.
+- `FrameDct8x8TraceStage` is the first transform integration slice. It buffers
+  and pads the RGB frame, converts each padded raster 8x8 block to approximate
+  XYB, applies `Dct8x8Approx` for all three channels, and emits `RawDct8x8`
+  trace coefficients. `trace.group` is the raster block index and `trace.index`
+  is `channel * 64 + coefficient`.
+- `tools/hjxl_reference.py --dct8x8-npy ...` writes raster 8x8 XYB DCT blocks as
+  `(block, channel, coefficient)` float32 arrays.
+- `FrameAcStrategyTraceStage` emits one `AcStrategy` value per padded 8x8 block,
+  currently always ordinary DCT with the libjxl-tiny encoding
+  `(raw_strategy << 1) | is_first_block == 1`. This matches the current
+  DCT-only RTL transform path; it does not yet implement libjxl-tiny's 16x8/8x16
+  search.
+- `tools/hjxl_reference.py --default-ac-strategy-npy ...` writes the matching
+  default DCT-first strategy map.
+- `tools/hjxl_reference.py --raw-quant-field-npy ...`,
+  `--libjxl-ac-strategy-npy ...`, `--ytox-map-npy ...`, and `--ytob-map-npy ...`
+  write libjxl-tiny's adjusted raw quant field, searched AC strategy, and CFL
+  maps for small whole-frame fixtures. These are oracle artifacts for the future
+  adaptive-quantization/strategy implementation, not claims about current RTL
+  parity.
 
 ## Accuracy Policy
 
