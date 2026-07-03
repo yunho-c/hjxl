@@ -23,6 +23,14 @@ class RgbPixel(c: HjxlConfig) extends Bundle {
   val b = SInt(c.pixelBits.W)
 }
 
+class XybPixel(c: HjxlConfig) extends Bundle {
+  val x = UInt(c.coordBits.W)
+  val y = UInt(c.coordBits.W)
+  val xybX = SInt(c.traceValueBits.W)
+  val xybY = SInt(c.traceValueBits.W)
+  val xybB = SInt(c.traceValueBits.W)
+}
+
 class StageTrace(c: HjxlConfig) extends Bundle {
   val stage = UInt(8.W)
   val group = UInt(c.groupBits.W)

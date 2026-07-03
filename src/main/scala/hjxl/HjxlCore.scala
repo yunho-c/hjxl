@@ -12,7 +12,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig()) extends Module {
     val trace = Decoupled(new StageTrace(c))
   })
 
-  val inputTrace = Module(new PassThroughTraceStage(c))
+  val inputTrace = Module(new FramePadTraceStage(c))
   inputTrace.io.config := io.config
   inputTrace.io.input <> io.input
   io.trace <> inputTrace.io.trace

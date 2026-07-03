@@ -77,6 +77,20 @@ Read these libjxl-tiny files before making architectural changes:
 - Treat Vivado/KV260 bitstream validation as unavailable unless `vivado` or
   `vitis` is present or the user provides a toolchain environment.
 
+## Current RTL State
+
+- `FramePadTraceStage` is the first real libjxl-tiny stage. It emits
+  `input_padded` samples in channel-first order and implements right/bottom edge
+  replication to the next 8x8 block boundary.
+- `RgbToXybApprox` is a standalone Q8 linear-RGB to Q12 XYB approximation with a
+  cube-root lookup table. Treat it as an accuracy-tunable first pass, not final
+  bit-exact libjxl-tiny parity.
+- `Dct8Approx` is a standalone Q12 1D DCT-8 primitive. It should be reused for
+  the future 8x8 transform stage instead of writing a separate transform shape
+  from scratch.
+- `HjxlCore` currently exposes that padded-input trace stream. Do not describe
+  it as an encoder yet; it is the first traceable pipeline slice.
+
 ## Verification Commands
 
 Core Chisel checks:

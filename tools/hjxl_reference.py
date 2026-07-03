@@ -82,6 +82,23 @@ def encode_with_python_port(image, distance: float) -> bytes:
     return encode_from_image(image, distance)
 
 
+def padded_input_from_python_port(image):
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.image import copy_and_pad_image  # pylint: disable=import-outside-toplevel
+
+    return copy_and_pad_image(image)
+
+
+def xyb_from_python_port(image):
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.image import copy_and_pad_image  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.xyb import to_xyb  # pylint: disable=import-outside-toplevel
+
+    return to_xyb(copy_and_pad_image(image))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--width", type=int, default=17)
@@ -94,6 +111,12 @@ def main() -> int:
     parser.add_argument("--distance", type=float, default=1.0)
     parser.add_argument("--pfm", type=Path, help="optional PFM output path")
     parser.add_argument("--jxl", type=Path, help="optional Python-port JXL output path")
+    parser.add_argument(
+        "--input-padded-npy",
+        type=Path,
+        help="optional libjxl-tiny input_padded NumPy output path",
+    )
+    parser.add_argument("--xyb-npy", type=Path, help="optional libjxl-tiny XYB NumPy output path")
     args = parser.parse_args()
 
     image = generate_fixture(args.width, args.height, args.pattern)
@@ -103,7 +126,20 @@ def main() -> int:
     if args.jxl is not None:
         args.jxl.parent.mkdir(parents=True, exist_ok=True)
         args.jxl.write_bytes(encode_with_python_port(image, args.distance))
-    if args.pfm is None and args.jxl is None:
+    if args.input_padded_npy is not None:
+        np = _load_numpy()
+        args.input_padded_npy.parent.mkdir(parents=True, exist_ok=True)
+        np.save(args.input_padded_npy, padded_input_from_python_port(image))
+    if args.xyb_npy is not None:
+        np = _load_numpy()
+        args.xyb_npy.parent.mkdir(parents=True, exist_ok=True)
+        np.save(args.xyb_npy, xyb_from_python_port(image))
+    if (
+        args.pfm is None
+        and args.jxl is None
+        and args.input_padded_npy is None
+        and args.xyb_npy is None
+    ):
         print(f"generated {args.pattern} fixture: shape={image.shape}, dtype={image.dtype}")
     return 0
 

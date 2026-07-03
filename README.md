@@ -5,6 +5,11 @@ parity with
 [libjxl-tiny](https://github.com/libjxl/libjxl-tiny), not the full JPEG XL
 encoder surface.
 
+Current RTL status: the top-level buffers a small RGB frame and emits the
+libjxl-tiny-compatible `input_padded` trace stream. Later stages will consume
+that padded stream for XYB, transform, quantization, and tokenization. Standalone
+fixed-point primitives exist for approximate RGB-to-XYB and 1D DCT-8.
+
 ## Requirements
 
 - JDK 21 or newer
@@ -36,6 +41,8 @@ Generate a small libjxl-tiny reference fixture:
 ```sh
 python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --pfm build-codex/fixtures/gradient-17x9.pfm \
+  --input-padded-npy build-codex/fixtures/gradient-17x9-input-padded.npy \
+  --xyb-npy build-codex/fixtures/gradient-17x9-xyb.npy \
   --jxl build-codex/fixtures/gradient-17x9.jxl
 ```
 

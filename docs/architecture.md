@@ -38,6 +38,24 @@ contract is intentionally simple:
 Use these contracts for simulation and trace extraction before adding KV260
 AXI wrappers.
 
+## Implemented RTL Slices
+
+- `FramePadTraceStage` buffers a bounded simulation frame and emits
+  `input_padded` trace samples in libjxl-tiny channel-first order. It repeats
+  the last valid column across the padded right edge and then repeats the last
+  padded row across the padded bottom edge.
+- `HjxlCore` currently wires input RGB samples into `FramePadTraceStage`. Later
+  stages should replace or consume this trace stream rather than bypassing the
+  padding behavior.
+- `tools/hjxl_reference.py --input-padded-npy ...` writes the matching
+  libjxl-tiny padded-input oracle artifact for small fixtures.
+- `RgbToXybApprox` is a standalone Q8-to-Q12 fixed-point approximation of
+  libjxl-tiny XYB conversion. `tools/hjxl_reference.py --xyb-npy ...` writes the
+  floating-point oracle artifact used to tune and validate future stage tests.
+- `Dct8Approx` is a standalone Q12 1D DCT-8 primitive matching libjxl-tiny's
+  recursive scaled-DCT structure within fixed-point tolerance. It is the kernel
+  for the future 8x8 and rectangular transform stages.
+
 ## Accuracy Policy
 
 Use stage-tolerant parity:
