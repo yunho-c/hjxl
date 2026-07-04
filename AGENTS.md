@@ -144,12 +144,27 @@ Read these libjxl-tiny files before making architectural changes:
   `DctOnlyQuantizeBlock`. It emits all `QuantizedAc` records first, then
   `QuantDc`, then `NumNonzeros`; keep this order when building frame-level
   quant traces.
+- `FramePreparedDctOnlyQuantizeTraceStage` is the prepared-frame quantization
+  scheduler. Feed it complete prepared DCT-only block inputs in raster order:
+  X/Y/B Q12 coefficients plus raw quant, AC scale, reciprocal AC scale, inverse
+  DC factors, X quant-matrix multiplier, and CFL multipliers. It emits
+  frame-shaped `QuantizedAc`, `QuantDc`, and `NumNonzeros` traces with
+  `trace.group = raster block ordinal`. Prefer this boundary when moving
+  upstream from prepared quantized-token inputs toward DCT/AQ/CFL integration.
+- `FramePreparedDctOnlyQuantizeTokenTraceStage` is the direct prepared-DCT
+  quantize-to-token RTL wrapper. Feed it the same prepared DCT-only raster block
+  inputs; it runs `DctOnlyQuantizeBlock`, buffers quantized frame state, then
+  drives prepared DC, AC-metadata, and AC-token schedulers internally to emit
+  DC, strategy, metadata, and AC token traces. This wrapper preserves prepared
+  raw-quant and CFL metadata instead of falling back to fixed raw-quant/zero-CFL
+  metadata.
 - `FrameDctOnlyQuantizeTraceStage` is the current frame-level quant trace
   scheduler. It buffers/pads RGB, computes approximate XYB and DCT per raster
   8x8 block, then emits 192 `QuantizedAc`, three `QuantDc`, and three
-  `NumNonzeros` records per block. It intentionally still uses fixed adjusted
-  one global adjusted raw quant value and zero CFL multipliers, but it now consumes distance-derived
-  AC/DC scalar parameters from `DistanceParamsLookup`. `FrameConfig.fixedPointScale`
+  `NumNonzeros` records per block. It intentionally still uses one global
+  adjusted raw quant value and zero CFL multipliers, but it now consumes
+  distance-derived AC/DC scalar parameters from `DistanceParamsLookup`.
+  `FrameConfig.fixedPointScale`
   plus `fixedInvQacQ16` overrides only the AC scale path; zero scale uses the
   distance lookup scale and reciprocal. `FrameConfig.fixedRawQuant` can override
   the default raw quant 5 globally for trace experiments. Do not
@@ -176,6 +191,11 @@ Read these libjxl-tiny files before making architectural changes:
   values, and fixed block metadata literals. It uses
   `trace.stage = AcMetadataTokens`, `trace.group = token ordinal`,
   `trace.index = context`, and `trace.value = packed residual or literal`.
+- `FramePreparedAcMetadataTokenTraceStage` emits AC metadata tokens from
+  prepared raster block metadata. Feed one raw quant, Y-to-X CFL, and Y-to-B CFL
+  value per raster block. It stores raw quant per block and CFL per tile, then
+  emits CFL residuals, all-DCT strategy tokens, quant-field residuals, and fixed
+  block metadata literals in libjxl-tiny order.
 - `FrameDctOnlyAcNonzeroTokenTraceStage` emits the nonzero-count prefix tokens
   for AC coefficient tokenization in ordinary-DCT block/channel order. It uses
   `trace.stage = AcTokens`, `trace.group = token ordinal`, `trace.index =
@@ -210,6 +230,18 @@ Read these libjxl-tiny files before making architectural changes:
   compile-time top. Use `sbt 'runMain hjxl.ElaborateAcTokens'` for this path
   instead of routing it through `HjxlCore`; attempting to instantiate it inside
   `HjxlCore` makes route-specific Verilator top-level tests impractical.
+- Use `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantize'` to generate the
+  standalone prepared-DCT quantization scheduler. It writes
+  `generated-prepared-dct-only-quantize/`; keep the generated directory out of
+  git.
+- Use `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'` to generate
+  the direct prepared-DCT quantize-to-token wrapper. It writes
+  `generated-prepared-dct-only-quantize-tokens/`; keep the generated directory
+  out of git.
+- Use `sbt 'runMain hjxl.ElaboratePreparedAcMetadataTokens'` to generate the
+  standalone prepared AC-metadata token scheduler. It writes
+  `generated-prepared-ac-metadata-tokens/`; keep the generated directory out of
+  git.
 - Use `sbt 'runMain hjxl.ElaboratePreparedDcTokens'` and
   `sbt 'runMain hjxl.ElaboratePreparedAcTokens'` to generate standalone RTL for
   the individual exact prepared-token boundaries. Use
@@ -233,12 +265,28 @@ Read these libjxl-tiny files before making architectural changes:
   `--dct-only-num-nonzeros-npy`, `--dct-only-num-nonzeros-map-npy`, and
   `--dct-only-quant-dc-npy`. Prefer these artifacts when validating the current
   DCT-only quantization path before adaptive rectangular strategy search exists.
+- `--dct-only-ac-metadata-tokens-npy` exports libjxl-tiny AC-metadata tokens
+  for the default all-DCT strategy using prepared raw-quant and CFL maps. Use
+  this oracle for `FramePreparedAcMetadataTokenTraceStage` instead of comparing
+  against fixed raw-quant/zero-CFL metadata.
 - `--dct-only-prepared-blocks-json` exports the prepared-block interface for
   `DctOnlyQuantizeBlock`: Q12 coefficients, quant/scaling/CFL inputs, and
   libjxl-tiny expected quantized AC/DC/nonzero results. Treat the expected
   values as a floating-reference oracle; current RTL comparisons may still need
   explicit tolerance because the hardware boundary uses rounded fixed-point DCT
   coefficients.
+- `tools/hjxl_prepared_blocks.py --prepared-json ... --input-csv ...
+  --expected-trace-csv ...` converts prepared-block JSON fixtures into simulator
+  input rows for `FramePreparedDctOnlyQuantizeTraceStage` plus expected
+  quantization trace rows. It validates raster block order, three X/Y/B
+  coefficient channels, scalar input fields, expected output shapes, and
+  declared nonzero counts against expected coefficient data.
+- `tools/hjxl_quant_trace_to_prepared_tokens.py --trace-csv ... --width ...
+  --height ... --dc-csv ... --ac-csv ...` converts quantization traces into the
+  prepared-token simulator CSVs. It requires complete `QuantDc`,
+  `QuantizedAc`, and `NumNonzeros` records for every raster block, emits DC
+  samples in token order (Y plane, X plane, then B plane), and emits AC block
+  rows in raster block order with X/Y/B channel rows.
 - `--distance-params-json` exports libjxl-tiny distance parameters. Use it to
   update or audit `DistanceParamsLookup` entries. Its `inv_qac_q16` field is
   computed for `--fixed-raw-quant`, which defaults to 5.
@@ -281,6 +329,24 @@ Read these libjxl-tiny files before making architectural changes:
   RGB-input token parity: `FrameDctOnlyDcTokenTraceStage` and
   `FrameDctOnlyAcTokenTraceStage` still go through the approximate fixed-point
   RGB/XYB/DCT path, so closing that parity gap remains separate work.
+- `FramePreparedDctOnlyQuantizeTraceStageSpec` covers the prepared-DCT
+  quantization scheduler with libjxl-tiny prepared-block fixtures. It enforces
+  exact stage/group/index ordering and uses explicit small value tolerances for
+  the rounded-Q12 coefficient boundary, then verifies the observed RTL
+  quantization trace converts into prepared-token DC/AC CSV inputs without data
+  loss or reordering and can drive `FramePreparedTokenTraceStage` through the
+  full fixed all-DCT logical trace stream. It also checks
+  `FramePreparedDctOnlyQuantizeTokenTraceStage` against that staged handoff for
+  DC/AC token trace streams while checking prepared raw-quant/CFL metadata
+  tokens against libjxl-tiny's `ac_metadata_tokens` oracle. It also converts
+  the direct wrapper's token `StageTrace` rows with `tools/hjxl_trace_tokens.py`
+  and verifies the host assembler can produce frame bytes and a bare JPEG XL
+  codestream from those RTL tokens.
+- `FramePreparedAcMetadataTokenTraceStageSpec` covers the standalone prepared
+  AC-metadata scheduler with two-tile fixtures, including a libjxl-tiny
+  oracle-backed 72x8 all-DCT case. Keep it when changing CFL residual
+  prediction or raw-quant residual context logic; the integrated prepared-DCT
+  fixture is only single-tile today.
 - `HjxlCore` currently exposes padded-input, XYB, raw-DCT, fixed-parameter
   quantized-DCT, fixed-parameter DC-token, fixed AC-metadata-token, or default
   AC-strategy trace streams. `FrameConfig.tokenSelect` chooses token substreams:

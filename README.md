@@ -41,17 +41,27 @@ quantized DC coefficient path, including B's correction from quantized Y DC.
 `DctOnlyQuantizeBlock` composes those pieces for one prepared X/Y/B 8x8 DCT
 block and emits quantized AC, quantized DC, and nonzero counts for all channels.
 `DctOnlyQuantizeTraceStage` exposes the same prepared-block result as trace
-records for simulation. `FrameDctOnlyQuantizeTraceStage` schedules padded raster
-blocks through that path with fixed distance-1 quantization defaults so future
-token stages have a frame-shaped trace source before full AQ/CFL hardware is
-available. `FrameDctOnlyDcTokenTraceStage` emits the first logical token stream:
-DC predictor contexts and packed residuals in libjxl-tiny Y/X/B plane order.
+records for simulation. `FramePreparedDctOnlyQuantizeTraceStage` schedules
+complete prepared DCT-only blocks in raster order through that quantizer and
+emits frame-shaped `QuantizedAc`, `QuantDc`, and `NumNonzeros` traces.
+`FramePreparedDctOnlyQuantizeTokenTraceStage` bridges the same prepared-DCT
+input boundary directly into fixed all-DCT logical token traces by internally
+buffering quantized results and driving `FramePreparedTokenTraceStage`.
+`FrameDctOnlyQuantizeTraceStage` schedules padded raster blocks through that
+path with fixed distance-1 quantization defaults so future token stages have a
+frame-shaped trace source before full AQ/CFL hardware is available.
+`FrameDctOnlyDcTokenTraceStage` emits the first logical token stream: DC
+predictor contexts and packed residuals in libjxl-tiny Y/X/B plane order.
 `DcTokenTraceStage` exposes the same DC predictor/token packing as a prepared
 single-sample boundary once quantized DC planes already exist, and
 `FramePreparedDcTokenTraceStage` schedules complete prepared quantized DC planes
 through that exact token boundary in libjxl-tiny Y/X/B raster order.
 `FrameDctOnlyAcMetadataTokenTraceStage` emits fixed-path CFL, AC-strategy,
 quant-field, and block-metadata tokens.
+`FramePreparedAcMetadataTokenTraceStage` emits the same AC-metadata token
+substream from prepared per-block raw quant values and per-tile CFL
+multipliers, so prepared-DCT quantization can carry coherent metadata into the
+token boundary.
 `FrameDctOnlyAcNonzeroTokenTraceStage` is a directly tested standalone frame
 stage for the first `AcTokens` substream: nonzero-count contexts and values for
 each block/channel. `AcCoefficientTokenTraceStage` emits prepared-block AC
@@ -108,7 +118,10 @@ sbt 'runMain hjxl.ElaborateAcTokens'
 Generate the exact prepared-token trace top-levels:
 
 ```sh
+sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantize'
+sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'
 sbt 'runMain hjxl.ElaboratePreparedDcTokens'
+sbt 'runMain hjxl.ElaboratePreparedAcMetadataTokens'
 sbt 'runMain hjxl.ElaboratePreparedAcTokens'
 sbt 'runMain hjxl.ElaboratePreparedTokens'
 ```
@@ -130,6 +143,7 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --dct-only-quantized-ac-npy build-codex/fixtures/gradient-17x9-dct-only-qac.npy \
   --dct-only-num-nonzeros-npy build-codex/fixtures/gradient-17x9-dct-only-nnz.npy \
   --dct-only-quant-dc-npy build-codex/fixtures/gradient-17x9-dct-only-qdc.npy \
+  --dct-only-ac-metadata-tokens-npy build-codex/fixtures/gradient-17x9-dct-only-acmeta-tokens.npy \
   --dct-only-prepared-blocks-json build-codex/fixtures/gradient-17x9-dct-only-prepared-blocks.json \
   --distance-params-json build-codex/fixtures/distance-1-params.json \
   --fixed-dct-only-dc-tokens-npy build-codex/fixtures/gradient-17x9-fixed-dc-tokens.npy \
@@ -173,6 +187,27 @@ the token ordinal and are written as `(context, value)` NumPy arrays. AC
 strategy rows use `index` as the raster block ordinal and are reshaped using
 `--width` and `--height`.
 
+Convert prepared DCT-only block JSON fixtures into simulator input CSVs and
+expected quantization trace CSVs:
+
+```sh
+python3 tools/hjxl_prepared_blocks.py \
+  --prepared-json build-codex/fixtures/gradient-17x9-dct-only-prepared-blocks.json \
+  --input-csv build-codex/fixtures/gradient-17x9-prepared-blocks.csv \
+  --expected-trace-csv build-codex/fixtures/gradient-17x9-prepared-quantize-trace.csv
+```
+
+Convert quantization `StageTrace` CSV dumps into the prepared-token simulator
+CSVs consumed by `FramePreparedTokenTraceStage`:
+
+```sh
+python3 tools/hjxl_quant_trace_to_prepared_tokens.py \
+  --trace-csv build-codex/traces/gradient-17x9-quant-trace.csv \
+  --width 17 --height 9 \
+  --dc-csv build-codex/traces/gradient-17x9-quant-prepared-dc.csv \
+  --ac-csv build-codex/traces/gradient-17x9-quant-prepared-ac.csv
+```
+
 Convert prepared-token JSON fixtures into simulator input CSVs:
 
 ```sh
@@ -182,6 +217,21 @@ python3 tools/hjxl_prepared_token_inputs.py \
   --ac-csv build-codex/fixtures/gradient-17x9-prepared-ac.csv
 ```
 
+`FramePreparedDctOnlyQuantizeTraceStageSpec` checks the prepared-DCT quantizer
+scheduler against libjxl-tiny prepared-block fixtures with small fixed-point
+tolerances for the current rounded-Q12 coefficient boundary, then verifies that
+the observed RTL quantization trace converts into prepared-token DC/AC CSVs
+without reordering or dropping records and can drive `FramePreparedTokenTraceStage`
+through DC, strategy, metadata, and AC token trace emission. The same spec also
+checks `FramePreparedDctOnlyQuantizeTokenTraceStage`, the direct RTL wrapper,
+against that staged handoff at the DC/AC token trace streams while checking its
+prepared raw-quant/CFL metadata tokens against libjxl-tiny's
+`ac_metadata_tokens` oracle. It also converts the direct wrapper's token
+`StageTrace` output into token arrays and verifies the host assembler can
+produce nonempty frame bytes and a bare JPEG XL codestream.
+`FramePreparedAcMetadataTokenTraceStageSpec` separately covers two-tile
+prepared metadata fixtures for CFL residual prediction and raw-quant residual
+contexts, including a libjxl-tiny oracle-backed 72x8 all-DCT case.
 `FixedDctOnlyTokenAssemblySpec` is the current regression for that
 hardware/software boundary. It generates a prepared-token JSON fixture with
 `tools/hjxl_reference.py`, converts it to simulator CSVs with

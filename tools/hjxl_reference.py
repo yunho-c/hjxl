@@ -227,6 +227,20 @@ def dct_only_quant_outputs_from_python_port(image, distance: float):
     return raw_quant_field, ytox_map, ytob_map, quantized_ac, num_nonzeros, num_nonzeros_map, quant_dc
 
 
+def dct_only_ac_metadata_tokens_from_python_port(image, distance: float):
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.ac_strategy import DCT  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.tokenization import ac_metadata_tokens  # pylint: disable=import-outside-toplevel
+
+    raw_quant_field, ytox_map, ytob_map, _, _, _, _ = dct_only_quant_outputs_from_python_port(
+        image, distance
+    )
+    ac_strategy = np.full(raw_quant_field.shape, np.uint8((DCT << 1) | 1))
+    return ac_metadata_tokens(ytox_map, ytob_map, ac_strategy, raw_quant_field)
+
+
 def distance_params_from_python_port(distance: float, fixed_raw_quant: int = 5):
     root = _libjxl_tiny_root()
     _add_libjxl_tiny(root)
@@ -635,6 +649,11 @@ def main() -> int:
         help="optional quantized DC planes for the default all-DCT strategy",
     )
     parser.add_argument(
+        "--dct-only-ac-metadata-tokens-npy",
+        type=Path,
+        help="optional AC-metadata token oracle for the default all-DCT strategy",
+    )
+    parser.add_argument(
         "--dct-only-prepared-blocks-json",
         type=Path,
         help="optional prepared-block JSON oracle for the default all-DCT strategy",
@@ -856,6 +875,13 @@ def main() -> int:
         args.dct_only_quant_dc_npy.parent.mkdir(parents=True, exist_ok=True)
         _, _, _, _, _, _, quant_dc = get_dct_only_quant_outputs()
         np.save(args.dct_only_quant_dc_npy, quant_dc)
+    if args.dct_only_ac_metadata_tokens_npy is not None:
+        np = _load_numpy()
+        args.dct_only_ac_metadata_tokens_npy.parent.mkdir(parents=True, exist_ok=True)
+        np.save(
+            args.dct_only_ac_metadata_tokens_npy,
+            dct_only_ac_metadata_tokens_from_python_port(image, args.distance),
+        )
     if args.dct_only_prepared_blocks_json is not None:
         args.dct_only_prepared_blocks_json.parent.mkdir(parents=True, exist_ok=True)
         args.dct_only_prepared_blocks_json.write_text(
@@ -923,6 +949,7 @@ def main() -> int:
         and args.dct_only_num_nonzeros_npy is None
         and args.dct_only_num_nonzeros_map_npy is None
         and args.dct_only_quant_dc_npy is None
+        and args.dct_only_ac_metadata_tokens_npy is None
         and args.dct_only_prepared_blocks_json is None
         and args.distance_params_json is None
         and args.fixed_dct_only_dc_tokens_npy is None
