@@ -129,10 +129,88 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
       "stage,group,index,value\n12,3,4,-7\n12,4,5,11\n"
   }
 
+  "hjxl_stream_trace.py decodes little-endian binary trace captures" in {
+    val temp = Files.createTempDirectory("hjxl-stream-trace-bin-")
+    val streamBin = temp.resolve("stream.bin")
+    val paddedStreamBin = temp.resolve("stream-padded.bin")
+    val lastBin = temp.resolve("last.bin")
+    val paddedTraceCsv = temp.resolve("trace-padded.csv")
+    val traceCsv = temp.resolve("trace.csv")
+    val words = Seq(
+      pack(TraceStage.DcTokens, 1, 2, -3),
+      pack(TraceStage.AcStrategy, 4, 5, 6)
+    )
+    val data = ByteBuffer.allocate(words.length * 11).order(ByteOrder.LITTLE_ENDIAN)
+    for (word <- words) {
+      var shifted = word
+      for (_ <- 0 until 11) {
+        data.put((shifted & 0xff).toByte)
+        shifted = shifted >> 8
+      }
+    }
+    Files.write(streamBin, data.array())
+    Files.write(lastBin, Array[Byte](0, 1))
+    val paddedData = ByteBuffer.allocate(words.length * 16).order(ByteOrder.LITTLE_ENDIAN)
+    for (word <- words) {
+      var shifted = word
+      for (_ <- 0 until 11) {
+        paddedData.put((shifted & 0xff).toByte)
+        shifted = shifted >> 8
+      }
+      for (_ <- 0 until 5) {
+        paddedData.put(0.toByte)
+      }
+    }
+    Files.write(paddedStreamBin, paddedData.array())
+
+    val result = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_stream_trace.py",
+        "--stream-bin",
+        streamBin.toString,
+        "--last-bin",
+        lastBin.toString,
+        "--trace-csv",
+        traceCsv.toString,
+        "--require-final-last"
+      )
+    )
+
+    result.exitCode mustBe 0
+    result.output must include("decoded 2 stream trace rows")
+    Files.readString(traceCsv).replace("\r\n", "\n") mustBe
+      "stage,group,index,value\n10,1,2,-3\n6,4,5,6\n"
+
+    expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_stream_trace.py",
+        "--stream-bin",
+        paddedStreamBin.toString,
+        "--last-bin",
+        lastBin.toString,
+        "--stream-word-bytes",
+        "16",
+        "--trace-csv",
+        paddedTraceCsv.toString,
+        "--require-final-last"
+      )
+    )
+    Files.readString(paddedTraceCsv).replace("\r\n", "\n") mustBe
+      "stage,group,index,value\n10,1,2,-3\n6,4,5,6\n"
+  }
+
   "hjxl_prepared_blocks.py emits packed prepared-DCT stream words" in {
     val temp = Files.createTempDirectory("hjxl-prepared-block-stream-")
     val fixture = temp.resolve("prepared.json")
     val streamCsv = temp.resolve("prepared-stream.csv")
+    val controlCsv = temp.resolve("prepared-control.csv")
+    val manifestJson = temp.resolve("prepared-manifest.json")
+    val header = temp.resolve("prepared-bundle.h")
+    val streamBin = temp.resolve("prepared-stream.bin")
+    val lastBin = temp.resolve("prepared-last.bin")
+    val hostBundleDir = temp.resolve("prepared-host-bundle")
     Files.writeString(fixture, preparedBlockFixtureJson)
 
     val output = expectSuccess(
@@ -142,7 +220,11 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
         "--prepared-json",
         fixture.toString,
         "--input-stream-csv",
-        streamCsv.toString
+        streamCsv.toString,
+        "--axi-lite-csv",
+        controlCsv.toString,
+        "--manifest-json",
+        manifestJson.toString
       )
     )
     output mustBe ""
@@ -166,6 +248,126 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     rows(138) mustBe "4294967232,0"
     rows.last mustBe "4294967295,1"
     rows.drop(1).dropRight(1).count(_.endsWith(",1")) mustBe 0
+
+    val controlRows = Files.readString(controlCsv).replace("\r\n", "\n").trim.split("\n").toVector
+    controlRows mustBe Seq(
+      "address,data,strb",
+      "4,8,15",
+      "8,8,15",
+      "12,256,15",
+      "16,0,15",
+      "20,0,15",
+      "24,0,15",
+      "28,526,15"
+    )
+
+    val manifest = Files.readString(manifestJson).replace("\r\n", "\n")
+    manifest must include("\"format\": \"hjxl.prepared_dct_stream_manifest.v1\"")
+    manifest must include("\"xsize\": 8")
+    manifest must include("\"ysize\": 8")
+    manifest must include("\"x_blocks\": 1")
+    manifest must include("\"y_blocks\": 1")
+    manifest must include("\"word_count\": 201")
+    manifest must include("\"block_count\": 1")
+    manifest must include("\"words_per_block\": 201")
+    manifest must include("\"status_control\": 0")
+    manifest must include("\"clear_protocol_error_write_bit\": 0")
+    manifest must include("\"flags\": 526")
+    manifest must include("\"token_select\": \"ac-tokens\"")
+
+    val validateOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_prepared_blocks.py",
+        "--validate-manifest",
+        manifestJson.toString
+      )
+    )
+    validateOutput must include(s"validated $manifestJson")
+
+    val headerOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_manifest_header.py",
+        "--manifest-json",
+        manifestJson.toString,
+        "--header",
+        header.toString,
+        "--symbol-prefix",
+        "HJXL_PREPARED"
+      )
+    )
+    headerOutput must include(s"wrote $header")
+    val headerText = Files.readString(header).replace("\r\n", "\n")
+    headerText must include("#define HJXL_PREPARED_MANIFEST_FORMAT \"hjxl.prepared_dct_stream_manifest.v1\"")
+    headerText must include("#define HJXL_PREPARED_STREAM_WORD_COUNT 201u")
+    headerText must include("#define HJXL_PREPARED_INPUT_DATA_BITS 32u")
+    headerText must include("#define HJXL_PREPARED_STREAM_WORD_BYTES 4u")
+    headerText must include("#define HJXL_PREPARED_STREAM_BYTE_COUNT 804u")
+    headerText must include("#define HJXL_PREPARED_REG_XSIZE 0x00000004u")
+    headerText must include("#define HJXL_PREPARED_STATUS_BUSY_BIT 1u")
+    headerText must include("{ 0x0000001cu, 0x0000020eu, 0x0000000fu }, /* flags */")
+
+    val bufferOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_stream_buffer.py",
+        "--manifest-json",
+        manifestJson.toString,
+        "--stream-bin",
+        streamBin.toString,
+        "--last-bin",
+        lastBin.toString
+      )
+    )
+    bufferOutput must include(s"wrote 201 stream words (4 bytes/word) to $streamBin")
+    Files.readAllBytes(streamBin).map(_ & 0xff).take(12).toSeq mustBe Seq(
+      5, 0, 0, 0,
+      210, 4, 0, 0,
+      46, 22, 0, 0
+    )
+    Files.readAllBytes(streamBin).map(_ & 0xff).slice(28, 32).toSeq mustBe Seq(254, 255, 255, 255)
+    val preparedLastBytes = Files.readAllBytes(lastBin).map(_ & 0xff).toSeq
+    preparedLastBytes.length mustBe 201
+    preparedLastBytes.dropRight(1).sum mustBe 0
+    preparedLastBytes.last mustBe 1
+
+    val hostBundleOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--manifest-json",
+        manifestJson.toString,
+        "--output-dir",
+        hostBundleDir.toString,
+        "--name",
+        "prepared",
+        "--symbol-prefix",
+        "HJXL_PREPARED_BUNDLE"
+      )
+    )
+    hostBundleOutput must include(s"wrote host bundle prepared with 201 stream words to $hostBundleDir")
+    Files.exists(hostBundleDir.resolve("prepared.h")) mustBe true
+    Files.exists(hostBundleDir.resolve("prepared-stream.bin")) mustBe true
+    Files.exists(hostBundleDir.resolve("prepared-last.bin")) mustBe true
+    val preparedIndex = Files.readString(hostBundleDir.resolve("prepared-bundle.json")).replace("\r\n", "\n")
+    preparedIndex must include("\"format\": \"hjxl.host_bundle.v1\"")
+    preparedIndex must include("\"manifest_format\": \"hjxl.prepared_dct_stream_manifest.v1\"")
+    preparedIndex must include("\"input_data_bytes\": 4")
+    preparedIndex must include("\"word_count\": 201")
+
+    val corruptedRows = Files.readString(streamCsv).replace("\r\n", "\n").trim.split("\n").toVector
+    Files.writeString(streamCsv, (corruptedRows.dropRight(1) :+ corruptedRows.last.replace(",1", ",0")).mkString("\n") + "\n")
+    val invalid = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_prepared_blocks.py",
+        "--validate-manifest",
+        manifestJson.toString
+      )
+    )
+    invalid.exitCode mustBe 1
+    invalid.output must include("final stream row does not assert last")
   }
 
   "hjxl_rgb_stream.py emits packed raster RGB stream words from PFM" in {
@@ -174,6 +376,10 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     val streamCsv = temp.resolve("rgb-stream.csv")
     val controlCsv = temp.resolve("rgb-control.csv")
     val manifestJson = temp.resolve("rgb-manifest.json")
+    val header = temp.resolve("rgb-bundle.h")
+    val streamBin = temp.resolve("rgb-stream.bin")
+    val lastBin = temp.resolve("rgb-last.bin")
+    val hostBundleDir = temp.resolve("rgb-host-bundle")
     writeRgbPfm(
       pfm,
       width = 2,
@@ -265,6 +471,70 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     )
     validateOutput must include(s"validated $manifestJson")
 
+    expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_manifest_header.py",
+        "--manifest-json",
+        manifestJson.toString,
+        "--header",
+        header.toString,
+        "--symbol-prefix",
+        "HJXL_RGB"
+      )
+    )
+    val headerText = Files.readString(header).replace("\r\n", "\n")
+    headerText must include("#define HJXL_RGB_MANIFEST_FORMAT \"hjxl.rgb_stream_manifest.v1\"")
+    headerText must include("#define HJXL_RGB_STREAM_WORD_COUNT 4u")
+    headerText must include("#define HJXL_RGB_INPUT_DATA_BITS 48u")
+    headerText must include("#define HJXL_RGB_STREAM_WORD_BYTES 6u")
+    headerText must include("#define HJXL_RGB_STREAM_BYTE_COUNT 24u")
+    headerText must include("#define HJXL_RGB_REG_FLAGS 0x0000001cu")
+    headerText must include("{ 0x00000004u, 0x00000002u, 0x0000000fu }, /* xsize */")
+    headerText must include("{ 0x0000001cu, 0x00000207u, 0x0000000fu }, /* flags */")
+
+    expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_stream_buffer.py",
+        "--manifest-json",
+        manifestJson.toString,
+        "--stream-bin",
+        streamBin.toString,
+        "--last-bin",
+        lastBin.toString
+      )
+    )
+    Files.readAllBytes(streamBin).map(_ & 0xff).take(12).toSeq mustBe Seq(
+      0, 0, 128, 0, 0, 1,
+      64, 0, 192, 0, 192, 255
+    )
+    Files.readAllBytes(streamBin).length mustBe 4 * 6
+    Files.readAllBytes(lastBin).map(_ & 0xff).toSeq mustBe Seq(0, 0, 0, 1)
+
+    expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--manifest-json",
+        manifestJson.toString,
+        "--output-dir",
+        hostBundleDir.toString,
+        "--name",
+        "rgb",
+        "--symbol-prefix",
+        "HJXL_RGB_BUNDLE"
+      )
+    )
+    Files.readString(hostBundleDir.resolve("rgb.h")).replace("\r\n", "\n") must include(
+      "#define HJXL_RGB_BUNDLE_INPUT_DATA_BITS 48u"
+    )
+    Files.readString(hostBundleDir.resolve("rgb.h")).replace("\r\n", "\n") must include(
+      "#define HJXL_RGB_BUNDLE_STREAM_BYTE_COUNT 24u"
+    )
+    Files.readAllBytes(hostBundleDir.resolve("rgb-stream.bin")).length mustBe 24
+    Files.readAllBytes(hostBundleDir.resolve("rgb-last.bin")).map(_ & 0xff).toSeq mustBe Seq(0, 0, 0, 1)
+
     val corruptedRows = Files.readString(streamCsv).replace("\r\n", "\n").trim.split("\n").toVector
     Files.writeString(streamCsv, (corruptedRows.dropRight(1) :+ corruptedRows.last.replace(",1", ",0")).mkString("\n") + "\n")
     val invalid = runCommand(
@@ -332,18 +602,37 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
 
     val temp = Files.createTempDirectory("hjxl-stream-trace-to-tokens-")
     val streamCsv = temp.resolve("stream.csv")
+    val streamBin = temp.resolve("stream.bin")
+    val lastBin = temp.resolve("last.bin")
     val traceCsv = temp.resolve("trace.csv")
     val dcTokens = temp.resolve("dc.npy")
+    val binaryDcTokens = temp.resolve("dc-binary.npy")
     val strategy = temp.resolve("strategy.npy")
+    val binaryStrategy = temp.resolve("strategy-binary.npy")
     val directDcTokens = temp.resolve("direct-dc.npy")
     val directStrategy = temp.resolve("direct-strategy.npy")
+    val packedRows = Seq(
+      pack(TraceStage.DcTokens, 0, 5, 7),
+      pack(TraceStage.DcTokens, 1, 6, 8),
+      pack(TraceStage.AcStrategy, 0, 0, AcStrategyCode.encoded(AcStrategyCode.Dct, isFirstBlock = true))
+    )
     Files.writeString(
       streamCsv,
       "data,last\n" +
-        s"${pack(TraceStage.DcTokens, 0, 5, 7)},0\n" +
-        s"${pack(TraceStage.DcTokens, 1, 6, 8)},0\n" +
-        s"${pack(TraceStage.AcStrategy, 0, 0, AcStrategyCode.encoded(AcStrategyCode.Dct, isFirstBlock = true))},1\n"
+        s"${packedRows(0)},0\n" +
+        s"${packedRows(1)},0\n" +
+        s"${packedRows(2)},1\n"
     )
+    val binaryData = ByteBuffer.allocate(packedRows.length * 11).order(ByteOrder.LITTLE_ENDIAN)
+    for (word <- packedRows) {
+      var shifted = word
+      for (_ <- 0 until 11) {
+        binaryData.put((shifted & 0xff).toByte)
+        shifted = shifted >> 8
+      }
+    }
+    Files.write(streamBin, binaryData.array())
+    Files.write(lastBin, Array[Byte](0, 0, 1))
 
     expectSuccess(
       Seq(
@@ -380,6 +669,28 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
       Seq(
         "python3",
         "tools/hjxl_trace_tokens.py",
+        "--stream-bin",
+        streamBin.toString,
+        "--last-bin",
+        lastBin.toString,
+        "--dc-tokens-npy",
+        binaryDcTokens.toString,
+        "--ac-strategy-npy",
+        binaryStrategy.toString,
+        "--width",
+        "8",
+        "--height",
+        "8",
+        "--require-stream-final-last"
+      )
+    )
+    readNpyAsJson(binaryDcTokens) mustBe "[[5,7],[6,8]]"
+    readNpyAsJson(binaryStrategy) mustBe "[[1]]"
+
+    expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_trace_tokens.py",
         "--stream-csv",
         streamCsv.toString,
         "--dc-tokens-npy",
@@ -402,14 +713,32 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
 
     val temp = Files.createTempDirectory("hjxl-stream-trace-to-codestream-")
     val streamCsv = temp.resolve("stream.csv")
+    val streamBin = temp.resolve("stream.bin")
+    val lastBin = temp.resolve("last.bin")
     val codestream = temp.resolve("out.jxl")
+    val binaryCodestream = temp.resolve("out-binary.jxl")
+    val packedRows = Seq(
+      pack(TraceStage.DcTokens, 0, 0, 0),
+      pack(TraceStage.AcMetadataTokens, 0, 0, 0),
+      pack(TraceStage.AcTokens, 0, 0, 0)
+    )
     Files.writeString(
       streamCsv,
       "data,last\n" +
-        s"${pack(TraceStage.DcTokens, 0, 0, 0)},0\n" +
-        s"${pack(TraceStage.AcMetadataTokens, 0, 0, 0)},0\n" +
-        s"${pack(TraceStage.AcTokens, 0, 0, 0)},1\n"
+        s"${packedRows(0)},0\n" +
+        s"${packedRows(1)},0\n" +
+        s"${packedRows(2)},1\n"
     )
+    val binaryData = ByteBuffer.allocate(packedRows.length * 11).order(ByteOrder.LITTLE_ENDIAN)
+    for (word <- packedRows) {
+      var shifted = word
+      for (_ <- 0 until 11) {
+        binaryData.put((shifted & 0xff).toByte)
+        shifted = shifted >> 8
+      }
+    }
+    Files.write(streamBin, binaryData.array())
+    Files.write(lastBin, Array[Byte](0, 0, 1))
 
     val result = runCommand(
       Seq(
@@ -429,5 +758,25 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
 
     result.exitCode mustBe 1
     result.output must include("missing AC strategy trace indices")
+
+    val binaryResult = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_trace_to_codestream.py",
+        "--stream-bin",
+        streamBin.toString,
+        "--last-bin",
+        lastBin.toString,
+        "--width",
+        "8",
+        "--height",
+        "8",
+        "--codestream-bin",
+        binaryCodestream.toString,
+        "--require-stream-final-last"
+      )
+    )
+    binaryResult.exitCode mustBe 1
+    binaryResult.output must include("missing AC strategy trace indices")
   }
 }

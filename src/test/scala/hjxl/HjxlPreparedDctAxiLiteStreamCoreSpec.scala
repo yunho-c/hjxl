@@ -23,6 +23,7 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
     Path.of(sys.env.getOrElse("LIBJXL_TINY", "/Users/yunhocho/GitHub/libjxl-tiny"))
 
   private case class CommandResult(exitCode: Int, output: String)
+  private case class AxiWrite(address: Int, data: BigInt, strb: Int)
   private case class StreamWord(data: BigInt, last: Boolean)
 
   private def requireReferenceTools(): Unit = {
@@ -55,6 +56,12 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
     Files.readAllLines(path, StandardCharsets.UTF_8).asScala.toVector.drop(1).map { line =>
       val columns = line.split(",", -1)
       StreamWord(BigInt(columns(0)), columns(1).toInt != 0)
+    }
+
+  private def readAxiLiteCsv(path: Path): Seq[AxiWrite] =
+    Files.readAllLines(path, StandardCharsets.UTF_8).asScala.toVector.drop(1).map { line =>
+      val columns = line.split(",", -1)
+      AxiWrite(columns(0).toInt, BigInt(columns(1)), columns(2).toInt)
     }
 
   private def writeStreamCsv(path: Path, rows: Seq[StreamWord]): Unit =
@@ -244,6 +251,8 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
     val temp = Files.createTempDirectory("hjxl-prepared-dct-axi-lite-stream-codestream-")
     val preparedJson = temp.resolve("prepared-blocks.json")
     val inputStreamCsv = temp.resolve("prepared-input-stream.csv")
+    val controlCsv = temp.resolve("prepared-control.csv")
+    val manifestJson = temp.resolve("prepared-manifest.json")
     val outputStreamCsv = temp.resolve("rtl-token-stream.csv")
     val directFrame = temp.resolve("direct-frame.bin")
     val directCodestream = temp.resolve("direct.jxl")
@@ -278,12 +287,26 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
         "--prepared-json",
         preparedJson.toString,
         "--input-stream-csv",
-        inputStreamCsv.toString
+        inputStreamCsv.toString,
+        "--axi-lite-csv",
+        controlCsv.toString,
+        "--manifest-json",
+        manifestJson.toString
+      ),
+      "PYTHONDONTWRITEBYTECODE" -> "1"
+    )
+    expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_prepared_blocks.py",
+        "--validate-manifest",
+        manifestJson.toString
       ),
       "PYTHONDONTWRITEBYTECODE" -> "1"
     )
 
     val inputRows = readStreamCsv(inputStreamCsv)
+    val controlWrites = readAxiLiteCsv(controlCsv)
     inputRows.length mustBe 2 * PreparedDctStreamLayout.WordsPerBlock
     inputRows.dropRight(1).exists(_.last) mustBe false
     inputRows.last.last mustBe true
@@ -291,8 +314,12 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
     val outputRows = scala.collection.mutable.ArrayBuffer.empty[StreamWord]
     simulate(new HjxlPreparedDctAxiLiteStreamCore(config)) { dut =>
       init(dut)
-      axiWrite(dut, HjxlAxiLiteRegister.Xsize, width) must be(AxiLiteResponse.Okay)
-      axiWrite(dut, HjxlAxiLiteRegister.Ysize, height) must be(AxiLiteResponse.Okay)
+      for (write <- controlWrites) {
+        axiWrite(dut, write.address, write.data, write.strb) must be(AxiLiteResponse.Okay)
+      }
+      axiRead(dut, HjxlAxiLiteRegister.Xsize) must be(BigInt(width) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.Ysize) must be(BigInt(height) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.Flags) must be(BigInt(526) -> AxiLiteResponse.Okay)
 
       for ((row, ordinal) <- inputRows.zipWithIndex) {
         driveStreamWord(dut, row.data, row.last, s"controlled oracle stream input word $ordinal")

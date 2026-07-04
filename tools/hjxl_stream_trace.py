@@ -77,6 +77,44 @@ def read_stream_csv(path: Path) -> list[StreamTraceRow]:
     return rows
 
 
+def read_stream_bin(path: Path, *, word_bytes: int, last_bin: Path | None) -> list[StreamTraceRow]:
+    if word_bytes <= 0:
+        raise ValueError("stream word bytes must be positive")
+    data = path.read_bytes()
+    if len(data) % word_bytes != 0:
+        raise ValueError(f"{path}: byte length {len(data)} is not a multiple of {word_bytes}")
+    word_count = len(data) // word_bytes
+    if word_count == 0:
+        raise ValueError(f"{path}: binary stream must contain at least one word")
+
+    if last_bin is None:
+        last_values = [False] * word_count
+        last_values[-1] = True
+    else:
+        raw_last = last_bin.read_bytes()
+        if len(raw_last) != word_count:
+            raise ValueError(f"{last_bin}: expected {word_count} TLAST bytes, got {len(raw_last)}")
+        last_values = []
+        for index, value in enumerate(raw_last):
+            if value not in (0, 1):
+                raise ValueError(f"{last_bin}: TLAST byte {index} must be 0 or 1, got {value}")
+            last_values.append(value != 0)
+
+    rows = []
+    for index in range(word_count):
+        start = index * word_bytes
+        word = int.from_bytes(data[start : start + word_bytes], byteorder="little", signed=False)
+        rows.append(
+            StreamTraceRow(
+                data=word,
+                last=last_values[index],
+                source=str(path),
+                line=index + 1,
+            )
+        )
+    return rows
+
+
 def sign_extend(value: int, bits: int) -> int:
     sign_bit = 1 << (bits - 1)
     mask = (1 << bits) - 1
@@ -157,8 +195,24 @@ def main() -> int:
         "--stream-csv",
         type=Path,
         action="append",
-        required=True,
         help="packed stream CSV input with data,last columns; tdata,tlast aliases are also accepted",
+    )
+    parser.add_argument(
+        "--stream-bin",
+        type=Path,
+        action="append",
+        help="little-endian packed TDATA binary input; may be repeated",
+    )
+    parser.add_argument(
+        "--last-bin",
+        type=Path,
+        action="append",
+        help="optional one-byte-per-word TLAST sidecar for each --stream-bin",
+    )
+    parser.add_argument(
+        "--stream-word-bytes",
+        type=int,
+        help="bytes per binary stream word; defaults to packed StageTrace width rounded up",
     )
     parser.add_argument("--trace-csv", type=Path, help="output StageTrace CSV; stdout if omitted")
     parser.add_argument("--group-bits", type=int, default=16, help="packed StageTrace group width")
@@ -171,9 +225,28 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        if args.stream_csv is None and args.stream_bin is None:
+            raise ValueError("at least one --stream-csv or --stream-bin input is required")
+        last_bins = args.last_bin or []
+        if args.stream_bin is None and last_bins:
+            raise ValueError("--last-bin requires --stream-bin")
+        if args.stream_bin is not None and last_bins and len(last_bins) != len(args.stream_bin):
+            raise ValueError("--last-bin count must be zero or match --stream-bin count")
+        packed_bits = 8 + args.group_bits + 32 + args.trace_value_bits
+        stream_word_bytes = args.stream_word_bytes or ((packed_bits + 7) // 8)
+
         stream_rows: list[StreamTraceRow] = []
-        for path in args.stream_csv:
+        for path in args.stream_csv or []:
             stream_rows.extend(read_stream_csv(path))
+        for index, path in enumerate(args.stream_bin or []):
+            last_bin = last_bins[index] if index < len(last_bins) else None
+            stream_rows.extend(
+                read_stream_bin(
+                    path,
+                    word_bytes=stream_word_bytes,
+                    last_bin=last_bin,
+                )
+            )
         trace_rows = decode_stream_rows(
             stream_rows,
             group_bits=args.group_bits,

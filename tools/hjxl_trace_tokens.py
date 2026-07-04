@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import sys
 
-from hjxl_stream_trace import decode_stream_rows, read_stream_csv
+from hjxl_stream_trace import decode_stream_rows, read_stream_bin, read_stream_csv
 
 
 TRACE_STAGES = {
@@ -94,6 +94,9 @@ def read_trace_csv(path: Path) -> list[TraceRow]:
 def load_trace_rows(
     paths: list[Path],
     stream_paths: list[Path] | None = None,
+    stream_bin_paths: list[Path] | None = None,
+    last_bin_paths: list[Path] | None = None,
+    stream_word_bytes: int | None = None,
     group_bits: int = 16,
     trace_value_bits: int = 32,
     require_stream_final_last: bool = False,
@@ -106,6 +109,21 @@ def load_trace_rows(
         for path in stream_paths or []
         for row in read_stream_csv(path)
     ]
+    binary_paths = stream_bin_paths or []
+    last_paths = last_bin_paths or []
+    if last_paths and len(last_paths) != len(binary_paths):
+        raise ValueError("--last-bin count must be zero or match --stream-bin count")
+    packed_bits = 8 + group_bits + 32 + trace_value_bits
+    binary_word_bytes = stream_word_bytes or ((packed_bits + 7) // 8)
+    for index, path in enumerate(binary_paths):
+        last_bin = last_paths[index] if last_paths else None
+        stream_inputs.extend(
+            read_stream_bin(
+                path,
+                word_bytes=binary_word_bytes,
+                last_bin=last_bin,
+            )
+        )
     if stream_inputs:
         for stream_row in decode_stream_rows(
             stream_inputs,
@@ -208,6 +226,25 @@ def main() -> int:
         default=[],
         help="packed AXI-stream trace CSV input with data,last or tdata,tlast columns; may be repeated",
     )
+    parser.add_argument(
+        "--stream-bin",
+        type=Path,
+        action="append",
+        default=[],
+        help="little-endian packed AXI-stream trace binary input; may be repeated",
+    )
+    parser.add_argument(
+        "--last-bin",
+        type=Path,
+        action="append",
+        default=[],
+        help="optional one-byte-per-word TLAST sidecar for each --stream-bin",
+    )
+    parser.add_argument(
+        "--stream-word-bytes",
+        type=int,
+        help="bytes per binary stream word; defaults to packed StageTrace width rounded up",
+    )
     parser.add_argument("--group-bits", type=int, default=16, help="packed stream StageTrace group width")
     parser.add_argument("--trace-value-bits", type=int, default=32, help="packed stream StageTrace value width")
     parser.add_argument(
@@ -227,13 +264,16 @@ def main() -> int:
     parser.add_argument("--height", type=int, help="image height for AC strategy grid")
     args = parser.parse_args()
 
-    if not args.trace_csv and not args.stream_csv:
-        raise SystemExit("at least one --trace-csv or --stream-csv input is required")
+    if not args.trace_csv and not args.stream_csv and not args.stream_bin:
+        raise SystemExit("at least one --trace-csv, --stream-csv, or --stream-bin input is required")
 
     rows = load_trace_rows(
-        args.trace_csv,
-        stream_paths=args.stream_csv,
-        group_bits=args.group_bits,
+            args.trace_csv,
+            stream_paths=args.stream_csv,
+            stream_bin_paths=args.stream_bin,
+            last_bin_paths=args.last_bin,
+            stream_word_bytes=args.stream_word_bytes,
+            group_bits=args.group_bits,
         trace_value_bits=args.trace_value_bits,
         require_stream_final_last=args.require_stream_final_last,
     )

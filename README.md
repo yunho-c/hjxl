@@ -111,6 +111,11 @@ AXI4-Stream data path.
 `HjxlPreparedDctAxiLiteStreamCore` applies the same control-plane shape to the
 prepared-DCT quantize-to-token stream path, which is currently the strongest
 RTL-to-codestream parity boundary.
+`HjxlKv260PreparedDctTop` wraps that prepared-DCT AXI-Lite stream core with
+flat Vivado-style `ap_clk`/`ap_rst_n`, `s_axi_control_*`, `s_axis_input_*`, and
+`m_axis_trace_*` ports for the current KV260-oriented top-level shape. Its
+trace output is padded to a 128-bit AXIS bus by default, with `m_axis_trace_tkeep`
+marking the low 11 bytes that carry the packed trace word.
 
 ## Requirements
 
@@ -181,6 +186,7 @@ sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantize'
 sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'
 sbt 'runMain hjxl.ElaboratePreparedDctAxiStream'
 sbt 'runMain hjxl.ElaboratePreparedDctAxiLiteStream'
+sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'
 sbt 'runMain hjxl.ElaboratePreparedDcTokens'
 sbt 'runMain hjxl.ElaboratePreparedAcMetadataTokens'
 sbt 'runMain hjxl.ElaboratePreparedAcTokens'
@@ -303,6 +309,48 @@ Validation checks manifest format, stream word count, final-only TLAST, stream
 CSV columns, AXI-Lite CSV columns, full-byte strobes, and register values
 against the manifest's config block.
 
+Generate a small C header from either RGB or prepared-DCT stream/control
+manifest for host-driver stubs:
+
+```sh
+python3 tools/hjxl_manifest_header.py \
+  --manifest-json build-codex/fixtures/gradient-17x9-rgb-manifest.json \
+  --header build-codex/fixtures/gradient-17x9-rgb-bundle.h \
+  --symbol-prefix HJXL_RGB_BUNDLE
+```
+
+The header contains the manifest format, stream word count, input data width,
+stream word/byte counts, register offsets, status/control bit positions, and an
+ordered `address,data,strb` write table derived from the manifest's AXI-Lite
+config.
+Generate replayable stream payload bytes from the same manifest:
+
+```sh
+python3 tools/hjxl_stream_buffer.py \
+  --manifest-json build-codex/fixtures/gradient-17x9-rgb-manifest.json \
+  --stream-bin build-codex/fixtures/gradient-17x9-rgb-stream.bin \
+  --last-bin build-codex/fixtures/gradient-17x9-rgb-last.bin
+```
+
+`--stream-bin` packs each CSV `data` word little-endian using the manifest's
+input stream width. `--last-bin` is an optional one-byte-per-word TLAST sidecar
+for software replay and diagnostics; DMA paths that derive TLAST from transfer
+length can ignore it.
+For the normal host handoff, generate the header, stream payload, TLAST sidecar,
+and an artifact index in one step:
+
+```sh
+python3 tools/hjxl_host_bundle.py \
+  --manifest-json build-codex/fixtures/gradient-17x9-rgb-manifest.json \
+  --output-dir build-codex/fixtures/gradient-17x9-rgb-host \
+  --name gradient-17x9-rgb \
+  --symbol-prefix HJXL_RGB_BUNDLE
+```
+
+The resulting `*-bundle.json` records the manifest format, generated file
+paths, stream word count, input stream byte width, and symbol prefix so host
+scripts do not need to rediscover the bundle layout.
+
 `HjxlAxiLiteStreamCore` exposes the same input/output streams, but drives
 `FrameConfig` through 32-bit AXI-Lite registers:
 
@@ -333,10 +381,25 @@ python3 tools/hjxl_stream_trace.py \
 The input CSV may use `data,last` or `tdata,tlast` columns. `--require-final-last`
 is appropriate for single-frame captures from all current `HjxlAxiStreamCore`
 routes, including focused full AC-token traces.
+For DMA-style captures, replace `--stream-csv` with a little-endian binary
+TDATA buffer and optional TLAST sidecar:
+
+```sh
+python3 tools/hjxl_stream_trace.py \
+  --stream-bin build-codex/traces/gradient-17x9-trace.bin \
+  --last-bin build-codex/traces/gradient-17x9-trace-last.bin \
+  --trace-csv build-codex/traces/gradient-17x9-stage-trace.csv \
+  --require-final-last
+```
+
+The default binary trace word size is the packed `StageTrace` width rounded up
+to bytes: 11 bytes for the default 88-bit trace stream. Use
+`--stream-word-bytes` if a wrapper pads TDATA to a wider DMA bus; use
+`--stream-word-bytes 16` for default `HjxlKv260PreparedDctTop` trace captures.
 `tools/hjxl_trace_tokens.py` and `tools/hjxl_trace_to_codestream.py` also accept
-the same packed stream captures directly with repeated `--stream-csv` inputs and
-the same `--group-bits`, `--trace-value-bits`, and
-`--require-stream-final-last` options.
+packed stream captures directly with repeated `--stream-csv` or `--stream-bin`
+inputs and the same `--group-bits`, `--trace-value-bits`,
+`--stream-word-bytes`, and `--require-stream-final-last` options.
 
 Assemble frame and bare codestream bytes directly from a token `StageTrace`
 CSV dump:
@@ -384,6 +447,8 @@ python3 tools/hjxl_prepared_blocks.py \
   --prepared-json build-codex/fixtures/gradient-17x9-dct-only-prepared-blocks.json \
   --input-csv build-codex/fixtures/gradient-17x9-prepared-blocks.csv \
   --input-stream-csv build-codex/fixtures/gradient-17x9-prepared-blocks-stream.csv \
+  --axi-lite-csv build-codex/fixtures/gradient-17x9-prepared-blocks-control.csv \
+  --manifest-json build-codex/fixtures/gradient-17x9-prepared-blocks-manifest.json \
   --expected-trace-csv build-codex/fixtures/gradient-17x9-prepared-quantize-trace.csv
 ```
 
@@ -400,7 +465,29 @@ trace stream format as `HjxlAxiStreamCore` and maps the direct wrapper's
 `traceLast` sideband to TLAST.
 `tools/hjxl_prepared_blocks.py --input-stream-csv ...` emits this `data,last`
 CSV directly from the prepared-block JSON oracle, which is the intended host
-fixture path for stream-shell simulation and DMA bring-up.
+fixture path for stream-shell simulation and DMA bring-up. With
+`--axi-lite-csv`, the same tool emits shared-register-map `address,data,strb`
+writes. It derives `xsize`/`ysize` from the prepared JSON, defaulting to the
+prepared-DCT token route (`flags = 526`) used by
+`HjxlPreparedDctAxiLiteStreamCore`. With `--manifest-json`, it records the
+source fixture, image/block grid, stream layout, generated artifact paths,
+register map, status/control bits, and selected config values.
+
+Validate an existing prepared-DCT stream/control bundle before replay:
+
+```sh
+python3 tools/hjxl_prepared_blocks.py \
+  --validate-manifest build-codex/fixtures/gradient-17x9-prepared-blocks-manifest.json
+```
+
+Validation checks manifest format, stream word count, block count, final-only
+TLAST, stream CSV columns, AXI-Lite CSV columns, full-byte strobes, register
+values, and source prepared-JSON metadata when the source file is present.
+Use `tools/hjxl_manifest_header.py` on the same prepared-DCT manifest to emit
+host constants and the ordered control-write table for the current
+`HjxlKv260PreparedDctTop` control plane. Use `tools/hjxl_stream_buffer.py` on
+that manifest to emit the 32-bit little-endian prepared-block stream payload
+and optional TLAST sidecar.
 `HjxlPreparedDctAxiStreamCoreSpec` drives that generated stream into RTL and
 checks that the resulting packed token trace stream assembles to the same frame
 and bare codestream bytes as libjxl-tiny's direct DCT-only path.
@@ -409,8 +496,17 @@ same 32-bit AXI-Lite register map as `HjxlAxiLiteStreamCore`; `xsize`, `ysize`,
 and status/control are consumed directly for framing, busy/overflow visibility,
 and protocol-error clearing, while the rest of `FrameConfig` is kept on the
 common control surface for future prepared-path experiments. Its
-spec programs `xsize`/`ysize` through AXI-Lite, drives the same prepared-block
-stream CSV, and checks assembled bytes against libjxl-tiny.
+spec programs the DUT from the generated AXI-Lite CSV, drives the same
+prepared-block stream CSV, validates the manifest, and checks assembled bytes
+against libjxl-tiny.
+`HjxlKv260PreparedDctTop` is a thin Vivado-facing wrapper around this controlled
+prepared-DCT core. It uses an active-low `ap_rst_n`, exposes conventional
+`s_axi_control_*` AXI-Lite ports, `s_axis_input_*` prepared-block input stream
+ports, 128-bit `m_axis_trace_*` trace output stream ports with `tkeep` marking
+the valid low 11 bytes, plus `busy`, `overflow`, and `protocol_error` status
+pins. Generate it with
+`sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'`; the output directory is
+`generated-kv260-prepared-dct-top/`.
 
 Convert quantization `StageTrace` CSV dumps into the prepared-token simulator
 CSVs consumed by `FramePreparedTokenTraceStage`:

@@ -48,9 +48,12 @@ def _compare_bytes(label: str, expected_path: Path, actual: bytes) -> list[str]:
 def assemble_trace(
     trace_csv: list[Path],
     stream_csv: list[Path],
+    stream_bin: list[Path],
+    last_bin: list[Path],
     width: int,
     height: int,
     distance: float,
+    stream_word_bytes: int | None = None,
     group_bits: int = 16,
     trace_value_bits: int = 32,
     require_stream_final_last: bool = False,
@@ -59,6 +62,9 @@ def assemble_trace(
     rows = load_trace_rows(
         trace_csv,
         stream_paths=stream_csv,
+        stream_bin_paths=stream_bin,
+        last_bin_paths=last_bin,
+        stream_word_bytes=stream_word_bytes,
         group_bits=group_bits,
         trace_value_bits=trace_value_bits,
         require_stream_final_last=require_stream_final_last,
@@ -104,6 +110,25 @@ def main() -> int:
         default=[],
         help="packed AXI-stream trace CSV input with data,last or tdata,tlast columns; may be repeated",
     )
+    parser.add_argument(
+        "--stream-bin",
+        type=Path,
+        action="append",
+        default=[],
+        help="little-endian packed AXI-stream trace binary input; may be repeated",
+    )
+    parser.add_argument(
+        "--last-bin",
+        type=Path,
+        action="append",
+        default=[],
+        help="optional one-byte-per-word TLAST sidecar for each --stream-bin",
+    )
+    parser.add_argument(
+        "--stream-word-bytes",
+        type=int,
+        help="bytes per binary stream word; defaults to packed StageTrace width rounded up",
+    )
     parser.add_argument("--group-bits", type=int, default=16, help="packed stream StageTrace group width")
     parser.add_argument("--trace-value-bits", type=int, default=32, help="packed stream StageTrace value width")
     parser.add_argument(
@@ -138,8 +163,8 @@ def main() -> int:
         raise SystemExit("--height must be positive")
     if args.distance <= 0.0:
         raise SystemExit("--distance must be positive")
-    if not args.trace_csv and not args.stream_csv:
-        raise SystemExit("at least one --trace-csv or --stream-csv input is required")
+    if not args.trace_csv and not args.stream_csv and not args.stream_bin:
+        raise SystemExit("at least one --trace-csv, --stream-csv, or --stream-bin input is required")
     if (
         args.frame_bin is None
         and args.codestream_bin is None
@@ -156,9 +181,12 @@ def main() -> int:
         dc_tokens, ac_metadata_tokens, ac_tokens, ac_strategy, frame, codestream = assemble_trace(
             args.trace_csv,
             args.stream_csv,
+            args.stream_bin,
+            args.last_bin,
             args.width,
             args.height,
             args.distance,
+            stream_word_bytes=args.stream_word_bytes,
             group_bits=args.group_bits,
             trace_value_bits=args.trace_value_bits,
             require_stream_final_last=args.require_stream_final_last,

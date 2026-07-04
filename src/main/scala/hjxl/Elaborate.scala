@@ -148,6 +148,18 @@ object ElaboratePreparedDctAxiLiteStream extends App {
   )
 }
 
+object ElaborateKv260PreparedDctTop extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlKv260PreparedDctTop(),
+    args = Array("--target-dir", "generated-kv260-prepared-dct-top"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaboratePreparedAcMetadataTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedAcMetadataTokenTraceStage(),

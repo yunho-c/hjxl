@@ -61,6 +61,12 @@ Use a hardware/software split:
   the same AXI-Lite register map used by `HjxlAxiLiteStreamCore`. Prefer it for
   KV260-style integration experiments when the host can already supply prepared
   DCT blocks.
+- `HjxlKv260PreparedDctTop` is the current Vivado-facing wrapper around
+  `HjxlPreparedDctAxiLiteStreamCore`. It exposes flat `ap_clk`/`ap_rst_n`,
+  `s_axi_control_*`, `s_axis_input_*`, and 128-bit `m_axis_trace_*` ports plus
+  `busy`, `overflow`, and `protocol_error` pins, while preserving the tested
+  prepared stream/control core internally. `m_axis_trace_tkeep` marks the low
+  11 bytes that carry the packed trace word.
 - Keep stage outputs traceable against libjxl-tiny names and array shapes.
 
 Use stage-tolerant accuracy:
@@ -314,8 +320,20 @@ Read these libjxl-tiny files before making architectural changes:
   shell against the structured direct wrapper and checks generated ports.
   Use `tools/hjxl_prepared_blocks.py --input-stream-csv ...` to generate the
   matching `data,last` stream CSV from prepared-block JSON fixtures; keep that
-  tool's layout in lockstep with `HjxlPreparedDctAxiStreamCore`. The same spec
-  also proves the stream path through `tools/hjxl_trace_to_codestream.py` by
+  tool's layout in lockstep with `HjxlPreparedDctAxiStreamCore`. Add
+  `--axi-lite-csv` to emit shared-register-map `address,data,strb` writes and
+  `--manifest-json` to record the source fixture, image/block grid, stream
+  layout, register map, status/control bits, generated paths, and selected
+  config values. The prepared-control default is the direct prepared-DCT token
+  path (`flags = 526`). Use
+  `tools/hjxl_prepared_blocks.py --validate-manifest ...` before replaying a
+  saved prepared-DCT bundle; it checks word count, block count, final-only
+  TLAST, CSV columns, AXI-Lite strobes/register values, and source prepared JSON
+  metadata when present. Use `tools/hjxl_manifest_header.py --manifest-json ...
+  --header ...` to emit C register constants and an ordered AXI-Lite control
+  write table from RGB or prepared-DCT manifests before building host-driver
+  stubs. The same spec also proves the stream path through
+  `tools/hjxl_trace_to_codestream.py` by
   comparing assembled frame/codestream bytes against libjxl-tiny's direct
   DCT-only output.
 - Use `sbt 'runMain hjxl.ElaboratePreparedDctAxiLiteStream'` to generate the
@@ -325,8 +343,16 @@ Read these libjxl-tiny files before making architectural changes:
   status/control are active today, while the remaining `FrameConfig` registers
   preserve a common host control surface. `HjxlPreparedDctAxiLiteStreamCoreSpec`
   covers register access, AXI-Lite programmed frame sizing, protocol-error
-  clearing, generated ports, and a libjxl-tiny prepared-block stream to
-  codestream byte comparison through the host assembler.
+  clearing, generated ports, generated control-CSV replay, manifest validation,
+  and a libjxl-tiny prepared-block stream to codestream byte comparison through
+  the host assembler.
+- Use `sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'` to generate the current
+  Vivado/KV260-oriented wrapper. It writes
+  `generated-kv260-prepared-dct-top/`; keep it out of git. This is a thin
+  `RawModule` wrapper around `HjxlPreparedDctAxiLiteStreamCore` with flat
+  AXI-style port names, active-low reset, and a 128-bit padded trace output
+  with TKEEP. `HjxlKv260PreparedDctTopElaborationSpec` guards that generated
+  port surface.
 - `PreparedDctElaborationSpec` is the focused FIRTool/SystemVerilog emission
   regression for the prepared-DCT quantization and direct quantize-to-token
   standalone tops. It also checks the structured prepared-block input and trace
@@ -377,11 +403,30 @@ Read these libjxl-tiny files before making architectural changes:
   results. The converter still accepts legacy `coefficients_q12`, but new
   fixtures should use the explicit fraction-bit field.
 - `tools/hjxl_prepared_blocks.py --prepared-json ... --input-csv ...
-  --expected-trace-csv ...` converts prepared-block JSON fixtures into simulator
-  input rows for `FramePreparedDctOnlyQuantizeTraceStage` plus expected
-  quantization trace rows. It validates raster block order, three X/Y/B
-  coefficient channels, scalar input fields, expected output shapes, and
-  declared nonzero counts against expected coefficient data.
+  --input-stream-csv ... --axi-lite-csv ... --manifest-json ...
+  --expected-trace-csv ...` converts prepared-block JSON fixtures into
+  simulator input rows for `FramePreparedDctOnlyQuantizeTraceStage`, packed
+  prepared-DCT stream input rows, shared AXI-Lite control writes, a replay
+  manifest, and expected quantization trace rows. It validates raster block
+  order, three X/Y/B coefficient channels, scalar input fields, expected output
+  shapes, and declared nonzero counts against expected coefficient data. The
+  `--validate-manifest` mode checks saved prepared-DCT stream/control bundles
+  before replay.
+- `tools/hjxl_manifest_header.py --manifest-json ... --header ...` consumes
+  RGB or prepared-DCT stream/control manifests and writes a C header containing
+  stream word count, input data width, stream byte counts, AXI-Lite register
+  offsets, status bits, and the ordered config-write table. Keep it
+  manifest-driven so host code does not duplicate register constants by hand.
+- `tools/hjxl_stream_buffer.py --manifest-json ... --stream-bin ...
+  --last-bin ...` consumes RGB or prepared-DCT manifests and writes
+  little-endian stream payload bytes plus an optional one-byte-per-word TLAST
+  sidecar. Use it for deterministic host/DMA replay fixtures instead of parsing
+  CSVs inside host code.
+- `tools/hjxl_host_bundle.py --manifest-json ... --output-dir ... --name ...`
+  is the preferred one-shot handoff command. It writes the C header, stream
+  payload, optional TLAST sidecar, and a `*-bundle.json` artifact index from the
+  same manifest. Use the lower-level header/buffer tools only when tests need
+  to check one artifact in isolation.
 - `tools/hjxl_quant_trace_to_prepared_tokens.py --trace-csv ... --width ...
   --height ... --dc-csv ... --ac-csv ...` converts quantization traces into the
   prepared-token simulator CSVs. It requires complete `QuantDc`,
@@ -430,11 +475,16 @@ Read these libjxl-tiny files before making architectural changes:
   the raster block ordinal and require image width/height for reshaping.
 - `tools/hjxl_stream_trace.py --stream-csv ... --trace-csv ...` decodes packed
   `HjxlAxiStreamCore` trace captures with `data,last` or `tdata,tlast` columns
-  back into `StageTrace` CSV. Use `--require-final-last` for single-frame
-  captures from all current routes, including focused full AC-token captures.
+  back into `StageTrace` CSV. It also accepts little-endian binary TDATA
+  captures with `--stream-bin ... --last-bin ...`; the default binary word size
+  is the packed trace width rounded up to bytes (11 bytes today), and
+  `--stream-word-bytes` handles wider padded DMA buses. Use
+  `--stream-word-bytes 16` for default `HjxlKv260PreparedDctTop` captures. Use
+  `--require-final-last` for single-frame captures from all current routes,
+  including focused full AC-token captures.
   `StreamTraceToolSpec` covers this helper, its handoff into
-  `tools/hjxl_trace_tokens.py`, direct `--stream-csv` token extraction, and the
-  `tools/hjxl_trace_to_codestream.py --stream-csv` path.
+  `tools/hjxl_trace_tokens.py`, direct `--stream-csv` and `--stream-bin` token
+  extraction, and the `tools/hjxl_trace_to_codestream.py` packed-stream paths.
 - `tools/hjxl_rgb_stream.py --pfm ... --stream-csv ...` converts RGB PFM files
   into the raster `data,last` input stream expected by `HjxlAxiStreamCore` and
   `HjxlAxiLiteStreamCore`. It restores top-to-bottom PFM row order, quantizes
@@ -445,7 +495,10 @@ Read these libjxl-tiny files before making architectural changes:
   With `--manifest-json`, it records source/image metadata, stream packing,
   generated artifact paths, the AXI-Lite register map, status/control bits, and
   config values. Keep this helper aligned with `RgbToXybApprox.InputFractionBits`,
-  the stream wrapper's component packing, and `HjxlAxiLiteRegister`.
+  the stream wrapper's component packing, and `HjxlAxiLiteRegister`. Use
+  `tools/hjxl_manifest_header.py` on generated manifests when a C host stub
+  needs the matching register constants and config-write table, and
+  `tools/hjxl_stream_buffer.py` when it needs replayable stream payload bytes.
   `HjxlAxiStreamCoreSpec` exercises the current path from PFM to RGB stream,
   RTL, and trace decoding, and `HjxlAxiLiteStreamCoreSpec` exercises the same
   path using the generated AXI-Lite CSV to configure the DUT; preserve those
