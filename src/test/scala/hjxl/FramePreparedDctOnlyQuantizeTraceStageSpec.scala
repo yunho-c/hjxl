@@ -177,9 +177,8 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
         observedStage mustBe trace.stage
         observedGroup mustBe trace.group
         observedIndex mustBe trace.index
-        val tolerance = if (trace.stage == TraceStage.NumNonzeros) 2 else 1
         withClue(s" value observed=$observedValue expected=${trace.value}") {
-          math.abs(observedValue - trace.value) must be <= tolerance
+          observedValue mustBe trace.value
         }
       }
       dut.clock.step()
@@ -541,6 +540,8 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     val acStrategy = temp.resolve("combined-ac-strategy.npy")
     val tokenFrame = temp.resolve("combined-frame.bin")
     val tokenCodestream = temp.resolve("combined.jxl")
+    val traceAssemblerFrame = temp.resolve("combined-trace-assembler-frame.bin")
+    val traceAssemblerCodestream = temp.resolve("combined-trace-assembler.jxl")
 
     runTool(
       Seq(
@@ -707,10 +708,18 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
       Seq(
         "python3",
         "tools/hjxl_compare_tokens.py",
+        "--expected-dc-tokens-npy",
+        oracleDcTokens.toString,
+        "--actual-dc-tokens-npy",
+        dcTokens.toString,
         "--expected-ac-metadata-tokens-npy",
         acMetadataNpy.toString,
         "--actual-ac-metadata-tokens-npy",
         acMetadataTokens.toString,
+        "--expected-ac-tokens-npy",
+        oracleAcTokens.toString,
+        "--actual-ac-tokens-npy",
+        acTokens.toString,
         "--expected-ac-strategy-npy",
         oracleAcStrategy.toString,
         "--actual-ac-strategy-npy",
@@ -744,9 +753,29 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     )
     val frameBytes = Files.readAllBytes(tokenFrame).toSeq
     val codestreamBytes = Files.readAllBytes(tokenCodestream).toSeq
-    frameBytes.length must be > 0
-    codestreamBytes.length must be > frameBytes.length
+    frameBytes mustBe Files.readAllBytes(directDctOnlyFrame).toSeq
+    codestreamBytes mustBe Files.readAllBytes(directDctOnlyCodestream).toSeq
     codestreamBytes.take(2) mustBe Seq(0xff.toByte, 0x0a.toByte)
+
+    runTool(
+      Seq(
+        "python3",
+        "tools/hjxl_trace_to_codestream.py",
+        "--trace-csv",
+        combinedTraceCsv.toString,
+        "--width",
+        width.toString,
+        "--height",
+        height.toString,
+        "--frame-bin",
+        traceAssemblerFrame.toString,
+        "--codestream-bin",
+        traceAssemblerCodestream.toString
+      ),
+      "LIBJXL_TINY" -> libjxlTinyRoot.toString
+    )
+    Files.readAllBytes(traceAssemblerFrame).toSeq mustBe Files.readAllBytes(directDctOnlyFrame).toSeq
+    Files.readAllBytes(traceAssemblerCodestream).toSeq mustBe Files.readAllBytes(directDctOnlyCodestream).toSeq
   }
 
   "FramePreparedDctOnlyQuantizeTokenTraceStage holds trace bits under output backpressure" in {

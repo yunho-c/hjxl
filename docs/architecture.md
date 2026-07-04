@@ -138,9 +138,12 @@ AXI wrappers.
 - `FramePreparedDctOnlyQuantizeTraceStage` schedules complete prepared
   DCT-only X/Y/B blocks in raster order through `DctOnlyQuantizeTraceStage`.
   Its input boundary is the structured prepared-block data exported by
-  `tools/hjxl_reference.py --dct-only-prepared-blocks-json`; its output
-  boundary is frame-shaped `QuantizedAc`, `QuantDc`, and `NumNonzeros` trace
-  records with `trace.group` equal to the raster block ordinal.
+  `tools/hjxl_reference.py --dct-only-prepared-blocks-json`. This boundary uses
+  Q16 DCT coefficients by default (`HjxlConfig.preparedDctCoefficientFractionBits`)
+  so prepared CFL residual subtraction and quantization can match libjxl-tiny's
+  floating reference fixture exactly. Its output boundary is frame-shaped
+  `QuantizedAc`, `QuantDc`, and `NumNonzeros` trace records with `trace.group`
+  equal to the raster block ordinal.
 - `FramePreparedDctOnlyQuantizeTokenTraceStage` is the first direct RTL bridge
   from prepared DCT-only block inputs to fixed all-DCT logical token traces. It
   runs `DctOnlyQuantizeBlock`, buffers quantized DC/AC/nonzero frame state, and
@@ -227,13 +230,16 @@ AXI wrappers.
   computes the same fixed DCT-only quantized block data as
   `FrameDctOnlyQuantizeTraceStage`, predicts nonzero counts from west/north
   block history, then emits each block's full Y/X/B AC token stream through
-  `DctOnlyAcBlockTokenTraceStage`. It is kept out of `HjxlCore` because even
-  route-specific Verilator top-level compilation is impractical while this
-  scheduler is still large and trace-only.
+  `DctOnlyAcBlockTokenTraceStage`. It is kept out of default `HjxlCore`
+  all-route elaboration because this scheduler is still large and trace-only,
+  but it is available through the normal core IO when `HjxlCore` is elaborated
+  with `traceRoute = TraceStage.AcTokens`.
 - `HjxlAcTokenCore` is a compile-time top wrapper around
   `FrameDctOnlyAcTokenTraceStage`. Use `sbt 'runMain hjxl.ElaborateAcTokens'`
-  when SystemVerilog for the full AC-token path is needed without instantiating
-  every other trace path in `HjxlCore`.
+  when SystemVerilog for the full AC-token path is needed as a dedicated top;
+  use `new HjxlCore(traceRoute = TraceStage.AcTokens)` when the core IO shell is
+  useful for focused simulation or integration. `HjxlCoreRouteElaborationSpec`
+  guards that split so the default all-route shell stays smaller.
 - `ElaboratePreparedDctOnlyQuantize` generates standalone SystemVerilog for the
   prepared-DCT quantization scheduler. Use it when the integration boundary is
   after DCT/AQ/CFL scalar generation but before quantized DC/AC tokenization.
@@ -289,17 +295,15 @@ AXI wrappers.
   the all-8x8-DCT path with real adaptive quantization and CFL maps.
 - `tools/hjxl_reference.py --dct-only-prepared-blocks-json ...` writes a
   structured per-block oracle for the prepared `DctOnlyQuantizeBlock` boundary:
-  Q12 coefficients, raw quant, AC/DC scale reciprocals, CFL scalars, and
-  libjxl-tiny's expected quantized AC/DC/nonzero outputs. The expected outputs
-  come from libjxl-tiny's floating reference path, so comparisons against RTL
-  should account for the current fixed-point Q12 coefficient input tolerance
-  until frame-level fixed-point staging is locked down.
+  Q16 coefficients, raw quant, AC/DC scale reciprocals, CFL scalars, and
+  libjxl-tiny's expected quantized AC/DC/nonzero outputs. The converter accepts
+  legacy Q12 fixtures, but current generated fixtures use
+  `inputs.coefficient_fraction_bits = 16` and `inputs.coefficients_q`.
 - `tools/hjxl_reference.py --dct-only-frame-bin ...` and
   `--dct-only-codestream-bin ...` serialize the adaptive all-DCT logical tokens
   through libjxl-tiny's entropy optimizer and bitstream writer. Use these as
   the byte oracle once RTL token streams have been compared against the
-  adaptive all-DCT token arrays; do not expect exact byte parity from the
-  current rounded-Q12 quantizer until the token streams are exact.
+  adaptive all-DCT token arrays.
 - `tools/hjxl_prepared_blocks.py --prepared-json ... --input-csv ...
   --expected-trace-csv ...` converts those prepared-block fixtures into
   simulator input rows and expected quantization trace rows. The converter
@@ -354,6 +358,14 @@ AXI wrappers.
   token ordinal and output rows are `(context, value)`. For `AcStrategy`, the
   trace `index` is the raster block ordinal and the tool reshapes it with the
   supplied image width and height.
+- `tools/hjxl_trace_to_codestream.py --trace-csv ... --width ... --height ...
+  --frame-bin ... --codestream-bin ...` is the direct host assembler for RTL
+  token traces. It performs the same token extraction as `hjxl_trace_tokens.py`,
+  then uses libjxl-tiny's entropy optimizer and bitstream writer to serialize a
+  frame and bare codestream from those logical tokens. `--expect-frame-bin` and
+  `--expect-codestream-bin` make it a byte-parity checker for RTL bring-up.
+  `TraceToCodestreamToolSpec` covers multi-file trace input, expected-byte
+  mismatch diagnostics, and malformed trace rejection for this CLI.
 - `tools/hjxl_compare_tokens.py` compares converted token arrays against oracle
   arrays. It is exact by default for stream length, contexts, values, and AC
   strategy grid entries; use its value-delta mode only as a diagnostic while
@@ -365,24 +377,27 @@ AXI wrappers.
   input CSVs from `tools/hjxl_prepared_token_inputs.py`, RTL traces from
   `FramePreparedTokenTraceStage`, token arrays from `tools/hjxl_trace_tokens.py`,
   and final frame/codestream bytes from the host assembler path in
-  `tools/hjxl_reference.py`. This proves the prepared-token software boundary,
-  not full RGB-input token parity: `FrameDctOnlyDcTokenTraceStage` and
-  `FrameDctOnlyAcTokenTraceStage` still use the approximate fixed-point
-  RGB/XYB/DCT path.
+  `tools/hjxl_reference.py`. It also checks `tools/hjxl_trace_to_codestream.py`
+  against the same extracted token arrays and byte oracle. This proves the
+  prepared-token software boundary, not full RGB-input token parity:
+  `FrameDctOnlyDcTokenTraceStage` and `FrameDctOnlyAcTokenTraceStage` still use
+  the approximate fixed-point RGB/XYB/DCT path.
 - `FramePreparedDctOnlyQuantizeTraceStageSpec` covers the prepared-DCT
   quantization scheduler against libjxl-tiny prepared-block fixtures. It keeps
-  stage/group/index ordering exact and allows small value tolerances caused by
-  the current rounded-Q12 coefficient input boundary, then verifies the observed
-  RTL quantization trace can be projected into prepared-token DC/AC CSV inputs
-  without changing the trace data and can drive `FramePreparedTokenTraceStage`
-  through complete DC, strategy, metadata, and AC token trace emission. It also
-  checks `FramePreparedDctOnlyQuantizeTokenTraceStage` against that staged
-  handoff for DC/AC token trace streams while checking prepared raw-quant/CFL
-  metadata tokens against libjxl-tiny's `ac_metadata_tokens` oracle. The same
-  regression converts the direct wrapper's token `StageTrace` output through
-  `tools/hjxl_trace_tokens.py`, uses `tools/hjxl_compare_tokens.py` for exact
-  metadata/strategy token-array comparison, and verifies the host assembler can
-  produce frame bytes plus a bare JPEG XL codestream from those RTL tokens.
+  stage/group/index/value comparison exact at the Q16 prepared-coefficient
+  boundary, then verifies the observed RTL quantization trace can be projected
+  into prepared-token DC/AC CSV inputs without changing the trace data and can
+  drive `FramePreparedTokenTraceStage` through complete DC, strategy, metadata,
+  and AC token trace emission. It also checks
+  `FramePreparedDctOnlyQuantizeTokenTraceStage` against that staged handoff and
+  against libjxl-tiny token-array oracles for DC, AC-metadata, AC, and strategy
+  streams. The same regression converts the direct wrapper's token `StageTrace`
+  output through `tools/hjxl_trace_tokens.py`, uses
+  `tools/hjxl_compare_tokens.py` for exact token-array comparison, and verifies
+  the host assembler output matches the direct libjxl-tiny DCT-only frame and
+  codestream bytes. It also feeds the direct wrapper `StageTrace` CSV through
+  `tools/hjxl_trace_to_codestream.py` and checks those one-step bytes against
+  the same oracle.
 - `FramePreparedAcMetadataTokenTraceStageSpec` covers the standalone prepared
   AC-metadata scheduler with two-tile fixtures so CFL residual prediction and
   raw-quant residual contexts are tested outside the single-tile integrated

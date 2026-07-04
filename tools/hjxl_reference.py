@@ -439,6 +439,7 @@ def dct_only_prepared_blocks_from_python_port(image, distance: float):
         int(round(float(value) * float(params.scale_dc) * (1 << 16)))
         for value in K_INV_DC_QUANT
     ]
+    coefficient_fraction_bits = 16
 
     blocks = []
     for by in range(y_blocks):
@@ -456,7 +457,13 @@ def dct_only_prepared_blocks_from_python_port(image, distance: float):
                     "tile_x": tile_x,
                     "tile_y": tile_y,
                     "inputs": {
-                        "coefficients_q12": np.rint(block.raw_coefficients * np.float32(1 << 12)).astype(np.int32).tolist(),
+                        "coefficient_fraction_bits": coefficient_fraction_bits,
+                        "coefficients_q": np.rint(
+                            block.raw_coefficients
+                            * np.float32(1 << coefficient_fraction_bits)
+                        )
+                        .astype(np.int32)
+                        .tolist(),
                         "quant": quant,
                         "scale_q16": scale_q16,
                         "inv_qac_q16": inv_qac_q16,
@@ -481,6 +488,7 @@ def dct_only_prepared_blocks_from_python_port(image, distance: float):
             "x_blocks": int(x_blocks),
             "y_blocks": int(y_blocks),
         },
+        "coefficient_fraction_bits": coefficient_fraction_bits,
         "distance": float(distance),
         "distance_params": {
             "global_scale": int(params.global_scale),

@@ -29,7 +29,7 @@ class FramePreparedDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) exten
     val overflow = Output(Bool())
   })
 
-  val child = Module(new DctOnlyQuantizeTraceStage(c))
+  val child = Module(new DctOnlyQuantizeTraceStage(c, c.preparedDctCoefficientFractionBits))
   val idle :: active :: Nil = Enum(2)
   val state = RegInit(idle)
   val currentBlock = RegInit(0.U(blockCountBits.W))

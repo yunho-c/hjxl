@@ -7,10 +7,11 @@ import chisel3.util._
 
 /** Compile-time top wrapper for the fixed DCT-only full AC-token trace path.
   *
-  * `HjxlCore` intentionally remains a small runtime trace multiplexer. The full
-  * AC-token frame scheduler is heavy enough that placing it in that multiplexer
-  * makes unrelated top-level Verilator tests impractical. Use this wrapper when
-  * elaborating or integrating the full AC-token stream directly.
+  * The full AC-token frame scheduler is heavy enough that default `HjxlCore`
+  * elaboration keeps it out of the all-route runtime multiplexer. Use this
+  * wrapper when elaborating or integrating the full AC-token stream directly,
+  * or use `new HjxlCore(traceRoute = TraceStage.AcTokens)` for a focused core
+  * IO shell around the same route.
   */
 class HjxlAcTokenCore(c: HjxlConfig = HjxlConfig()) extends Module {
   val io = IO(new Bundle {

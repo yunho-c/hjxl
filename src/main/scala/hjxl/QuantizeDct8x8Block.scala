@@ -161,17 +161,22 @@ class DctOnlyQuantizeTraceInput(c: HjxlConfig) extends Bundle {
 
 /** Quantizes one DCT-only 8x8 block with libjxl-tiny's AC quantization rules.
   *
-  * Inputs are scaled DCT coefficients in Q12, `scaleQ16` is the distance-derived
-  * AC scale from libjxl-tiny's `compute_distance_params`, and `quant` is the
-  * block's adjusted raw quant field value. This primitive deliberately does not
-  * compute AQ, CFL, rectangular transforms, or DC planes; it is the reusable
-  * DCT-only AC quantization kernel those stages will feed.
+  * Inputs are scaled DCT coefficients using `coefficientFractionBits`
+  * fractional bits, `scaleQ16` is the distance-derived AC scale from
+  * libjxl-tiny's `compute_distance_params`, and `quant` is the block's adjusted
+  * raw quant field value. This primitive deliberately does not compute AQ, CFL,
+  * rectangular transforms, or DC planes; it is the reusable DCT-only AC
+  * quantization kernel those stages will feed.
   */
-class QuantizeDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Module {
+class QuantizeDct8x8Block(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Module {
+  require(coefficientFractionBits > 0, "coefficientFractionBits must be positive")
   private val blockDim = HjxlConstants.BlockDim
   private val blockSize = blockDim * blockDim
   private val productBits = 128
-  private val halfQ12 = 1 << (Dct8Approx.FractionBits - 1)
+  private val halfCoefficient = BigInt(1) << (coefficientFractionBits - 1)
   private val totalProductFractionBits =
     QuantizeDct8x8Block.ScaleFractionBits +
       QuantizeDct8x8Block.QmFractionBits
@@ -194,9 +199,16 @@ class QuantizeDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Module {
     (if (y >= blockDim / 2) 2 else 0) + (if (x >= blockDim / 2) 1 else 0)
   }
 
-  private def roundQ12(value: SInt): SInt = {
+  private def rescaleThreshold(valueQ12: Int): BigInt =
+    if (coefficientFractionBits >= Dct8Approx.FractionBits) {
+      BigInt(valueQ12) << (coefficientFractionBits - Dct8Approx.FractionBits)
+    } else {
+      BigInt(valueQ12) >> (Dct8Approx.FractionBits - coefficientFractionBits)
+    }
+
+  private def roundCoefficient(value: SInt): SInt = {
     val magnitude = Mux(value < 0.S, -value, value)
-    val roundedMagnitude = (magnitude + halfQ12.S) >> Dct8Approx.FractionBits
+    val roundedMagnitude = (magnitude + halfCoefficient.S) >> coefficientFractionBits
     Mux(value < 0.S, -roundedMagnitude, roundedMagnitude).asSInt
   }
 
@@ -225,14 +237,18 @@ class QuantizeDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Module {
         qmMultiplier.pad(productBits)
     val valueQ12 = (product >> totalProductFractionBits).asSInt
     val absValueQ12 = Mux(valueQ12 < 0.S, -valueQ12, valueQ12)
-    val threshold = MuxLookup(io.input.bits.channel, QuantizeDct8x8Block.ThresholdYQ12(thresholdIndex(i)).S)(
+    val threshold =
+      MuxLookup(
+        io.input.bits.channel,
+        rescaleThreshold(QuantizeDct8x8Block.ThresholdYQ12(thresholdIndex(i))).S
+      )(
       Seq(
-        0.U -> QuantizeDct8x8Block.ThresholdXQ12(thresholdIndex(i)).S,
-        1.U -> QuantizeDct8x8Block.ThresholdYQ12(thresholdIndex(i)).S,
-        2.U -> QuantizeDct8x8Block.ThresholdBQ12(thresholdIndex(i)).S
+        0.U -> rescaleThreshold(QuantizeDct8x8Block.ThresholdXQ12(thresholdIndex(i))).S,
+        1.U -> rescaleThreshold(QuantizeDct8x8Block.ThresholdYQ12(thresholdIndex(i))).S,
+        2.U -> rescaleThreshold(QuantizeDct8x8Block.ThresholdBQ12(thresholdIndex(i))).S
       )
     )
-    Mux(absValueQ12 >= threshold, roundQ12(valueQ12), 0.S)
+    Mux(absValueQ12 >= threshold, roundCoefficient(valueQ12), 0.S)
   }
 
   for (i <- 0 until blockSize) {
@@ -251,21 +267,25 @@ class QuantizeDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Module {
   * prediction from that reconstructed Y, so this is the next block primitive
   * needed after raw DCT-only coefficient quantization.
   */
-class QuantizeRoundtripYDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Module {
+class QuantizeRoundtripYDct8x8Block(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Module {
+  require(coefficientFractionBits > 0, "coefficientFractionBits must be positive")
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
   private val productBits = 128
   private val roundtripShift =
     QuantizeDct8x8Block.BiasFractionBits +
       QuantizeDct8x8Block.WeightFractionBits +
       QuantizeDct8x8Block.InvQacFractionBits -
-      Dct8Approx.FractionBits
+      coefficientFractionBits
 
   val io = IO(new Bundle {
     val input = Flipped(Decoupled(new DctYRoundtripInput(c)))
     val output = Decoupled(new DctYRoundtripOutput(c))
   })
 
-  val yQuantizer = Module(new QuantizeDct8x8Block(c))
+  val yQuantizer = Module(new QuantizeDct8x8Block(c, coefficientFractionBits))
   yQuantizer.io.input.valid := io.input.valid
   yQuantizer.io.input.bits.coefficients := io.input.bits.coefficients
   yQuantizer.io.input.bits.channel := 1.U
@@ -311,7 +331,11 @@ class QuantizeRoundtripYDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Module
   * `b - (1 + ytob / 84) * reconstructedY`. The residual is then quantized with
   * the same DCT-only AC quantizer as standalone X/B blocks.
   */
-class QuantizeChromaResidualDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Module {
+class QuantizeChromaResidualDct8x8Block(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Module {
+  require(coefficientFractionBits > 0, "coefficientFractionBits must be positive")
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
   private val productBits = 96
 
@@ -334,7 +358,7 @@ class QuantizeChromaResidualDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Mo
     Dct8Approx.fit(io.input.bits.coefficients(i) - predicted.asSInt, c.traceValueBits)
   }
 
-  val quantizer = Module(new QuantizeDct8x8Block(c))
+  val quantizer = Module(new QuantizeDct8x8Block(c, coefficientFractionBits))
   quantizer.io.input.valid := io.input.valid
   quantizer.io.input.bits.coefficients := VecInit(residual)
   quantizer.io.input.bits.channel := io.input.bits.channel
@@ -358,9 +382,15 @@ class QuantizeChromaResidualDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Mo
   * pass the CFL residual DC coefficient; B additionally subtracts half of the
   * already-quantized Y DC, matching libjxl-tiny's DC storage convention.
   */
-class QuantizeDcDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Module {
+class QuantizeDcDct8x8Block(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Module {
+  require(coefficientFractionBits > 0, "coefficientFractionBits must be positive")
   private val productBits = 128
-  private val half = BigInt(1) << (QuantizeDct8x8Block.DcProductFractionBits - 1)
+  private val dcProductFractionBits =
+    coefficientFractionBits + QuantizeDct8x8Block.DcFactorFractionBits
+  private val half = BigInt(1) << (dcProductFractionBits - 1)
 
   val io = IO(new Bundle {
     val input = Flipped(Decoupled(new DctQuantizeDcInput(c)))
@@ -370,7 +400,7 @@ class QuantizeDcDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Module {
   private def roundFixedToInt(value: SInt): SInt = {
     val magnitude = Mux(value < 0.S, -value, value)
     val roundedMagnitude =
-      (magnitude + half.S) >> QuantizeDct8x8Block.DcProductFractionBits
+      (magnitude + half.S) >> dcProductFractionBits
     Mux(value < 0.S, -roundedMagnitude, roundedMagnitude).asSInt
   }
 
@@ -379,7 +409,7 @@ class QuantizeDcDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Module {
     io.input.bits.dcCoefficient.pad(productBits) * invDcFactor.pad(productBits)
   private val bCorrection =
     (io.input.bits.quantizedYDc.pad(productBits) *
-      QuantizeDct8x8Block.BQuantDcFromYFactorQ16.S) << Dct8Approx.FractionBits
+      QuantizeDct8x8Block.BQuantDcFromYFactorQ16.S) << coefficientFractionBits
   private val correctedProduct =
     baseProduct - Mux(io.input.bits.channel === 2.U, bCorrection, 0.S(productBits.W))
 
@@ -394,7 +424,11 @@ class QuantizeDcDct8x8Block(c: HjxlConfig = HjxlConfig()) extends Module {
   * reconstruct Y, subtract reconstructed-Y CFL prediction from X/B, quantize
   * X/B residuals, and emit AC/DC/nonzero results for all three channels.
   */
-class DctOnlyQuantizeBlock(c: HjxlConfig = HjxlConfig()) extends Module {
+class DctOnlyQuantizeBlock(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Module {
+  require(coefficientFractionBits > 0, "coefficientFractionBits must be positive")
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
 
   val io = IO(new Bundle {
@@ -402,12 +436,12 @@ class DctOnlyQuantizeBlock(c: HjxlConfig = HjxlConfig()) extends Module {
     val output = Decoupled(new DctOnlyQuantizeBlockOutput(c))
   })
 
-  val yRoundtrip = Module(new QuantizeRoundtripYDct8x8Block(c))
-  val xResidual = Module(new QuantizeChromaResidualDct8x8Block(c))
-  val bResidual = Module(new QuantizeChromaResidualDct8x8Block(c))
-  val yDc = Module(new QuantizeDcDct8x8Block(c))
-  val xDc = Module(new QuantizeDcDct8x8Block(c))
-  val bDc = Module(new QuantizeDcDct8x8Block(c))
+  val yRoundtrip = Module(new QuantizeRoundtripYDct8x8Block(c, coefficientFractionBits))
+  val xResidual = Module(new QuantizeChromaResidualDct8x8Block(c, coefficientFractionBits))
+  val bResidual = Module(new QuantizeChromaResidualDct8x8Block(c, coefficientFractionBits))
+  val yDc = Module(new QuantizeDcDct8x8Block(c, coefficientFractionBits))
+  val xDc = Module(new QuantizeDcDct8x8Block(c, coefficientFractionBits))
+  val bDc = Module(new QuantizeDcDct8x8Block(c, coefficientFractionBits))
 
   yRoundtrip.io.input.valid := io.input.valid
   yRoundtrip.io.input.bits.coefficients := io.input.bits.coefficients(1)
@@ -478,7 +512,11 @@ class DctOnlyQuantizeBlock(c: HjxlConfig = HjxlConfig()) extends Module {
 }
 
 /** Trace wrapper for one prepared DCT-only quantized X/Y/B block. */
-class DctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class DctOnlyQuantizeTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Module {
+  require(coefficientFractionBits > 0, "coefficientFractionBits must be positive")
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
   private val acCount = 3 * blockSize
   private val dcCount = 3
@@ -491,7 +529,7 @@ class DctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
     val busy = Output(Bool())
   })
 
-  val quantizer = Module(new DctOnlyQuantizeBlock(c))
+  val quantizer = Module(new DctOnlyQuantizeBlock(c, coefficientFractionBits))
   val idle :: emitting :: Nil = Enum(2)
   val state = RegInit(idle)
   val emitIndex = RegInit(0.U(log2Ceil(outputCount + 1).W))
@@ -565,7 +603,11 @@ class DctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   * and the wrapper emits trace records in the same shape later frame stages
   * should use.
   */
-class DctQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class DctQuantizeTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Module {
+  require(coefficientFractionBits > 0, "coefficientFractionBits must be positive")
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
   private val outputCount = blockSize + 1
 
@@ -575,7 +617,7 @@ class DctQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
     val busy = Output(Bool())
   })
 
-  val quantizer = Module(new QuantizeDct8x8Block(c))
+  val quantizer = Module(new QuantizeDct8x8Block(c, coefficientFractionBits))
   val idle :: emitting :: Nil = Enum(2)
   val state = RegInit(idle)
   val emitIndex = RegInit(0.U(log2Ceil(outputCount + 1).W))

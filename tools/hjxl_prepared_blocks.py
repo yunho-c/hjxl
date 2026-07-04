@@ -31,6 +31,31 @@ def _int_matrix(values: object, *, path: Path, label: str) -> list[list[int]]:
     ]
 
 
+def _coefficients(inputs: dict, *, path: Path, block_index: int) -> tuple[int, list[list[int]]]:
+    if "coefficients_q" in inputs:
+        fraction_bits = int(inputs.get("coefficient_fraction_bits", 0))
+        if fraction_bits <= 0:
+            raise ValueError(
+                f"{path}: block {block_index} inputs.coefficient_fraction_bits must be positive"
+            )
+        return (
+            fraction_bits,
+            _int_matrix(
+                inputs.get("coefficients_q"),
+                path=path,
+                label=f"block {block_index} inputs.coefficients_q",
+            ),
+        )
+    return (
+        12,
+        _int_matrix(
+            inputs.get("coefficients_q12"),
+            path=path,
+            label=f"block {block_index} inputs.coefficients_q12",
+        ),
+    )
+
+
 def load_fixture(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         fixture = json.load(handle)
@@ -62,11 +87,13 @@ def validate_fixture(path: Path, fixture: dict) -> None:
         inputs = block.get("inputs", {})
         expected = block.get("expected", {})
 
-        coefficients = _int_matrix(
-            inputs.get("coefficients_q12"),
-            path=path,
-            label=f"block {block_index} inputs.coefficients_q12",
-        )
+        fraction_bits, coefficients = _coefficients(inputs, path=path, block_index=block_index)
+        declared_fraction_bits = int(fixture.get("coefficient_fraction_bits", fraction_bits))
+        if fraction_bits != declared_fraction_bits:
+            raise ValueError(
+                f"{path}: block {block_index} coefficient fraction bits {fraction_bits} "
+                f"does not match fixture {declared_fraction_bits}"
+            )
         quantized_ac = _int_matrix(
             expected.get("quantized_ac"),
             path=path,
@@ -133,7 +160,11 @@ def write_input_csv(path: Path, fixture: dict) -> None:
         )
         for block in fixture["blocks"]:
             inputs = block["inputs"]
-            coefficients = inputs["coefficients_q12"]
+            _, coefficients = _coefficients(
+                inputs,
+                path=path,
+                block_index=int(block["block_index"]),
+            )
             writer.writerow(
                 [
                     int(block["block_index"]),

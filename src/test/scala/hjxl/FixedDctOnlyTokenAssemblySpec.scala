@@ -162,6 +162,21 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
     }
   }
 
+  private def runTraceAssembler(args: Seq[String]): String = {
+    val output = scala.collection.mutable.ArrayBuffer.empty[String]
+    val logger = ProcessLogger(line => output += line, line => output += line)
+    val exitCode = Process(
+      Seq("python3", "tools/hjxl_trace_to_codestream.py") ++ args,
+      TestPaths.repoRoot.toFile,
+      "LIBJXL_TINY" -> libjxlTinyRoot.toString
+    ).!(logger)
+    val text = output.mkString("\n")
+    withClue(text) {
+      exitCode mustBe 0
+    }
+    text
+  }
+
   private def runPreparedInputConverter(args: Seq[String]): Unit = {
     val output = scala.collection.mutable.ArrayBuffer.empty[String]
     val logger = ProcessLogger(line => output += line, line => output += line)
@@ -227,6 +242,12 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
     val acStrategy = temp.resolve("rtl-ac-strategy.npy")
     val tokenFrame = temp.resolve("token-frame.bin")
     val tokenCodestream = temp.resolve("token.jxl")
+    val directToolDcTokens = temp.resolve("direct-tool-dc.npy")
+    val directToolAcMetadataTokens = temp.resolve("direct-tool-acmeta.npy")
+    val directToolAcTokens = temp.resolve("direct-tool-ac.npy")
+    val directToolAcStrategy = temp.resolve("direct-tool-ac-strategy.npy")
+    val directToolFrame = temp.resolve("direct-tool-frame.bin")
+    val directToolCodestream = temp.resolve("direct-tool.jxl")
     val directFrame = temp.resolve("direct-frame.bin")
     val directCodestream = temp.resolve("direct.jxl")
 
@@ -310,5 +331,35 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
 
     Files.readAllBytes(tokenFrame).toSeq mustBe Files.readAllBytes(directFrame).toSeq
     Files.readAllBytes(tokenCodestream).toSeq mustBe Files.readAllBytes(directCodestream).toSeq
+
+    val traceAssemblerOutput = runTraceAssembler(
+      Seq(
+        "--trace-csv",
+        traceCsv.toString,
+        "--width",
+        width.toString,
+        "--height",
+        height.toString,
+        "--dc-tokens-npy",
+        directToolDcTokens.toString,
+        "--ac-metadata-tokens-npy",
+        directToolAcMetadataTokens.toString,
+        "--ac-tokens-npy",
+        directToolAcTokens.toString,
+        "--ac-strategy-npy",
+        directToolAcStrategy.toString,
+        "--frame-bin",
+        directToolFrame.toString,
+        "--codestream-bin",
+        directToolCodestream.toString
+      )
+    )
+    traceAssemblerOutput must include("assembled trace:")
+    Files.readAllBytes(directToolDcTokens).toSeq mustBe Files.readAllBytes(dcTokens).toSeq
+    Files.readAllBytes(directToolAcMetadataTokens).toSeq mustBe Files.readAllBytes(acMetadataTokens).toSeq
+    Files.readAllBytes(directToolAcTokens).toSeq mustBe Files.readAllBytes(acTokens).toSeq
+    Files.readAllBytes(directToolAcStrategy).toSeq mustBe Files.readAllBytes(acStrategy).toSeq
+    Files.readAllBytes(directToolFrame).toSeq mustBe Files.readAllBytes(directFrame).toSeq
+    Files.readAllBytes(directToolCodestream).toSeq mustBe Files.readAllBytes(directCodestream).toSeq
   }
 }

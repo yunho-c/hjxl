@@ -43,7 +43,10 @@ block and emits quantized AC, quantized DC, and nonzero counts for all channels.
 `DctOnlyQuantizeTraceStage` exposes the same prepared-block result as trace
 records for simulation. `FramePreparedDctOnlyQuantizeTraceStage` schedules
 complete prepared DCT-only blocks in raster order through that quantizer and
-emits frame-shaped `QuantizedAc`, `QuantDc`, and `NumNonzeros` traces.
+emits frame-shaped `QuantizedAc`, `QuantDc`, and `NumNonzeros` traces. The
+prepared-DCT frame boundary uses Q16 DCT coefficients by default so its CFL and
+quantization path can match libjxl-tiny's float reference on the oracle fixture;
+the RGB-input DCT path still emits Q12 coefficients.
 `FramePreparedDctOnlyQuantizeTokenTraceStage` bridges the same prepared-DCT
 input boundary directly into fixed all-DCT logical token traces by internally
 buffering quantized results and driving `FramePreparedTokenTraceStage`.
@@ -78,7 +81,9 @@ consumed by the host bitstream assembly boundary. `FrameDctOnlyAcTokenTraceStage
 is the first full RGB-input standalone frame scheduler for `AcTokens`: it emits
 nonzero prefixes and coefficient scan/value tokens for every fixed all-DCT
 raster block/channel. It is directly tested and exposed through the dedicated
-`HjxlAcTokenCore` wrapper, not through the runtime-multiplexed `HjxlCore`.
+`HjxlAcTokenCore` wrapper. It is also available through `HjxlCore` only when
+the core is elaborated with `traceRoute = TraceStage.AcTokens`, keeping the
+default all-route shell smaller.
 `HjxlCore` also accepts an optional compile-time `traceRoute` parameter used by
 simulation tests to instantiate only the selected route. The default still
 builds the all-route integration shell.
@@ -200,6 +205,25 @@ the token ordinal and are written as `(context, value)` NumPy arrays. AC
 strategy rows use `index` as the raster block ordinal and are reshaped using
 `--width` and `--height`.
 
+Assemble frame and bare codestream bytes directly from a token `StageTrace`
+CSV dump:
+
+```sh
+python3 tools/hjxl_trace_to_codestream.py \
+  --trace-csv build-codex/traces/gradient-17x9-stage-trace.csv \
+  --width 17 --height 9 \
+  --frame-bin build-codex/traces/gradient-17x9-rtl-frame.bin \
+  --codestream-bin build-codex/traces/gradient-17x9-rtl.jxl \
+  --expect-codestream-bin build-codex/fixtures/gradient-17x9-dct-only.jxl
+```
+
+This is the near-term host boundary for RTL token traces: hardware emits
+logical `StageTrace` rows, and host software performs entropy optimization and
+bitstream serialization. Use `--expect-frame-bin` or `--expect-codestream-bin`
+to turn the command into a byte-parity check. `TraceToCodestreamToolSpec`
+covers multi-file trace input, expected-byte mismatch diagnostics, and
+malformed trace rejection for this tool.
+
 Compare converted token arrays against oracle arrays:
 
 ```sh
@@ -247,23 +271,26 @@ python3 tools/hjxl_prepared_token_inputs.py \
 ```
 
 `FramePreparedDctOnlyQuantizeTraceStageSpec` checks the prepared-DCT quantizer
-scheduler against libjxl-tiny prepared-block fixtures with small fixed-point
-tolerances for the current rounded-Q12 coefficient boundary, then verifies that
-the observed RTL quantization trace converts into prepared-token DC/AC CSVs
-without reordering or dropping records and can drive `FramePreparedTokenTraceStage`
-through DC, strategy, metadata, and AC token trace emission. The same spec also
-checks `FramePreparedDctOnlyQuantizeTokenTraceStage`, the direct RTL wrapper,
-against that staged handoff at the DC/AC token trace streams while checking its
-prepared raw-quant/CFL metadata tokens against libjxl-tiny's
-`ac_metadata_tokens` oracle. It also converts the direct wrapper's token
-`StageTrace` output into token arrays and verifies the host assembler can
-produce nonempty frame bytes and a bare JPEG XL codestream. The spec also
+scheduler against libjxl-tiny prepared-block fixtures with exact quantized
+AC/DC/nonzero trace comparison at the Q16 prepared-coefficient boundary, then
+verifies that the observed RTL quantization trace converts into prepared-token
+DC/AC CSVs without reordering or dropping records and can drive
+`FramePreparedTokenTraceStage` through DC, strategy, metadata, and AC token
+trace emission. The same spec also checks
+`FramePreparedDctOnlyQuantizeTokenTraceStage`, the direct RTL wrapper, against
+that staged handoff and against libjxl-tiny token-array oracles for DC,
+AC-metadata, AC, and strategy streams. It converts the direct wrapper's token
+`StageTrace` output into token arrays and verifies the host assembler produces
+the same frame bytes and bare JPEG XL codestream as the direct libjxl-tiny
+DCT-only path. It also feeds the direct wrapper's `StageTrace` CSV to
+`tools/hjxl_trace_to_codestream.py` and checks those bytes against the same
+oracle. The spec also
 exercises the adaptive all-DCT oracle exports by checking that
 `--dct-only-dc-tokens-npy`, `--dct-only-ac-metadata-tokens-npy`,
 `--dct-only-ac-tokens-npy`, and `--default-ac-strategy-npy` assemble back into
 the same bytes as `--dct-only-frame-bin` and `--dct-only-codestream-bin`, and
-uses `tools/hjxl_compare_tokens.py` for exact metadata/strategy token-array
-comparison on the direct wrapper trace.
+uses `tools/hjxl_compare_tokens.py` for exact token-array comparison on the
+direct wrapper trace.
 `FramePreparedAcMetadataTokenTraceStageSpec` separately covers two-tile
 prepared metadata fixtures for CFL residual prediction and raw-quant residual
 contexts, including a libjxl-tiny oracle-backed 72x8 all-DCT case.
@@ -278,9 +305,10 @@ hardware/software boundary. It generates a prepared-token JSON fixture with
 converts the resulting StageTrace CSV with `tools/hjxl_trace_tokens.py`, feeds
 the generated token arrays back to `tools/hjxl_reference.py`, and checks that
 the assembled frame and codestream bytes match the direct libjxl-tiny
-fixed-token oracle. The full RGB-input token schedulers still depend on the
-approximate fixed-point RGB/XYB/DCT path and are tracked as a separate parity
-gap.
+fixed-token oracle. It also checks `tools/hjxl_trace_to_codestream.py`, the
+one-step StageTrace-to-byte assembler, against the same token arrays and byte
+oracle. The full RGB-input token schedulers still depend on the approximate
+fixed-point RGB/XYB/DCT path and are tracked as a separate parity gap.
 
 ## Versions
 

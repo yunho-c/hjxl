@@ -78,7 +78,7 @@ class FramePreparedDctOnlyQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig()) 
       activeConfig.xsize > c.maxFrameWidth.U || activeConfig.ysize > c.maxFrameHeight.U ||
       nextXBlocks > maxXBlocks.U || nextYBlocks > maxYBlocks.U
 
-  val quantizer = Module(new DctOnlyQuantizeBlock(c))
+  val quantizer = Module(new DctOnlyQuantizeBlock(c, c.preparedDctCoefficientFractionBits))
   quantizer.io.input.valid :=
     io.input.valid && state === receiving && !configOutOfRange && receivedBlocks < activeTotalBlocks
   quantizer.io.input.bits := io.input.bits
