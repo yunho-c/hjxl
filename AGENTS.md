@@ -160,6 +160,12 @@ Read these libjxl-tiny files before making architectural changes:
   current quantized DC sample plus west/north/northwest predictor neighbors; it
   emits exactly one `DcTokens` trace record. Its spec is oracle-backed against
   libjxl-tiny for a constant-frame prepared DC plane.
+- `FramePreparedDcTokenTraceStage` is the exact prepared-frame DC scheduler.
+  Feed it complete quantized DC planes in libjxl-tiny token order: Y plane, X
+  plane, then B plane, each in raster block order. It buffers the planes,
+  computes west/north/northwest predictors, and emits `DcTokens` trace records.
+  Prefer this in host-boundary tests over hand-building predictor-neighbor
+  inputs for `DcTokenTraceStage`.
 - `FrameDctOnlyDcTokenTraceStage` is the first token trace stage. It uses the
   same fixed-parameter DCT-only frame path and emits only DC tokens, in Y/X/B
   plane order. For token traces, `trace.group` is the token ordinal,
@@ -180,16 +186,23 @@ Read these libjxl-tiny files before making architectural changes:
   scan/value tokens after the nonzero-count prefix. Feed it quantized
   coefficients, channel, nonzero count, and the first token ordinal; it emits
   `trace.stage = AcTokens`, `trace.group = token ordinal`, `trace.index =
-  zero-density context`, and `trace.value = packed coefficient`. It is not yet
-  frame-scheduled.
+  zero-density context`, and `trace.value = packed coefficient`.
 - `AcBlockTokenTraceStage` wraps the nonzero-count prefix and prepared
   coefficient scan tokens for one ordinary-DCT block/channel. It still expects
   the caller to provide the predicted nonzero count from frame/block neighbors.
 - `DctOnlyAcBlockTokenTraceStage` sequences prepared AC token streams for one
   X/Y/B ordinary-DCT block in libjxl-tiny channel order: Y, X, then B. It still
   expects caller-provided predicted nonzero counts and first token ordinal.
-- `FrameDctOnlyAcTokenTraceStage` is the complete standalone frame scheduler
-  for fixed all-DCT AC tokens. It recomputes the current fixed DCT-only
+- `FramePreparedAcTokenTraceStage` is the exact prepared-frame AC scheduler.
+  Feed it complete quantized AC blocks in raster order. It buffers X/Y/B
+  quantized AC coefficients and nonzero counts, predicts nonzero counts from
+  west/north block history, and emits the full all-DCT `AcTokens` stream.
+- `FramePreparedTokenTraceStage` is the combined exact prepared-token boundary.
+  Feed it prepared quantized DC samples first, then prepared quantized AC blocks.
+  It emits DC tokens, AC strategy traces, AC metadata tokens, and AC tokens in a
+  single `StageTrace` stream suitable for `tools/hjxl_trace_tokens.py`.
+- `FrameDctOnlyAcTokenTraceStage` is the complete RGB-input standalone frame
+  scheduler for fixed all-DCT AC tokens. It recomputes the current fixed DCT-only
   quantized block stream, predicts nonzero counts from west/north block
   history, and emits full Y/X/B block AC streams through
   `DctOnlyAcBlockTokenTraceStage`.
@@ -197,6 +210,13 @@ Read these libjxl-tiny files before making architectural changes:
   compile-time top. Use `sbt 'runMain hjxl.ElaborateAcTokens'` for this path
   instead of routing it through `HjxlCore`; attempting to instantiate it inside
   `HjxlCore` makes route-specific Verilator top-level tests impractical.
+- Use `sbt 'runMain hjxl.ElaboratePreparedDcTokens'` and
+  `sbt 'runMain hjxl.ElaboratePreparedAcTokens'` to generate standalone RTL for
+  the individual exact prepared-token boundaries. Use
+  `sbt 'runMain hjxl.ElaboratePreparedTokens'` for the combined host-boundary
+  top. These write `generated-prepared-dc-tokens/`,
+  `generated-prepared-ac-tokens/`, and `generated-prepared-tokens/`; keep the
+  generated directories out of git.
 - Entropy coding, entropy table optimization, and bitstream assembly are still
   future work.
 - `FrameAcStrategyTraceStage` emits one default DCT-first AC strategy value per
@@ -228,9 +248,20 @@ Read these libjxl-tiny files before making architectural changes:
   streams for `--fixed-raw-quant` (default 5), zero-CFL, all-DCT fixtures. Use
   these to cross-check token order and context formulas against libjxl-tiny. For
   nontrivial images, exact value parity still depends on improving the
-  fixed-point transform and quantization path. Current Scala tests use the
-  AC-metadata oracle directly and use the AC oracle for a constant frame where
-  all AC coefficients are zero and the token stream is exactly comparable.
+  fixed-point transform and quantization path. The current host-boundary Scala
+  regression uses a prepared-token gradient fixture with nonzero AC
+  coefficients, so the exact token path is covered after libjxl-tiny quantized
+  DC/AC data has been prepared.
+- `--fixed-dct-only-prepared-token-inputs-json` exports the prepared DC sample
+  stream and prepared AC raster blocks consumed by `FramePreparedTokenTraceStage`
+  for the same fixed all-DCT assumptions. Use it to regenerate combined
+  prepared-token trace-driver fixtures.
+- `tools/hjxl_prepared_token_inputs.py --prepared-json ... --dc-csv ...
+  --ac-csv ...` converts those JSON fixtures into simple simulator input CSV
+  streams for `FramePreparedTokenTraceStage`. It validates the expected DC
+  sample count, contiguous AC block order, three X/Y/B channels, nonzero ranges,
+  declared nonzero counts against coefficient data, and 64 coefficients per
+  channel before writing outputs.
 - `--fixed-dct-only-frame-bin` and `--fixed-dct-only-codestream-bin` serialize
   the fixed logical tokens through libjxl-tiny's entropy optimizer and bitstream
   writer. Treat these as host-side oracle artifacts for the near-term
@@ -244,13 +275,12 @@ Read these libjxl-tiny files before making architectural changes:
   stages require contiguous `group` ordinals; AC strategy traces use `index` as
   the raster block ordinal and require image width/height for reshaping.
 - `FixedDctOnlyTokenAssemblySpec` is the current host-boundary regression. It
-  emits NumPy token arrays from the prepared DC-token primitive plus the
-  frame-level AC metadata and AC token stages for a constant 9x1 fixture, then
-  verifies that `tools/hjxl_reference.py` assembles the same frame and bare
-  codestream bytes as the direct fixed-token libjxl-tiny oracle. Do not treat
-  this as full frame-level DC parity: `FrameDctOnlyDcTokenTraceStage` still goes
-  through the approximate fixed-point RGB/XYB/DCT path, so closing that parity
-  gap remains separate work.
+  runs the full prepared-token boundary chain: libjxl-tiny prepared-token JSON,
+  simulator input CSVs, `FramePreparedTokenTraceStage`, StageTrace-to-token
+  conversion, and host frame/codestream assembly. Do not treat this as full
+  RGB-input token parity: `FrameDctOnlyDcTokenTraceStage` and
+  `FrameDctOnlyAcTokenTraceStage` still go through the approximate fixed-point
+  RGB/XYB/DCT path, so closing that parity gap remains separate work.
 - `HjxlCore` currently exposes padded-input, XYB, raw-DCT, fixed-parameter
   quantized-DCT, fixed-parameter DC-token, fixed AC-metadata-token, or default
   AC-strategy trace streams. `FrameConfig.tokenSelect` chooses token substreams:

@@ -435,6 +435,77 @@ def fixed_dct_only_token_outputs_from_python_port(
     )
 
 
+def fixed_dct_only_prepared_token_inputs_from_python_port(
+    image, distance: float, fixed_raw_quant: int = 5
+):
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.ac_strategy import DCT  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.encoder import (  # pylint: disable=import-outside-toplevel
+        BLOCK_DIM,
+        TILE_DIM,
+        _ceil_div,
+        _effective_distance,
+    )
+    from jxl_tiny.quantization import quantize_ac_group  # pylint: disable=import-outside-toplevel
+
+    xyb = xyb_from_python_port(image)
+    _, ysize, xsize = image.shape
+    distance = _effective_distance(distance)
+    x_blocks = _ceil_div(xsize, BLOCK_DIM)
+    y_blocks = _ceil_div(ysize, BLOCK_DIM)
+    x_tiles = _ceil_div(xsize, TILE_DIM)
+    y_tiles = _ceil_div(ysize, TILE_DIM)
+
+    raw_quant_field = np.full((y_blocks, x_blocks), fixed_raw_quant, dtype=np.uint8)
+    ac_strategy = np.full((y_blocks, x_blocks), np.uint8((DCT << 1) | 1))
+    ytox_map = np.zeros((y_tiles, x_tiles), dtype=np.int8)
+    ytob_map = np.zeros((y_tiles, x_tiles), dtype=np.int8)
+    quantized_blocks = quantize_ac_group(
+        xyb, raw_quant_field, ac_strategy, ytox_map, ytob_map, distance
+    )
+
+    quant_dc = np.zeros((3, y_blocks, x_blocks), dtype=np.int16)
+    ac_blocks = []
+    for by in range(y_blocks):
+        for bx in range(x_blocks):
+            block = quantized_blocks[(by, bx)]
+            quant_dc[:, by : by + 1, bx : bx + 1] = block.block_quant_dc
+            ac_blocks.append(
+                {
+                    "block_index": int(by * x_blocks + bx),
+                    "block_x": int(bx),
+                    "block_y": int(by),
+                    "num_nonzeros": block.num_nonzeros.astype(np.int32).tolist(),
+                    "quantized": block.quantized_ac.astype(np.int32).tolist(),
+                }
+            )
+
+    dc_channel_order = [1, 0, 2]
+    dc_samples = [
+        int(value)
+        for channel in dc_channel_order
+        for value in quant_dc[channel].reshape(-1).astype(np.int32)
+    ]
+
+    return {
+        "format": "hjxl.fixed_dct_only_prepared_token_inputs.v1",
+        "image": {
+            "xsize": int(xsize),
+            "ysize": int(ysize),
+            "x_blocks": int(x_blocks),
+            "y_blocks": int(y_blocks),
+        },
+        "distance": float(distance),
+        "fixed_raw_quant": int(fixed_raw_quant),
+        "dc_sample_order": "Y-plane raster, X-plane raster, B-plane raster",
+        "dc_samples": dc_samples,
+        "ac_block_order": "raster blocks, each block stores X/Y/B channels",
+        "ac_blocks": ac_blocks,
+    }
+
+
 def fixed_dct_only_bitstream_outputs_from_python_port(
     image, distance: float, fixed_raw_quant: int = 5
 ):
@@ -589,6 +660,11 @@ def main() -> int:
         help="optional fixed-quant all-DCT AC token oracle with rows (context, value)",
     )
     parser.add_argument(
+        "--fixed-dct-only-prepared-token-inputs-json",
+        type=Path,
+        help="optional prepared DC/AC inputs for FramePreparedTokenTraceStage",
+    )
+    parser.add_argument(
         "--fixed-dct-only-frame-bin",
         type=Path,
         help="optional fixed-quant all-DCT frame bytes serialized from logical tokens",
@@ -636,6 +712,7 @@ def main() -> int:
     quant_metadata = None
     dct_only_quant_outputs = None
     fixed_dct_only_token_outputs = None
+    fixed_dct_only_prepared_token_inputs = None
     fixed_dct_only_bitstream_outputs = None
     token_input_bitstream_outputs = None
 
@@ -658,6 +735,16 @@ def main() -> int:
                 image, args.distance, args.fixed_raw_quant
             )
         return fixed_dct_only_token_outputs
+
+    def get_fixed_dct_only_prepared_token_inputs():
+        nonlocal fixed_dct_only_prepared_token_inputs
+        if fixed_dct_only_prepared_token_inputs is None:
+            fixed_dct_only_prepared_token_inputs = (
+                fixed_dct_only_prepared_token_inputs_from_python_port(
+                    image, args.distance, args.fixed_raw_quant
+                )
+            )
+        return fixed_dct_only_prepared_token_inputs
 
     def get_fixed_dct_only_bitstream_outputs():
         nonlocal fixed_dct_only_bitstream_outputs
@@ -796,6 +883,12 @@ def main() -> int:
         args.fixed_dct_only_ac_tokens_npy.parent.mkdir(parents=True, exist_ok=True)
         _, _, ac, _ = get_fixed_dct_only_token_outputs()
         np.save(args.fixed_dct_only_ac_tokens_npy, ac)
+    if args.fixed_dct_only_prepared_token_inputs_json is not None:
+        args.fixed_dct_only_prepared_token_inputs_json.parent.mkdir(parents=True, exist_ok=True)
+        args.fixed_dct_only_prepared_token_inputs_json.write_text(
+            json.dumps(get_fixed_dct_only_prepared_token_inputs(), indent=2),
+            encoding="utf-8",
+        )
     if args.fixed_dct_only_frame_bin is not None:
         args.fixed_dct_only_frame_bin.parent.mkdir(parents=True, exist_ok=True)
         frame, _ = get_fixed_dct_only_bitstream_outputs()
@@ -835,6 +928,7 @@ def main() -> int:
         and args.fixed_dct_only_dc_tokens_npy is None
         and args.fixed_dct_only_ac_metadata_tokens_npy is None
         and args.fixed_dct_only_ac_tokens_npy is None
+        and args.fixed_dct_only_prepared_token_inputs_json is None
         and args.fixed_dct_only_frame_bin is None
         and args.fixed_dct_only_codestream_bin is None
         and args.token_input_frame_bin is None
