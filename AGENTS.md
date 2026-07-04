@@ -41,6 +41,14 @@ Use a hardware/software split:
   initially performs final entropy optimization and JXL bitstream assembly.
 - Chisel hardware accelerates deterministic image/transform/token stages.
 - Internal RTL interfaces should use ready/valid `Decoupled` streams.
+- `HjxlAxiStreamCore` is the current hardware-facing shell. It accepts raster
+  RGB stream words, generates `RgbPixel.x/y`, and packs `StageTrace` output
+  words as `{value,index,group,stage}` with `stage` in the low eight bits.
+  Input data packs R/G/B in consecutive `pixelBits` fields with R in the low
+  bits. `protocolError` is sticky and cleared by `clearProtocolError`. Output
+  `last` is valid for fixed-size routes whose frame length is known from
+  `FrameConfig`; full AC-token traces still keep `last` low until that
+  variable-length route exposes frame completion.
 - Keep stage outputs traceable against libjxl-tiny names and array shapes.
 
 Use stage-tolerant accuracy:
@@ -230,9 +238,18 @@ Read these libjxl-tiny files before making architectural changes:
 - `HjxlAcTokenCore` wraps the full AC-token frame scheduler as a dedicated
   compile-time top. Use `sbt 'runMain hjxl.ElaborateAcTokens'` for this path
   when a standalone full-AC-token top is needed. `HjxlCore` can also expose the
-  same route when elaborated with `traceRoute = TraceStage.AcTokens`; the
-  default all-route shell intentionally does not instantiate this heavy
-  scheduler.
+  same route when elaborated with `traceRoute = TraceStage.AcTokens`; use
+  `sbt 'runMain hjxl.ElaborateCoreAcTokens'` when generated SystemVerilog should
+  keep the public core IO shell while instantiating only that route. The default
+  all-route shell intentionally does not instantiate this heavy scheduler.
+- Use `sbt 'runMain hjxl.ElaborateAxiStream'` for the default AXI-stream-shaped
+  wrapper and `sbt 'runMain hjxl.ElaborateAxiStreamCoreAcTokens'` for the same
+  stream wrapper focused on the full AC-token route. These write
+  `generated-axi-stream/` and `generated-axi-stream-core-ac-tokens/`; keep both
+  generated directories out of git. `HjxlAxiStreamElaborationSpec` guards the
+  emitted stream-shell port surface and focused-route module inclusion.
+  `HjxlAxiStreamCoreSpec` includes a host-decoder regression that captures real
+  packed RTL output and feeds it to `tools/hjxl_stream_trace.py`.
 - Use `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantize'` to generate the
   standalone prepared-DCT quantization scheduler. It writes
   `generated-prepared-dct-only-quantize/`; keep the generated directory out of
@@ -338,14 +355,23 @@ Read these libjxl-tiny files before making architectural changes:
   `stage,group,index,value` columns into those token-input NumPy arrays. Token
   stages require contiguous `group` ordinals; AC strategy traces use `index` as
   the raster block ordinal and require image width/height for reshaping.
+- `tools/hjxl_stream_trace.py --stream-csv ... --trace-csv ...` decodes packed
+  `HjxlAxiStreamCore` trace captures with `data,last` or `tdata,tlast` columns
+  back into `StageTrace` CSV. Use `--require-final-last` for fixed-size routes
+  where output TLAST is meaningful; omit it for variable-length full AC-token
+  captures until that route has completion semantics. `StreamTraceToolSpec`
+  covers this helper, its handoff into `tools/hjxl_trace_tokens.py`, direct
+  `--stream-csv` token extraction, and the
+  `tools/hjxl_trace_to_codestream.py --stream-csv` path.
 - `tools/hjxl_trace_to_codestream.py --trace-csv ... --width ... --height ...
   --frame-bin ... --codestream-bin ...` is the one-step host assembler for RTL
   token traces. It extracts DC, AC-metadata, AC, and strategy token artifacts
-  from `StageTrace`, then uses libjxl-tiny entropy/bitstream code to write a
-  frame and bare codestream. Use `--expect-frame-bin` or
-  `--expect-codestream-bin` for byte-parity checks. `TraceToCodestreamToolSpec`
-  covers multi-file trace input, expected-byte mismatch diagnostics, and
-  malformed trace rejection for this CLI.
+  from `StageTrace` or packed stream CSV inputs, then uses libjxl-tiny
+  entropy/bitstream code to write a frame and bare codestream. Use
+  `--expect-frame-bin` or `--expect-codestream-bin` for byte-parity checks.
+  `TraceToCodestreamToolSpec` covers multi-file trace input, packed stream
+  byte-parity input, expected-byte mismatch diagnostics, and malformed trace
+  rejection for this CLI.
 - `tools/hjxl_compare_tokens.py` compares token-input arrays against oracle
   arrays. It is exact by default for token stream length, contexts, values, and
   AC strategy grid entries. Use `--max-value-delta` only for diagnostics while

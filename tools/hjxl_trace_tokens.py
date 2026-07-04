@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import sys
 
+from hjxl_stream_trace import decode_stream_rows, read_stream_csv
+
 
 TRACE_STAGES = {
     "InputPadded": 0,
@@ -89,10 +91,38 @@ def read_trace_csv(path: Path) -> list[TraceRow]:
     return rows
 
 
-def load_trace_rows(paths: list[Path]) -> list[TraceRow]:
+def load_trace_rows(
+    paths: list[Path],
+    stream_paths: list[Path] | None = None,
+    group_bits: int = 16,
+    trace_value_bits: int = 32,
+    require_stream_final_last: bool = False,
+) -> list[TraceRow]:
     rows: list[TraceRow] = []
     for path in paths:
         rows.extend(read_trace_csv(path))
+    stream_inputs = [
+        row
+        for path in stream_paths or []
+        for row in read_stream_csv(path)
+    ]
+    if stream_inputs:
+        for stream_row in decode_stream_rows(
+            stream_inputs,
+            group_bits=group_bits,
+            trace_value_bits=trace_value_bits,
+            require_final_last=require_stream_final_last,
+        ):
+            rows.append(
+                TraceRow(
+                    stage=stream_row.stage,
+                    group=stream_row.group,
+                    index=stream_row.index,
+                    value=stream_row.value,
+                    source=stream_row.source,
+                    line=stream_row.line,
+                )
+            )
     return rows
 
 
@@ -168,8 +198,22 @@ def main() -> int:
         "--trace-csv",
         type=Path,
         action="append",
-        required=True,
+        default=[],
         help="StageTrace CSV input with columns stage,group,index,value; may be repeated",
+    )
+    parser.add_argument(
+        "--stream-csv",
+        type=Path,
+        action="append",
+        default=[],
+        help="packed AXI-stream trace CSV input with data,last or tdata,tlast columns; may be repeated",
+    )
+    parser.add_argument("--group-bits", type=int, default=16, help="packed stream StageTrace group width")
+    parser.add_argument("--trace-value-bits", type=int, default=32, help="packed stream StageTrace value width")
+    parser.add_argument(
+        "--require-stream-final-last",
+        action="store_true",
+        help="require packed stream TLAST only on the final decoded row",
     )
     parser.add_argument("--dc-tokens-npy", type=Path, help="output DC token rows (context, value)")
     parser.add_argument(
@@ -183,7 +227,16 @@ def main() -> int:
     parser.add_argument("--height", type=int, help="image height for AC strategy grid")
     args = parser.parse_args()
 
-    rows = load_trace_rows(args.trace_csv)
+    if not args.trace_csv and not args.stream_csv:
+        raise SystemExit("at least one --trace-csv or --stream-csv input is required")
+
+    rows = load_trace_rows(
+        args.trace_csv,
+        stream_paths=args.stream_csv,
+        group_bits=args.group_bits,
+        trace_value_bits=args.trace_value_bits,
+        require_stream_final_last=args.require_stream_final_last,
+    )
     if args.dc_tokens_npy is not None:
         write_token_npy(args.dc_tokens_npy, token_pairs(rows, TOKEN_STAGES["dc"]))
     if args.ac_metadata_tokens_npy is not None:

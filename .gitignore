@@ -2,7 +2,7 @@
 test_run_dir/*
 target/
 out/
-generated/
+generated*/
 build-codex/
 __pycache__/
 *.py[cod]

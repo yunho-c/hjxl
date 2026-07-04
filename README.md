@@ -85,8 +85,14 @@ raster block/channel. It is directly tested and exposed through the dedicated
 the core is elaborated with `traceRoute = TraceStage.AcTokens`, keeping the
 default all-route shell smaller.
 `HjxlCore` also accepts an optional compile-time `traceRoute` parameter used by
-simulation tests to instantiate only the selected route. The default still
-builds the all-route integration shell.
+simulation tests to instantiate only the selected route.
+`HjxlCoreRouteElaborationSpec` checks that the focused AC-token core includes
+the heavy scheduler while the default all-route shell omits it. The direct
+AC-token scheduler behavior is covered by `FrameDctOnlyAcTokenTraceStageSpec`.
+The default still builds the all-route integration shell.
+`HjxlAxiStreamCore` is the first hardware-facing shell: it accepts raster RGB
+pixels on an AXI4-Stream-shaped input, generates core `x/y` coordinates, and
+packs `StageTrace` rows onto an output stream.
 
 ## Requirements
 
@@ -127,6 +133,20 @@ Generate the standalone full AC-token trace top-level:
 
 ```sh
 sbt 'runMain hjxl.ElaborateAcTokens'
+```
+
+Generate the public `HjxlCore` IO shell with only the full AC-token route
+instantiated:
+
+```sh
+sbt 'runMain hjxl.ElaborateCoreAcTokens'
+```
+
+Generate AXI4-Stream-shaped shells:
+
+```sh
+sbt 'runMain hjxl.ElaborateAxiStream'
+sbt 'runMain hjxl.ElaborateAxiStreamCoreAcTokens'
 ```
 
 Generate the exact prepared-token trace top-levels:
@@ -205,6 +225,37 @@ the token ordinal and are written as `(context, value)` NumPy arrays. AC
 strategy rows use `index` as the raster block ordinal and are reshaped using
 `--width` and `--height`.
 
+For generated AXI-stream shells, input pixels are raster ordered. Pack
+`input.bits.data` as `R` in bits `[15:0]`, `G` in `[31:16]`, and `B` in
+`[47:32]` for the default 16-bit pixel configuration. The wrapper checks input
+`last` against `FrameConfig.xsize * FrameConfig.ysize` and exposes a sticky
+`protocolError`; pulse `clearProtocolError` to clear it without resetting the
+core. Output trace words are packed as `{value,index,group,stage}`, with
+`stage` in the low eight bits. Output `last` is asserted for fixed-size trace
+routes whose frame length is known from `FrameConfig`: padded input, XYB, raw
+DCT, quantized traces, DC tokens, AC-metadata tokens, and AC strategy.
+Variable-length full AC-token traces keep output `last` low until that route
+exposes an explicit completion contract.
+
+Convert packed AXI-stream trace captures back into the StageTrace CSV shape
+used by the host tools:
+
+```sh
+python3 tools/hjxl_stream_trace.py \
+  --stream-csv build-codex/traces/gradient-17x9-stream.csv \
+  --trace-csv build-codex/traces/gradient-17x9-stage-trace.csv \
+  --require-final-last
+```
+
+The input CSV may use `data,last` or `tdata,tlast` columns. `--require-final-last`
+is appropriate for fixed-size trace routes where `HjxlAxiStreamCore` asserts
+output `last`; omit it for variable-length full AC-token traces until that
+route has a completion contract.
+`tools/hjxl_trace_tokens.py` and `tools/hjxl_trace_to_codestream.py` also accept
+the same packed stream captures directly with repeated `--stream-csv` inputs and
+the same `--group-bits`, `--trace-value-bits`, and
+`--require-stream-final-last` options.
+
 Assemble frame and bare codestream bytes directly from a token `StageTrace`
 CSV dump:
 
@@ -216,6 +267,9 @@ python3 tools/hjxl_trace_to_codestream.py \
   --codestream-bin build-codex/traces/gradient-17x9-rtl.jxl \
   --expect-codestream-bin build-codex/fixtures/gradient-17x9-dct-only.jxl
 ```
+
+For packed AXI-stream captures, replace or combine `--trace-csv` with
+`--stream-csv build-codex/traces/gradient-17x9-stream.csv`.
 
 This is the near-term host boundary for RTL token traces: hardware emits
 logical `StageTrace` rows, and host software performs entropy optimization and

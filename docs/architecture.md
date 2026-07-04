@@ -31,13 +31,18 @@ contract is intentionally simple:
 
 - `FrameConfig` carries image size, distance, fixed-point scale, and feature
   flags. `tokenSelect` chooses which logical token substream a token trace
-  emits at the top level: currently `Dc` or `AcMetadata`.
+  emits at the top level: `Dc`, `AcMetadata`, or `AcTokens`. The full AC-token
+  route is only instantiated when the core is elaborated with
+  `traceRoute = TraceStage.AcTokens`.
 - `RgbPixel` carries fixed-point linear RGB samples and image coordinates.
 - `StageTrace` carries a stage id, group id, element index, and value.
 - `HjxlCore` is the integration shell where stage modules will be wired.
+- `HjxlAxiStreamCore` is the first hardware-facing stream shell. It accepts
+  raster RGB samples without explicit coordinates, generates `RgbPixel.x/y`,
+  and packs `StageTrace` rows into stream words.
 
-Use these contracts for simulation and trace extraction before adding KV260
-AXI wrappers.
+Use the internal contracts for simulation and trace extraction, and use the
+stream shell as the current KV260/Vivado-facing top-level shape.
 
 ## Implemented RTL Slices
 
@@ -237,9 +242,23 @@ AXI wrappers.
 - `HjxlAcTokenCore` is a compile-time top wrapper around
   `FrameDctOnlyAcTokenTraceStage`. Use `sbt 'runMain hjxl.ElaborateAcTokens'`
   when SystemVerilog for the full AC-token path is needed as a dedicated top;
-  use `new HjxlCore(traceRoute = TraceStage.AcTokens)` when the core IO shell is
+  use `new HjxlCore(traceRoute = TraceStage.AcTokens)` or
+  `sbt 'runMain hjxl.ElaborateCoreAcTokens'` when the public core IO shell is
   useful for focused simulation or integration. `HjxlCoreRouteElaborationSpec`
   guards that split so the default all-route shell stays smaller.
+- `HjxlAxiStreamCore` wraps `HjxlCore` in an AXI4-Stream-shaped raster input
+  and trace output. Input data packs R/G/B into consecutive `pixelBits` fields
+  with R in the low bits, checks input `last` against the configured raster
+  frame length, and exposes sticky `protocolError` plus a `clearProtocolError`
+  input for host recovery. Output data packs `{value,index,group,stage}` with
+  `stage` in the low eight bits. Output `last` is asserted for fixed-size
+  routes whose frame length is known from `FrameConfig`: padded input, XYB, raw
+  DCT, quantized traces, DC tokens, AC-metadata tokens, and AC strategy.
+  Variable-length full AC-token traces keep output `last` low until that route
+  exposes an explicit completion contract. Use
+  `sbt 'runMain hjxl.ElaborateAxiStream'` for the default shell or
+  `sbt 'runMain hjxl.ElaborateAxiStreamCoreAcTokens'` for the focused
+  full-AC-token shell.
 - `ElaboratePreparedDctOnlyQuantize` generates standalone SystemVerilog for the
   prepared-DCT quantization scheduler. Use it when the integration boundary is
   after DCT/AQ/CFL scalar generation but before quantized DC/AC tokenization.
@@ -251,6 +270,14 @@ AXI wrappers.
   directory and checks for the expected modules plus the structured
   prepared-block input, trace output, busy, and overflow ports, so generated RTL
   or top-level IO breakage is caught without committing generated files.
+- `HjxlAxiStreamCoreSpec` covers the stream shell's raster coordinate
+  generation, trace-row packing, fixed-size output TLAST, and input TLAST
+  protocol checking on cheap routes. It also captures real packed output from
+  the padded-input stream shell and decodes it with `tools/hjxl_stream_trace.py`
+  so the Chisel packing and host decoder stay aligned.
+- `HjxlAxiStreamElaborationSpec` guards the generated stream-shell port surface
+  and checks that the focused AC-token stream top includes the full AC-token
+  scheduler while the default stream top omits it.
 - `ElaboratePreparedAcMetadataTokens` generates standalone SystemVerilog for
   the prepared AC-metadata token scheduler.
 - `ElaboratePreparedDcTokens` and `ElaboratePreparedAcTokens` generate
@@ -358,14 +385,25 @@ AXI wrappers.
   token ordinal and output rows are `(context, value)`. For `AcStrategy`, the
   trace `index` is the raster block ordinal and the tool reshapes it with the
   supplied image width and height.
+- `tools/hjxl_stream_trace.py --stream-csv ... --trace-csv ...` converts
+  packed `HjxlAxiStreamCore` trace stream captures back into `StageTrace` CSV.
+  It accepts `data,last` or `tdata,tlast` input columns, unpacks
+  `{value,index,group,stage}`, sign-extends the value field, and can enforce a
+  single-frame final TLAST with `--require-final-last`. `StreamTraceToolSpec`
+  covers signed value decoding, accepted column aliases, TLAST rejection, the
+  handoff into `tools/hjxl_trace_tokens.py`, direct `--stream-csv` token
+  extraction, and `tools/hjxl_trace_to_codestream.py --stream-csv` validation.
 - `tools/hjxl_trace_to_codestream.py --trace-csv ... --width ... --height ...
   --frame-bin ... --codestream-bin ...` is the direct host assembler for RTL
   token traces. It performs the same token extraction as `hjxl_trace_tokens.py`,
   then uses libjxl-tiny's entropy optimizer and bitstream writer to serialize a
-  frame and bare codestream from those logical tokens. `--expect-frame-bin` and
-  `--expect-codestream-bin` make it a byte-parity checker for RTL bring-up.
-  `TraceToCodestreamToolSpec` covers multi-file trace input, expected-byte
-  mismatch diagnostics, and malformed trace rejection for this CLI.
+  frame and bare codestream from those logical tokens. It accepts repeated
+  `--trace-csv` and `--stream-csv` inputs, so packed stream captures can feed
+  the byte assembler without an intermediate decoded CSV. `--expect-frame-bin`
+  and `--expect-codestream-bin` make it a byte-parity checker for RTL bring-up.
+  `TraceToCodestreamToolSpec` covers multi-file trace input, packed stream
+  byte-parity input, expected-byte mismatch diagnostics, and malformed trace
+  rejection for this CLI.
 - `tools/hjxl_compare_tokens.py` compares converted token arrays against oracle
   arrays. It is exact by default for stream length, contexts, values, and AC
   strategy grid entries; use its value-delta mode only as a diagnostic while
@@ -418,5 +456,7 @@ Use stage-tolerant parity:
 
 The local machine has Verilator available, but Vivado/Vitis are not assumed.
 The immediate FPGA deliverable is generated SystemVerilog and a Vivado-ready
-top-level shape. Bitstream validation belongs in a later environment with AMD
-tools installed.
+top-level shape. `HjxlAxiStreamCore` is the current candidate wrapper for that
+shape; it is intentionally simple enough to connect to DMA-style AXI streams
+before AXI-Lite control registers and host drivers are designed. Bitstream
+validation belongs in a later environment with AMD tools installed.

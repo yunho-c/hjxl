@@ -47,12 +47,22 @@ def _compare_bytes(label: str, expected_path: Path, actual: bytes) -> list[str]:
 
 def assemble_trace(
     trace_csv: list[Path],
+    stream_csv: list[Path],
     width: int,
     height: int,
     distance: float,
+    group_bits: int = 16,
+    trace_value_bits: int = 32,
+    require_stream_final_last: bool = False,
 ):
     np = _load_numpy()
-    rows = load_trace_rows(trace_csv)
+    rows = load_trace_rows(
+        trace_csv,
+        stream_paths=stream_csv,
+        group_bits=group_bits,
+        trace_value_bits=trace_value_bits,
+        require_stream_final_last=require_stream_final_last,
+    )
     dc_tokens = np.asarray(token_pairs(rows, TOKEN_STAGES["dc"]), dtype=np.uint32)
     ac_metadata_tokens = np.asarray(
         token_pairs(rows, TOKEN_STAGES["ac_metadata"]),
@@ -84,8 +94,22 @@ def main() -> int:
         "--trace-csv",
         type=Path,
         action="append",
-        required=True,
+        default=[],
         help="StageTrace CSV input with columns stage,group,index,value; may be repeated",
+    )
+    parser.add_argument(
+        "--stream-csv",
+        type=Path,
+        action="append",
+        default=[],
+        help="packed AXI-stream trace CSV input with data,last or tdata,tlast columns; may be repeated",
+    )
+    parser.add_argument("--group-bits", type=int, default=16, help="packed stream StageTrace group width")
+    parser.add_argument("--trace-value-bits", type=int, default=32, help="packed stream StageTrace value width")
+    parser.add_argument(
+        "--require-stream-final-last",
+        action="store_true",
+        help="require packed stream TLAST only on the final decoded row",
     )
     parser.add_argument("--width", type=int, required=True, help="image width in pixels")
     parser.add_argument("--height", type=int, required=True, help="image height in pixels")
@@ -114,6 +138,8 @@ def main() -> int:
         raise SystemExit("--height must be positive")
     if args.distance <= 0.0:
         raise SystemExit("--distance must be positive")
+    if not args.trace_csv and not args.stream_csv:
+        raise SystemExit("at least one --trace-csv or --stream-csv input is required")
     if (
         args.frame_bin is None
         and args.codestream_bin is None
@@ -129,9 +155,13 @@ def main() -> int:
     try:
         dc_tokens, ac_metadata_tokens, ac_tokens, ac_strategy, frame, codestream = assemble_trace(
             args.trace_csv,
+            args.stream_csv,
             args.width,
             args.height,
             args.distance,
+            group_bits=args.group_bits,
+            trace_value_bits=args.trace_value_bits,
+            require_stream_final_last=args.require_stream_final_last,
         )
     except Exception as exc:  # pylint: disable=broad-exception-caught
         print(f"error: {exc}", file=sys.stderr)

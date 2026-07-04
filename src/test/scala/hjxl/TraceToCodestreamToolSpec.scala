@@ -95,6 +95,59 @@ class TraceToCodestreamToolSpec extends AnyFreeSpec with Matchers {
     )
   }
 
+  private def writeSplitStreamCsv(
+      dcTokens: Path,
+      acMetadataTokens: Path,
+      acTokens: Path,
+      acStrategy: Path,
+      metadataStreamCsv: Path,
+      acStreamCsv: Path
+  ): Unit = {
+    val script =
+      """import csv, sys, numpy as np
+        |dc = np.load(sys.argv[1])
+        |acmeta = np.load(sys.argv[2])
+        |ac = np.load(sys.argv[3])
+        |strategy = np.load(sys.argv[4]).reshape(-1)
+        |metadata_path = sys.argv[5]
+        |ac_path = sys.argv[6]
+        |def pack(stage, group, index, value):
+        |    return (
+        |        (int(stage) & 0xff)
+        |        | ((int(group) & 0xffff) << 8)
+        |        | ((int(index) & 0xffffffff) << 24)
+        |        | ((int(value) & 0xffffffff) << 56)
+        |    )
+        |with open(metadata_path, "w", newline="") as handle:
+        |    writer = csv.writer(handle)
+        |    writer.writerow(["data", "last"])
+        |    for group, (context, value) in enumerate(dc):
+        |        writer.writerow([pack(10, group, int(context), int(value)), 0])
+        |    for index, value in enumerate(strategy):
+        |        writer.writerow([pack(6, 0, index, int(value)), 0])
+        |    for group, (context, value) in enumerate(acmeta):
+        |        writer.writerow([pack(11, group, int(context), int(value)), 0])
+        |with open(ac_path, "w", newline="") as handle:
+        |    writer = csv.writer(handle)
+        |    writer.writerow(["data", "last"])
+        |    for group, (context, value) in enumerate(ac):
+        |        writer.writerow([pack(12, group, int(context), int(value)), int(group == len(ac) - 1)])
+        |""".stripMargin
+    expectSuccess(
+      Seq(
+        "python3",
+        "-c",
+        script,
+        dcTokens.toString,
+        acMetadataTokens.toString,
+        acTokens.toString,
+        acStrategy.toString,
+        metadataStreamCsv.toString,
+        acStreamCsv.toString
+      )
+    )
+  }
+
   "hjxl_trace_to_codestream.py assembles multi-file StageTrace dumps into oracle bytes" in {
     requireReferenceTools()
 
@@ -105,10 +158,14 @@ class TraceToCodestreamToolSpec extends AnyFreeSpec with Matchers {
     val acStrategy = temp.resolve("strategy.npy")
     val metadataTraceCsv = temp.resolve("metadata-trace.csv")
     val acTraceCsv = temp.resolve("ac-trace.csv")
+    val metadataStreamCsv = temp.resolve("metadata-stream.csv")
+    val acStreamCsv = temp.resolve("ac-stream.csv")
     val directFrame = temp.resolve("direct-frame.bin")
     val directCodestream = temp.resolve("direct.jxl")
     val assembledFrame = temp.resolve("assembled-frame.bin")
     val assembledCodestream = temp.resolve("assembled.jxl")
+    val streamAssembledFrame = temp.resolve("stream-assembled-frame.bin")
+    val streamAssembledCodestream = temp.resolve("stream-assembled.jxl")
 
     expectSuccess(
       Seq(
@@ -135,6 +192,7 @@ class TraceToCodestreamToolSpec extends AnyFreeSpec with Matchers {
       )
     )
     writeSplitTraceCsv(dcTokens, acMetadataTokens, acTokens, acStrategy, metadataTraceCsv, acTraceCsv)
+    writeSplitStreamCsv(dcTokens, acMetadataTokens, acTokens, acStrategy, metadataStreamCsv, acStreamCsv)
 
     val output = expectSuccess(
       Seq(
@@ -162,6 +220,34 @@ class TraceToCodestreamToolSpec extends AnyFreeSpec with Matchers {
     output must include("assembled trace:")
     Files.readAllBytes(assembledFrame).toSeq mustBe Files.readAllBytes(directFrame).toSeq
     Files.readAllBytes(assembledCodestream).toSeq mustBe Files.readAllBytes(directCodestream).toSeq
+
+    val streamOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_trace_to_codestream.py",
+        "--stream-csv",
+        metadataStreamCsv.toString,
+        "--stream-csv",
+        acStreamCsv.toString,
+        "--require-stream-final-last",
+        "--width",
+        width.toString,
+        "--height",
+        height.toString,
+        "--frame-bin",
+        streamAssembledFrame.toString,
+        "--codestream-bin",
+        streamAssembledCodestream.toString,
+        "--expect-frame-bin",
+        directFrame.toString,
+        "--expect-codestream-bin",
+        directCodestream.toString
+      )
+    )
+
+    streamOutput must include("assembled trace:")
+    Files.readAllBytes(streamAssembledFrame).toSeq mustBe Files.readAllBytes(directFrame).toSeq
+    Files.readAllBytes(streamAssembledCodestream).toSeq mustBe Files.readAllBytes(directCodestream).toSeq
   }
 
   "hjxl_trace_to_codestream.py reports expected byte mismatches" in {

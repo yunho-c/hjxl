@@ -43,6 +43,7 @@ jobs:
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
             tools/hjxl_reference.py \
+            tools/hjxl_stream_trace.py \
             tools/hjxl_trace_tokens.py \
             tools/hjxl_trace_to_codestream.py \
             tools/hjxl_compare_tokens.py \

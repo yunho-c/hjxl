@@ -28,6 +28,42 @@ object ElaborateAcTokens extends App {
   )
 }
 
+object ElaborateCoreAcTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlCore(traceRoute = TraceStage.AcTokens),
+    args = Array("--target-dir", "generated-core-ac-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAxiStream extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlAxiStreamCore(),
+    args = Array("--target-dir", "generated-axi-stream"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAxiStreamCoreAcTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlAxiStreamCore(traceRoute = TraceStage.AcTokens),
+    args = Array("--target-dir", "generated-axi-stream-core-ac-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaboratePreparedDcTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedDcTokenTraceStage(),
