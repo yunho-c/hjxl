@@ -390,6 +390,7 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     manifest must include("\"block_count\": 1")
     manifest must include("\"words_per_block\": 201")
     manifest must include("\"status_control\": 0")
+    manifest must include("\"unsupported_distance\": 3")
     manifest must include("\"clear_protocol_error_write_bit\": 0")
     manifest must include("\"flags\": 526")
     manifest must include("\"token_select\": \"ac-tokens\"")
@@ -430,8 +431,13 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     headerText must include("#define HJXL_PREPARED_TRACE_PACKED_BITS 88u")
     headerText must include("#define HJXL_PREPARED_TRACE_PACKED_BYTES 11u")
     headerText must include("#define HJXL_PREPARED_KV260_TRACE_CAPTURE_WORD_BYTES 16u")
+    headerText must include("#define HJXL_PREPARED_DISTANCE_FALLBACK_Q8 256u")
+    headerText must include("#define HJXL_PREPARED_SUPPORTED_DISTANCE_Q8_COUNT 6u")
+    headerText must include("static const uint32_t HJXL_PREPARED_SUPPORTED_DISTANCE_Q8[] = {")
+    headerText must include("64u, 128u, 256u, 512u, 1024u, 2048u")
     headerText must include("#define HJXL_PREPARED_REG_XSIZE 0x00000004u")
     headerText must include("#define HJXL_PREPARED_STATUS_BUSY_BIT 1u")
+    headerText must include("#define HJXL_PREPARED_STATUS_UNSUPPORTED_DISTANCE_BIT 3u")
     headerText must include("{ 0x0000001cu, 0x0000020eu, 0x0000000fu }, /* flags */")
     headerText must include(
       "HJXL_PREPARED_STREAM_BYTE_COUNT == HJXL_PREPARED_STREAM_WORD_COUNT * HJXL_PREPARED_STREAM_WORD_BYTES"
@@ -442,6 +448,10 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     )
     headerText must include(
       "HJXL_PREPARED_TRACE_PACKED_BYTES == (HJXL_PREPARED_TRACE_PACKED_BITS + 7u) / 8u"
+    )
+    headerText must include(
+      "sizeof(HJXL_PREPARED_SUPPORTED_DISTANCE_Q8) / sizeof(HJXL_PREPARED_SUPPORTED_DISTANCE_Q8[0]) == " +
+        "HJXL_PREPARED_SUPPORTED_DISTANCE_Q8_COUNT"
     )
     compileGeneratedHeaderSmoke(header, "HJXL_PREPARED")
 
@@ -513,6 +523,9 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     preparedIndex must include("\"interface\": \"prepared_dct_axi_stream\"")
     preparedIndex must include("\"controlled_shell\": \"HjxlPreparedDctAxiLiteStreamCore\"")
     preparedIndex must include("\"kv260_top\": \"HjxlKv260PreparedDctTop\"")
+    preparedIndex must include("\"distance\"")
+    preparedIndex must include("\"fallback_q8\": 256")
+    preparedIndex must include("\"supported_q8\"")
     preparedIndex must include("\"byte_count\": 804")
     preparedIndex must include("\"input_data_bytes\": 4")
     preparedIndex must include("\"word_count\": 201")
@@ -582,6 +595,11 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     preparedReplayPlan must include("\"packed_bits\": 88")
     preparedReplayPlan must include("\"packed_bytes\": 11")
     preparedReplayPlan must include("\"default_capture_word_bytes\": 16")
+    preparedReplayPlan must include("\"distance\"")
+    preparedReplayPlan must include("\"fallback_q8\": 256")
+    preparedReplayPlan must include("\"supported_q8\"")
+    preparedReplayPlan must include("64")
+    preparedReplayPlan must include("2048")
     preparedReplayPlan must include("\"write_count\": 7")
     preparedReplayPlan must include("\"register\": \"flags\"")
     preparedReplayPlan must include("\"data\": 526")
@@ -693,6 +711,10 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
         """(?s),\n  "trace": \{\n    "default_capture_word_bytes": 16,\n    "group_bits": 16,\n    "index_bits": 32,\n    "packed_bits": 88,\n    "packed_bytes": 11,\n    "stage_bits": 8,\n    "trace_value_bits": 32\n  \}\n""",
         "\n"
       )
+      .replaceFirst(
+        """(?sm)^  "distance": \{\n    "fallback_q8": 256,\n    "supported_q8": \[\n      64,\n      128,\n      256,\n      512,\n      1024,\n      2048\n    \]\n  \},\n""",
+        ""
+      )
     Files.writeString(legacyReplayPlanJson, legacyReplayPlan)
     val legacyReplayPlanValidateOutput = expectSuccess(
       Seq(
@@ -749,6 +771,40 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
       )
     )
     legacyPreparedBundleOutput must include("validated host bundle prepared with 201 stream words")
+    Files.writeString(preparedBundleIndex, originalPreparedIndex)
+
+    Files.writeString(
+      preparedBundleIndex,
+      originalPreparedIndex.replaceFirst(
+        """(?sm)^  "distance": \{\n    "fallback_q8": 256,\n    "supported_q8": \[\n      64,\n      128,\n      256,\n      512,\n      1024,\n      2048\n    \]\n  \},\n""",
+        ""
+      )
+    )
+    val legacyPreparedBundleDistanceOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        preparedBundleIndex.toString
+      )
+    )
+    legacyPreparedBundleDistanceOutput must include("validated host bundle prepared with 201 stream words")
+    Files.writeString(preparedBundleIndex, originalPreparedIndex)
+
+    Files.writeString(
+      preparedBundleIndex,
+      originalPreparedIndex.replace("\"fallback_q8\": 256", "\"fallback_q8\": 512")
+    )
+    val invalidPreparedDistance = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        preparedBundleIndex.toString
+      )
+    )
+    invalidPreparedDistance.exitCode mustBe 1
+    invalidPreparedDistance.output must include("distance metadata does not match RTL lookup")
     Files.writeString(preparedBundleIndex, originalPreparedIndex)
 
     Files.writeString(
@@ -910,6 +966,7 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     manifest must include("\"xsize\": 4")
     manifest must include("\"ysize\": 8")
     manifest must include("\"status_control\": 0")
+    manifest must include("\"unsupported_distance\": 3")
     manifest must include("\"clear_protocol_error_write_bit\": 0")
     manifest must include("\"flags\": 519")
     manifest must include("\"token_select\": \"ac-tokens\"")
@@ -949,7 +1006,12 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     headerText must include("#define HJXL_RGB_TRACE_PACKED_BITS 88u")
     headerText must include("#define HJXL_RGB_TRACE_PACKED_BYTES 11u")
     headerText must include("#define HJXL_RGB_KV260_TRACE_CAPTURE_WORD_BYTES 16u")
+    headerText must include("#define HJXL_RGB_DISTANCE_FALLBACK_Q8 256u")
+    headerText must include("#define HJXL_RGB_SUPPORTED_DISTANCE_Q8_COUNT 6u")
+    headerText must include("static const uint32_t HJXL_RGB_SUPPORTED_DISTANCE_Q8[] = {")
+    headerText must include("64u, 128u, 256u, 512u, 1024u, 2048u")
     headerText must include("#define HJXL_RGB_REG_FLAGS 0x0000001cu")
+    headerText must include("#define HJXL_RGB_STATUS_UNSUPPORTED_DISTANCE_BIT 3u")
     headerText must include("{ 0x00000004u, 0x00000002u, 0x0000000fu }, /* xsize */")
     headerText must include("{ 0x0000001cu, 0x00000207u, 0x0000000fu }, /* flags */")
     headerText must include(
@@ -960,6 +1022,10 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     )
     headerText must include(
       "HJXL_RGB_TRACE_PACKED_BYTES == (HJXL_RGB_TRACE_PACKED_BITS + 7u) / 8u"
+    )
+    headerText must include(
+      "sizeof(HJXL_RGB_SUPPORTED_DISTANCE_Q8) / sizeof(HJXL_RGB_SUPPORTED_DISTANCE_Q8[0]) == " +
+        "HJXL_RGB_SUPPORTED_DISTANCE_Q8_COUNT"
     )
     compileGeneratedHeaderSmoke(header, "HJXL_RGB")
 
@@ -1155,6 +1221,11 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     val manifestJson = temp.resolve("rgb-manifest.json")
     val bundleDir = temp.resolve("host-bundle")
     val replayPlan = temp.resolve("replay-plan.json")
+    val unsupportedStreamCsv = temp.resolve("rgb-stream-unsupported-distance.csv")
+    val unsupportedControlCsv = temp.resolve("rgb-control-unsupported-distance.csv")
+    val unsupportedManifestJson = temp.resolve("rgb-manifest-unsupported-distance.json")
+    val unsupportedBundleDir = temp.resolve("host-bundle-unsupported-distance")
+    val unsupportedReplayPlan = temp.resolve("replay-plan-unsupported-distance.json")
     val dcTokens = temp.resolve("dc.npy")
     val acMetadataTokens = temp.resolve("acmeta.npy")
     val acTokens = temp.resolve("ac.npy")
@@ -1167,9 +1238,11 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     val assembledCodestream = temp.resolve("assembled.jxl")
     val bundleIndexCodestream = temp.resolve("bundle-index-assembled.jxl")
     val rawCodestream = temp.resolve("raw-assembled.jxl")
+    val unsupportedDistanceCodestream = temp.resolve("unsupported-distance-assembled.jxl")
     val capturedDcTokens = temp.resolve("captured-dc.npy")
     val summaryJson = temp.resolve("summary.json")
     val rawSummaryJson = temp.resolve("raw-summary.json")
+    val unsupportedDistanceSummaryJson = temp.resolve("unsupported-distance-summary.json")
     val expectedInputByteCount = width * height * 6
 
     val pixels = for {
@@ -1287,6 +1360,8 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
       )
     )
     captureOutput must include("validated capture for replay capture: 16x8 distance=1")
+    captureOutput must include("requested_distance=1")
+    captureOutput must include("distance_supported=true")
     Files.readAllBytes(assembledCodestream).toSeq mustBe Files.readAllBytes(expectedCodestream).toSeq
     Files.readAllBytes(capturedDcTokens).toSeq mustBe Files.readAllBytes(dcTokens).toSeq
     val summary = Files.readString(summaryJson).replace("\r\n", "\n")
@@ -1300,6 +1375,11 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     summary must include("\"requires_final_last\": true")
     summary must include("\"width\": 16")
     summary must include("\"height\": 8")
+    summary must include("\"distance\": 1.0")
+    summary must include("\"requested_distance\": 1.0")
+    summary must include("\"requested\": 256")
+    summary must include("\"effective\": 256")
+    summary must include("\"supported\": true")
 
     val bundleIndexOutput = expectSuccess(
       Seq(
@@ -1344,6 +1424,91 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     Files.readAllBytes(rawCodestream).toSeq mustBe Files.readAllBytes(expectedCodestream).toSeq
     Files.readString(rawSummaryJson).replace("\r\n", "\n") must include("\"stream_word_bytes\": 11")
     Files.readString(rawSummaryJson).replace("\r\n", "\n") must include("\"interface\": \"rgb_axi_stream\"")
+
+    expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_rgb_stream.py",
+        "--pfm",
+        pfm.toString,
+        "--stream-csv",
+        unsupportedStreamCsv.toString,
+        "--axi-lite-csv",
+        unsupportedControlCsv.toString,
+        "--manifest-json",
+        unsupportedManifestJson.toString,
+        "--enable-dct",
+        "--enable-quant",
+        "--enable-tokenize",
+        "--token-select",
+        "ac-tokens",
+        "--distance-q8",
+        "333"
+      )
+    )
+    expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--manifest-json",
+        unsupportedManifestJson.toString,
+        "--output-dir",
+        unsupportedBundleDir.toString,
+        "--name",
+        "capture-unsupported",
+        "--symbol-prefix",
+        "HJXL_CAPTURE_UNSUPPORTED",
+        "--replay-plan-json",
+        unsupportedReplayPlan.toString
+      )
+    )
+    val unsupportedDistanceOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_replay_capture.py",
+        "--replay-plan-json",
+        unsupportedReplayPlan.toString,
+        "--stream-bin",
+        captureBin.toString,
+        "--last-bin",
+        captureLast.toString,
+        "--codestream-bin",
+        unsupportedDistanceCodestream.toString,
+        "--expect-codestream-bin",
+        expectedCodestream.toString,
+        "--summary-json",
+        unsupportedDistanceSummaryJson.toString
+      )
+    )
+    unsupportedDistanceOutput must include("validated capture for replay capture-unsupported: 16x8 distance=1")
+    unsupportedDistanceOutput must include("requested_distance=1.30078")
+    unsupportedDistanceOutput must include("distance_supported=false")
+    Files.readAllBytes(unsupportedDistanceCodestream).toSeq mustBe Files.readAllBytes(expectedCodestream).toSeq
+    val unsupportedDistanceSummary = Files.readString(unsupportedDistanceSummaryJson).replace("\r\n", "\n")
+    unsupportedDistanceSummary must include("\"distance\": 1.0")
+    unsupportedDistanceSummary must include("\"requested_distance\": 1.30078125")
+    unsupportedDistanceSummary must include("\"requested\": 333")
+    unsupportedDistanceSummary must include("\"effective\": 256")
+    unsupportedDistanceSummary must include("\"supported\": false")
+
+    val strictUnsupportedDistance = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_replay_capture.py",
+        "--replay-plan-json",
+        unsupportedReplayPlan.toString,
+        "--stream-bin",
+        captureBin.toString,
+        "--last-bin",
+        captureLast.toString,
+        "--require-supported-distance",
+        "--expect-codestream-bin",
+        expectedCodestream.toString
+      )
+    )
+    strictUnsupportedDistance.exitCode mustBe 1
+    strictUnsupportedDistance.output must include("distance_q8 333 is not supported by RTL distance lookup")
+    strictUnsupportedDistance.output must not include "Traceback"
 
     val invalidWordBytes = runCommand(
       Seq(

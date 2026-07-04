@@ -70,7 +70,8 @@ class HjxlAxiLiteStreamElaborationSpec extends AnyFreeSpec with Matchers {
       "io_trace_bits_last",
       "io_busy",
       "io_overflow",
-      "io_protocolError"
+      "io_protocolError",
+      "io_unsupportedDistance"
     )
     for (port <- expectedPorts) {
       withClue(s"missing generated AXI-Lite stream port $port") {

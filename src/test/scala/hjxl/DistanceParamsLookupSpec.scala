@@ -6,8 +6,36 @@ import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
+import scala.sys.process.Process
 
 class DistanceParamsLookupSpec extends AnyFreeSpec with Matchers with ChiselSim {
+  private def hostDistanceMetadata(): (Int, Seq[Int]) = {
+    val script =
+      """import json, sys
+        |sys.path.insert(0, "tools")
+        |from hjxl_manifest_header import distance_metadata
+        |print(json.dumps(distance_metadata(), separators=(",", ":")))
+        |""".stripMargin
+    val output = Process(
+      Seq("python3", "-c", script),
+      TestPaths.repoRoot.toFile,
+      "PYTHONDONTWRITEBYTECODE" -> "1"
+    ).!!.trim
+    val fallback = """"fallback_q8":(\d+)""".r
+      .findFirstMatchIn(output)
+      .getOrElse(fail(s"missing fallback_q8 in host distance metadata: $output"))
+      .group(1)
+      .toInt
+    val supportedText = """"supported_q8":\[(.*?)\]""".r
+      .findFirstMatchIn(output)
+      .getOrElse(fail(s"missing supported_q8 in host distance metadata: $output"))
+      .group(1)
+    val supported =
+      if (supportedText.isEmpty) Seq.empty
+      else supportedText.split(",").toSeq.map(_.toInt)
+    fallback -> supported
+  }
+
   "DistanceParamsLookup emits libjxl-tiny distance parameters for supported Q8 distances" in {
     simulate(new DistanceParamsLookup) { dut =>
       for (entry <- DistanceParamsLookup.Entries) {
@@ -43,5 +71,12 @@ class DistanceParamsLookupSpec extends AnyFreeSpec with Matchers with ChiselSim 
         dut.io.params.invDcFactorQ16(channel).expect(fallback.invDcFactorQ16(channel).U)
       }
     }
+  }
+
+  "host distance metadata mirrors the RTL lookup table" in {
+    val (fallback, supported) = hostDistanceMetadata()
+
+    fallback mustBe DistanceParamsLookup.Default.distanceQ8
+    supported mustBe DistanceParamsLookup.Entries.map(_.distanceQ8)
   }
 }

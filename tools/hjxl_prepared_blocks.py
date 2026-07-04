@@ -372,6 +372,7 @@ def write_manifest_json(
                 "protocol_error": 0,
                 "busy": 1,
                 "overflow": 2,
+                "unsupported_distance": 3,
                 "clear_protocol_error_write_bit": 0,
             },
             "config": {

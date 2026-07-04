@@ -19,6 +19,7 @@ from hjxl_manifest_header import (
     TRACE_PACKED_BYTES,
     TRACE_STAGE_BITS,
     TRACE_VALUE_BITS,
+    distance_metadata,
     header_text,
     input_data_bits,
     register_writes,
@@ -167,6 +168,9 @@ def validate_host_bundle(index_path: Path) -> dict:
     expected_target = target_metadata(manifest.get("format"))
     if "target" in index and index["target"] != expected_target:
         raise ValueError(f"{index_path}: target metadata does not match source manifest")
+    expected_distance = distance_metadata()
+    if "distance" in index and index["distance"] != expected_distance:
+        raise ValueError(f"{index_path}: distance metadata does not match RTL lookup")
 
     rows, input_data_bits, input_data_bytes = stream_rows_from_manifest(manifest_path)
     stream = index["stream"]
@@ -277,6 +281,7 @@ def describe_host_bundle(index_path: Path) -> dict:
             "packed_bytes": TRACE_PACKED_BYTES,
             "default_capture_word_bytes": KV260_TRACE_CAPTURE_WORD_BYTES,
         },
+        "distance": distance_metadata(),
         "axi_lite": {
             "write_count": len(writes),
             "writes": writes,
@@ -314,6 +319,8 @@ def validate_replay_plan(plan_path: Path) -> dict:
         expected.pop("trace", None)
     if "target" not in plan:
         expected.pop("target", None)
+    if "distance" not in plan:
+        expected.pop("distance", None)
     if plan != expected:
         raise ValueError(f"{plan_path}: replay plan does not match described bundle")
     return plan
@@ -389,6 +396,7 @@ def write_host_bundle(
         "original_manifest": str(manifest_path),
         "manifest_format": manifest.get("format"),
         "target": target_metadata(manifest.get("format")),
+        "distance": distance_metadata(),
         "name": safe_name,
         "artifacts": {
             "header": _artifact_path(header, output_dir),

@@ -10,9 +10,10 @@ import chisel3.util._
   * This keeps the same register map as `HjxlAxiLiteStreamCore` so the RGB
   * stream shell and the prepared-DCT stream shell share one host control shape.
   * The prepared-DCT stream consumes `xsize`/`ysize` and status/control directly:
-  * status bit 0 is protocol error, bit 1 is busy, and bit 2 is overflow. The
-  * remaining `FrameConfig` fields are preserved for a uniform top-level
-  * interface and future prepared-path experiments.
+  * status bit 0 is protocol error, bit 1 is busy, bit 2 is overflow, and bit 3
+  * reports unsupported distance fallback. The remaining `FrameConfig` fields
+  * are preserved for a uniform top-level interface and future prepared-path
+  * experiments.
   */
 class HjxlPreparedDctAxiLiteStreamCore(
     c: HjxlConfig = HjxlConfig(),
@@ -34,6 +35,7 @@ class HjxlPreparedDctAxiLiteStreamCore(
     val busy = Output(Bool())
     val overflow = Output(Bool())
     val protocolError = Output(Bool())
+    val unsupportedDistance = Output(Bool())
   })
 
   private def word(byteAddress: Int): UInt =
@@ -68,6 +70,9 @@ class HjxlPreparedDctAxiLiteStreamCore(
   val enableTokenize = RegInit(true.B)
   val tokenSelect = RegInit(TokenTraceSelect.AcTokens.U(2.W))
 
+  val distanceStatus = Module(new DistanceParamsLookup)
+  distanceStatus.io.distanceQ8 := distanceQ8
+
   val stream = Module(new HjxlPreparedDctAxiStreamCore(c))
   stream.io.config.xsize := xsize
   stream.io.config.ysize := ysize
@@ -91,6 +96,7 @@ class HjxlPreparedDctAxiLiteStreamCore(
   io.busy := stream.io.busy
   io.overflow := stream.io.overflow
   io.protocolError := stream.io.protocolError
+  io.unsupportedDistance := !distanceStatus.io.supported
 
   val clearProtocolError = WireDefault(false.B)
   stream.io.clearProtocolError := clearProtocolError
@@ -135,7 +141,7 @@ class HjxlPreparedDctAxiLiteStreamCore(
     switch(writeWord) {
       is(word(HjxlAxiLiteRegister.StatusControl)) {
         writeOkay := true.B
-        when(wStrb(0) && wData(0)) {
+        when(wStrb(0) && wData(HjxlStatusControlBit.ClearProtocolError)) {
           clearProtocolError := true.B
         }
       }
@@ -202,7 +208,13 @@ class HjxlPreparedDctAxiLiteStreamCore(
   switch(readWord) {
     is(word(HjxlAxiLiteRegister.StatusControl)) {
       readOkay := true.B
-      readData := Cat(0.U(29.W), stream.io.overflow, stream.io.busy, stream.io.protocolError)
+      readData := Cat(
+        0.U((dataBits - 4).W),
+        io.unsupportedDistance,
+        stream.io.overflow,
+        stream.io.busy,
+        stream.io.protocolError
+      )
     }
     is(word(HjxlAxiLiteRegister.Xsize)) {
       readOkay := true.B

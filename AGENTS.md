@@ -52,7 +52,8 @@ Use a hardware/software split:
 - `HjxlAxiLiteStreamCore` is the current KV260-facing controlled shell. It
   wraps `HjxlAxiStreamCore` with a minimal 32-bit AXI-Lite register map for
   `FrameConfig` and status/control while preserving the same AXI4-Stream input
-  and trace output.
+  and trace output. It also exposes `unsupportedDistance` directly, matching
+  status/control read bit 3 when `distanceQ8` falls back to distance 1.
 - `HjxlPreparedDctAxiStreamCore` is the stream-shaped shell for the current
   closest-to-parity prepared-DCT quantize-to-token path. Use it when the host
   can supply prepared DCT-only block records and should receive packed token
@@ -60,13 +61,14 @@ Use a hardware/software split:
 - `HjxlPreparedDctAxiLiteStreamCore` wraps that prepared-DCT stream shell with
   the same AXI-Lite register map used by `HjxlAxiLiteStreamCore`. Prefer it for
   KV260-style integration experiments when the host can already supply prepared
-  DCT blocks.
+  DCT blocks; its direct `unsupportedDistance` output mirrors the same status
+  bit 3 fallback diagnostic.
 - `HjxlKv260PreparedDctTop` is the current Vivado-facing wrapper around
   `HjxlPreparedDctAxiLiteStreamCore`. It exposes flat `ap_clk`/`ap_rst_n`,
   `s_axi_control_*`, `s_axis_input_*`, and 128-bit `m_axis_trace_*` ports plus
-  `busy`, `overflow`, and `protocol_error` pins, while preserving the tested
-  prepared stream/control core internally. `m_axis_trace_tkeep` marks the low
-  11 bytes that carry the packed trace word.
+  `busy`, `overflow`, `protocol_error`, and `unsupported_distance` pins, while
+  preserving the tested prepared stream/control core internally.
+  `m_axis_trace_tkeep` marks the low 11 bytes that carry the packed trace word.
 - Keep stage outputs traceable against libjxl-tiny names and array shapes.
 
 Use stage-tolerant accuracy:
@@ -126,9 +128,9 @@ Read these libjxl-tiny files before making architectural changes:
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`, defaulting unsupported values
-  to distance 1. It emits global AC scale, quantized DC scale, inverse DC
-  factors, fixed raw-quant-5 AC reciprocal, X quant-matrix multiplier, and EPF
-  iterations. Use
+  to distance 1; AXI-Lite controlled shells report that fallback at status bit
+  3. It emits global AC scale, quantized DC scale, inverse DC factors, fixed
+  raw-quant-5 AC reciprocal, X quant-matrix multiplier, and EPF iterations. Use
   `tools/hjxl_reference.py --distance-params-json ...` to regenerate or check
   entries against the local libjxl-tiny Python port.
 - `FrameDct8x8TraceStage` buffers the RGB frame, converts each padded 8x8 block
@@ -289,7 +291,8 @@ Read these libjxl-tiny files before making architectural changes:
   and `generated-axi-lite-stream-core-ac-tokens/`; keep both generated
   directories out of git. The register map is: `0x00` status/control
   (`protocolError` read bit 0, `busy` read bit 1, `overflow` read bit 2,
-  clear protocol error on write bit 0), `0x04` `xsize`, `0x08` `ysize`,
+  unsupported `distanceQ8` fallback read bit 3, clear protocol error on write
+  bit 0), `0x04` `xsize`, `0x08` `ysize`,
   `0x0c` `distanceQ8`, `0x10` `fixedPointScale`, `0x14`
   `fixedInvQacQ16`, `0x18` `fixedRawQuant`, and `0x1c` flags
   (`enableXyb`, `enableDct`, `enableQuant`, `enableTokenize`, `tokenSelect` in
@@ -415,8 +418,9 @@ Read these libjxl-tiny files before making architectural changes:
 - `tools/hjxl_manifest_header.py --manifest-json ... --header ...` consumes
   RGB or prepared-DCT stream/control manifests and writes a C header containing
   target interface/shell macros, stream word count, input data width, stream
-  byte counts, trace packing/capture width macros, AXI-Lite register offsets,
-  status bits, and the ordered config-write table. Keep it
+  byte counts, supported-distance Q8 constants, trace packing/capture width
+  macros, AXI-Lite register offsets, status bits, and the ordered config-write
+  table. Keep it
   manifest-driven so host code does not duplicate register constants by hand.
   The generated header includes C11/C++ static assertions for stream byte count,
   trace byte count, and AXI-Lite write-table length; preserve those checks when
@@ -434,24 +438,25 @@ Read these libjxl-tiny files before making architectural changes:
   directory can move as a unit. The index's `target` block is the explicit host
   contract: RGB manifests target `HjxlAxiLiteStreamCore`, while prepared-DCT
   manifests target `HjxlPreparedDctAxiLiteStreamCore` and the current
-  `HjxlKv260PreparedDctTop`. The index's `stream.byte_count` is the intended
-  host/DMA transfer byte count for the input payload, and its SHA-256 checksums
-  cover the bundle-local artifacts. `--no-last-bin` is valid only when the host
+  `HjxlKv260PreparedDctTop`. Its `distance` block records supported Q8
+  distances and the fallback Q8 value. The index's `stream.byte_count` is the
+  intended host/DMA transfer byte count for the input payload, and its SHA-256
+  checksums cover the bundle-local artifacts. `--no-last-bin` is valid only when the host
   path derives TLAST from transfer length; bundle validation still checks
   final-TLAST semantics through the stream CSV. Use the lower-level
   header/buffer tools only when tests need to check one artifact in isolation. Run
   `tools/hjxl_host_bundle.py --validate-bundle ...` before host replay; it
-  checks the bundle index, target metadata, generated header, stream payload,
-  optional TLAST sidecar, copied AXI-Lite control CSV, stream metadata, and
-  AXI-Lite write count against the source manifest, then verifies artifact
-  checksums. Older bundle indexes without `target` still validate, but
-  contradictory target metadata should be treated as a hard error.
+  checks the bundle index, target metadata, distance metadata, generated header,
+  stream payload, optional TLAST sidecar, copied AXI-Lite control CSV, stream
+  metadata, and AXI-Lite write count against the source manifest, then verifies
+  artifact checksums. Older bundle indexes without `target` or `distance` still
+  validate, but contradictory metadata should be treated as a hard error.
   `tools/hjxl_host_bundle.py --describe-bundle ...` validates the bundle and
   prints `hjxl.host_replay_plan.v1` JSON with bundle-relative and absolute resolved
   stream payload paths, diagnostic stream/control CSV paths, DMA byte count,
   optional TLAST sidecar paths, target interface metadata, ordered AXI-Lite
-  writes, status bits, trace packing geometry, default capture word bytes, and
-  artifact checksums.
+  writes, status bits, supported-distance Q8 values plus fallback distance,
+  trace packing geometry, default capture word bytes, and artifact checksums.
   `bundle_index_resolved` is the canonical bundle-index path for host scripts.
   Use that shape for host bring-up scripts before writing platform-specific
   drivers. Add `--replay-plan-json ...` during bundle generation or
@@ -467,10 +472,13 @@ Read these libjxl-tiny files before making architectural changes:
 - `tools/hjxl_replay_capture.py --replay-plan-json ... --stream-bin ...
   --last-bin ... --codestream-bin ... --expect-codestream-bin ...` is the
   preferred post-DMA capture checker for host bring-up. It validates the saved
-  replay plan before use, derives width, height, and distance from the ordered
-  AXI-Lite writes, then assembles captured token traces through the same
-  libjxl-tiny-backed path as `tools/hjxl_trace_to_codestream.py`. Binary capture
-  input defaults to the plan's trace metadata: 16-byte words for
+  replay plan before use, derives width, height, requested distance, and
+  hardware-effective distance from the ordered AXI-Lite writes, then assembles
+  captured token traces through the same libjxl-tiny-backed path as
+  `tools/hjxl_trace_to_codestream.py`. Unsupported `distanceQ8` values assemble
+  with the RTL's distance-1 fallback by default; use
+  `--require-supported-distance` when a host script should reject that fallback.
+  Binary capture input defaults to the plan's trace metadata: 16-byte words for
   `HjxlKv260PreparedDctTop`'s 128-bit `m_axis_trace_tdata` today. Pass
   `--stream-word-bytes 11` for raw packed 88-bit trace dumps. Use
   `--expect-target-interface`, `--expect-target-controlled-shell`, and

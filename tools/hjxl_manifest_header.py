@@ -39,6 +39,8 @@ TRACE_VALUE_BITS = 32
 TRACE_PACKED_BITS = TRACE_STAGE_BITS + TRACE_GROUP_BITS + TRACE_INDEX_BITS + TRACE_VALUE_BITS
 TRACE_PACKED_BYTES = (TRACE_PACKED_BITS + 7) // 8
 KV260_TRACE_CAPTURE_WORD_BYTES = 16
+DEFAULT_DISTANCE_Q8 = 256
+SUPPORTED_DISTANCE_Q8 = (64, 128, 256, 512, 1024, 2048)
 
 CONFIG_REGISTER_KEYS = (
     ("xsize", "xsize"),
@@ -78,10 +80,25 @@ def _c_string(value: object) -> str:
     return value.replace("\\", "\\\\").replace("\"", "\\\"")
 
 
+def _status_bit(status_bits: dict, key: str, default: int | None = None) -> int:
+    if key in status_bits:
+        return _u32(status_bits[key])
+    if default is not None:
+        return _u32(default)
+    raise KeyError(key)
+
+
 def target_metadata(manifest_format: str | None) -> dict:
     if manifest_format not in TARGETS:
         raise ValueError(f"unsupported manifest format {manifest_format!r}")
     return copy.deepcopy(TARGETS[manifest_format])
+
+
+def distance_metadata() -> dict:
+    return {
+        "fallback_q8": DEFAULT_DISTANCE_Q8,
+        "supported_q8": list(SUPPORTED_DISTANCE_Q8),
+    }
 
 
 def register_writes(manifest: dict) -> list[tuple[str, int, int, int]]:
@@ -161,6 +178,8 @@ def header_text(manifest: dict, *, symbol_prefix: str, include_guard: str | None
         f"#define {prefix}_TRACE_PACKED_BITS {TRACE_PACKED_BITS}u",
         f"#define {prefix}_TRACE_PACKED_BYTES {TRACE_PACKED_BYTES}u",
         f"#define {prefix}_KV260_TRACE_CAPTURE_WORD_BYTES {KV260_TRACE_CAPTURE_WORD_BYTES}u",
+        f"#define {prefix}_DISTANCE_FALLBACK_Q8 {DEFAULT_DISTANCE_Q8}u",
+        f"#define {prefix}_SUPPORTED_DISTANCE_Q8_COUNT {len(SUPPORTED_DISTANCE_Q8)}u",
         "",
     ]
 
@@ -172,9 +191,14 @@ def header_text(manifest: dict, *, symbol_prefix: str, include_guard: str | None
             f"#define {prefix}_STATUS_PROTOCOL_ERROR_BIT {_u32(status_bits['protocol_error'])}u",
             f"#define {prefix}_STATUS_BUSY_BIT {_u32(status_bits['busy'])}u",
             f"#define {prefix}_STATUS_OVERFLOW_BIT {_u32(status_bits['overflow'])}u",
+            f"#define {prefix}_STATUS_UNSUPPORTED_DISTANCE_BIT {_status_bit(status_bits, 'unsupported_distance', 3)}u",
             "#define "
             f"{prefix}_CONTROL_CLEAR_PROTOCOL_ERROR_BIT "
             f"{_u32(status_bits['clear_protocol_error_write_bit'])}u",
+            "",
+            f"static const uint32_t {prefix}_SUPPORTED_DISTANCE_Q8[] = {{",
+            "  " + ", ".join(f"{value}u" for value in SUPPORTED_DISTANCE_Q8),
+            "};",
             "",
             f"static const {prefix.lower()}_axi_lite_write_t {prefix}_AXI_LITE_WRITES[] = {{",
         ]
@@ -199,6 +223,10 @@ def header_text(manifest: dict, *, symbol_prefix: str, include_guard: str | None
             "static_assert("
             f"{prefix}_TRACE_PACKED_BYTES == ({prefix}_TRACE_PACKED_BITS + 7u) / 8u, "
             '"trace packed byte count mismatch");',
+            "static_assert("
+            f"sizeof({prefix}_SUPPORTED_DISTANCE_Q8) / sizeof({prefix}_SUPPORTED_DISTANCE_Q8[0]) == "
+            f"{prefix}_SUPPORTED_DISTANCE_Q8_COUNT, "
+            '"supported distance count mismatch");',
             "#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L",
             "_Static_assert("
             f"{prefix}_STREAM_BYTE_COUNT == {prefix}_STREAM_WORD_COUNT * {prefix}_STREAM_WORD_BYTES, "
@@ -210,6 +238,10 @@ def header_text(manifest: dict, *, symbol_prefix: str, include_guard: str | None
             "_Static_assert("
             f"{prefix}_TRACE_PACKED_BYTES == ({prefix}_TRACE_PACKED_BITS + 7u) / 8u, "
             '"trace packed byte count mismatch");',
+            "_Static_assert("
+            f"sizeof({prefix}_SUPPORTED_DISTANCE_Q8) / sizeof({prefix}_SUPPORTED_DISTANCE_Q8[0]) == "
+            f"{prefix}_SUPPORTED_DISTANCE_Q8_COUNT, "
+            '"supported distance count mismatch");',
             "#endif",
             "",
             f"#endif /* {guard} */",

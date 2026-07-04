@@ -183,6 +183,21 @@ class HjxlAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim
     }
   }
 
+  "HjxlAxiLiteStreamCore reports unsupported distance fallback in status bit 3" in {
+    simulate(new HjxlAxiLiteStreamCore(config, traceRoute = TraceStage.InputPadded)) { dut =>
+      init(dut)
+
+      dut.io.unsupportedDistance.expect(false.B)
+      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(0) -> AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.DistanceQ8, 333) must be(AxiLiteResponse.Okay)
+      dut.io.unsupportedDistance.expect(true.B)
+      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(8) -> AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.DistanceQ8, 512) must be(AxiLiteResponse.Okay)
+      dut.io.unsupportedDistance.expect(false.B)
+      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(0) -> AxiLiteResponse.Okay)
+    }
+  }
+
   "HjxlAxiLiteStreamCore consumes PFM-derived RGB streams after AXI-Lite configuration" in {
     val temp = Files.createTempDirectory("hjxl-axi-lite-rgb-stream-input-")
     val pfm = temp.resolve("input.pfm")

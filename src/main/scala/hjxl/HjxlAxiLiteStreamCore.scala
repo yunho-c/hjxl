@@ -51,11 +51,20 @@ object HjxlAxiLiteRegister {
   val Flags = 0x1c
 }
 
+object HjxlStatusControlBit {
+  val ProtocolError = 0
+  val Busy = 1
+  val Overflow = 2
+  val UnsupportedDistance = 3
+  val ClearProtocolError = 0
+}
+
 /** AXI4-Lite control-plane wrapper around the AXI4-Stream `HjxlCore` shell.
   *
   * Register map, 32-bit little-endian words:
   *   - 0x00 status/control: read bit 0 = stream protocol error,
-  *     bit 1 = busy, bit 2 = overflow; write bit 0 = clear protocol error
+  *     bit 1 = busy, bit 2 = overflow, bit 3 = unsupported distance fallback;
+  *     write bit 0 = clear protocol error
   *   - 0x04 xsize
   *   - 0x08 ysize
   *   - 0x0c distanceQ8
@@ -86,6 +95,7 @@ class HjxlAxiLiteStreamCore(
     val busy = Output(Bool())
     val overflow = Output(Bool())
     val protocolError = Output(Bool())
+    val unsupportedDistance = Output(Bool())
   })
 
   private def word(byteAddress: Int): UInt =
@@ -120,6 +130,9 @@ class HjxlAxiLiteStreamCore(
   val enableTokenize = RegInit(false.B)
   val tokenSelect = RegInit(TokenTraceSelect.Dc.U(2.W))
 
+  val distanceStatus = Module(new DistanceParamsLookup)
+  distanceStatus.io.distanceQ8 := distanceQ8
+
   val stream = Module(new HjxlAxiStreamCore(c, traceRoute))
   stream.io.config.xsize := xsize
   stream.io.config.ysize := ysize
@@ -143,6 +156,7 @@ class HjxlAxiLiteStreamCore(
   io.busy := stream.io.busy
   io.overflow := stream.io.overflow
   io.protocolError := stream.io.protocolError
+  io.unsupportedDistance := !distanceStatus.io.supported
 
   val clearProtocolError = WireDefault(false.B)
   stream.io.clearProtocolError := clearProtocolError
@@ -187,7 +201,7 @@ class HjxlAxiLiteStreamCore(
     switch(writeWord) {
       is(word(HjxlAxiLiteRegister.StatusControl)) {
         writeOkay := true.B
-        when(wStrb(0) && wData(0)) {
+        when(wStrb(0) && wData(HjxlStatusControlBit.ClearProtocolError)) {
           clearProtocolError := true.B
         }
       }
@@ -254,7 +268,13 @@ class HjxlAxiLiteStreamCore(
   switch(readWord) {
     is(word(HjxlAxiLiteRegister.StatusControl)) {
       readOkay := true.B
-      readData := Cat(0.U(29.W), stream.io.overflow, stream.io.busy, stream.io.protocolError)
+      readData := Cat(
+        0.U((dataBits - 4).W),
+        io.unsupportedDistance,
+        stream.io.overflow,
+        stream.io.busy,
+        stream.io.protocolError
+      )
     }
     is(word(HjxlAxiLiteRegister.Xsize)) {
       readOkay := true.B

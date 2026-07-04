@@ -245,6 +245,21 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
     }
   }
 
+  "HjxlPreparedDctAxiLiteStreamCore reports unsupported distance fallback in status bit 3" in {
+    simulate(new HjxlPreparedDctAxiLiteStreamCore(config)) { dut =>
+      init(dut)
+
+      dut.io.unsupportedDistance.expect(false.B)
+      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(0) -> AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.DistanceQ8, 333) must be(AxiLiteResponse.Okay)
+      dut.io.unsupportedDistance.expect(true.B)
+      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(8) -> AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.DistanceQ8, 512) must be(AxiLiteResponse.Okay)
+      dut.io.unsupportedDistance.expect(false.B)
+      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(0) -> AxiLiteResponse.Okay)
+    }
+  }
+
   "HjxlPreparedDctAxiLiteStreamCore controlled stream assembles to libjxl-tiny codestream bytes" in {
     requireReferenceTools()
 
@@ -439,7 +454,8 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
           "io_trace_bits_last",
           "io_busy",
           "io_overflow",
-          "io_protocolError"
+          "io_protocolError",
+          "io_unsupportedDistance"
         )
       ) {
         withClue(s"missing generated controlled prepared stream port $port") {

@@ -60,6 +60,7 @@ class HjxlKv260PreparedDctTop(
   val busy = IO(Output(Bool()))
   val overflow = IO(Output(Bool()))
   val protocol_error = IO(Output(Bool()))
+  val unsupported_distance = IO(Output(Bool()))
 
   withClockAndReset(ap_clk, !ap_rst_n) {
     val core = Module(new HjxlPreparedDctAxiLiteStreamCore(c, axiAddrBits))
@@ -100,5 +101,6 @@ class HjxlKv260PreparedDctTop(
     busy := core.io.busy
     overflow := core.io.overflow
     protocol_error := core.io.protocolError
+    unsupported_distance := core.io.unsupportedDistance
   }
 }

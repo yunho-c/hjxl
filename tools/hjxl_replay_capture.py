@@ -4,12 +4,37 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import sys
 
 from hjxl_host_bundle import describe_host_bundle, validate_replay_plan
+from hjxl_manifest_header import distance_metadata
 from hjxl_trace_to_codestream import assemble_trace, compare_bytes, write_array, write_bytes
+
+
+DEFAULT_DISTANCE_METADATA = distance_metadata()
+
+
+@dataclass(frozen=True)
+class FrameConfigFromPlan:
+    width: int
+    height: int
+    requested_distance_q8: int
+    effective_distance_q8: int
+
+    @property
+    def distance_supported(self) -> bool:
+        return self.requested_distance_q8 == self.effective_distance_q8
+
+    @property
+    def requested_distance(self) -> float:
+        return self.requested_distance_q8 / 256.0
+
+    @property
+    def effective_distance(self) -> float:
+        return self.effective_distance_q8 / 256.0
 
 
 def _load_plan(*, replay_plan_json: Path | None, bundle_index: Path | None) -> dict:
@@ -30,17 +55,38 @@ def _write_data(plan: dict, register: str) -> int:
     raise ValueError(f"replay plan is missing AXI-Lite write for {register}")
 
 
-def _frame_config_from_plan(plan: dict) -> tuple[int, int, float]:
+def _frame_config_from_plan(plan: dict, *, require_supported_distance: bool) -> FrameConfigFromPlan:
     width = _write_data(plan, "xsize")
     height = _write_data(plan, "ysize")
     distance_q8 = _write_data(plan, "distance_q8")
+    distance_metadata = plan.get("distance", {})
+    fallback_distance_q8 = int(distance_metadata.get("fallback_q8", DEFAULT_DISTANCE_METADATA["fallback_q8"]))
+    supported_distance_q8 = frozenset(
+        int(value) for value in distance_metadata.get("supported_q8", DEFAULT_DISTANCE_METADATA["supported_q8"])
+    )
     if width <= 0:
         raise ValueError("replay plan xsize must be positive")
     if height <= 0:
         raise ValueError("replay plan ysize must be positive")
     if distance_q8 <= 0:
         raise ValueError("replay plan distance_q8 must be positive")
-    return width, height, distance_q8 / 256.0
+    if fallback_distance_q8 <= 0:
+        raise ValueError("replay plan distance.fallback_q8 must be positive")
+    if not supported_distance_q8:
+        raise ValueError("replay plan distance.supported_q8 must not be empty")
+    effective_distance_q8 = distance_q8 if distance_q8 in supported_distance_q8 else fallback_distance_q8
+    if require_supported_distance and effective_distance_q8 != distance_q8:
+        supported = ", ".join(str(value) for value in sorted(supported_distance_q8))
+        raise ValueError(
+            "replay plan distance_q8 "
+            f"{distance_q8} is not supported by RTL distance lookup; supported Q8 distances: {supported}"
+        )
+    return FrameConfigFromPlan(
+        width=width,
+        height=height,
+        requested_distance_q8=distance_q8,
+        effective_distance_q8=effective_distance_q8,
+    )
 
 
 def _positive_int(value: object, label: str) -> int:
@@ -159,6 +205,11 @@ def main() -> int:
         action="store_true",
         help="do not require captured packed streams to assert TLAST only on the final word",
     )
+    parser.add_argument(
+        "--require-supported-distance",
+        action="store_true",
+        help="fail if replay-plan distanceQ8 would use the RTL distance-1 fallback",
+    )
     parser.add_argument("--frame-bin", type=Path, help="output serialized JPEG XL frame bytes")
     parser.add_argument("--codestream-bin", type=Path, help="output bare JPEG XL codestream bytes")
     parser.add_argument("--expect-frame-bin", type=Path, help="expected frame bytes to compare")
@@ -209,7 +260,10 @@ def main() -> int:
                 "kv260_top": args.expect_target_kv260_top,
             },
         )
-        width, height, distance = _frame_config_from_plan(plan)
+        frame_config = _frame_config_from_plan(
+            plan,
+            require_supported_distance=args.require_supported_distance,
+        )
         group_bits, trace_value_bits, stream_word_bytes = _trace_config_from_plan(
             plan,
             group_bits_override=args.group_bits,
@@ -221,9 +275,9 @@ def main() -> int:
             args.stream_csv,
             args.stream_bin,
             args.last_bin,
-            width,
-            height,
-            distance,
+            frame_config.width,
+            frame_config.height,
+            frame_config.effective_distance,
             stream_word_bytes=stream_word_bytes,
             group_bits=group_bits,
             trace_value_bits=trace_value_bits,
@@ -259,9 +313,15 @@ def main() -> int:
         "format": "hjxl.capture_summary.v1",
         "replay_name": plan["name"],
         "target": plan.get("target"),
-        "width": width,
-        "height": height,
-        "distance": distance,
+        "width": frame_config.width,
+        "height": frame_config.height,
+        "distance": frame_config.effective_distance,
+        "requested_distance": frame_config.requested_distance,
+        "distance_q8": {
+            "requested": frame_config.requested_distance_q8,
+            "effective": frame_config.effective_distance_q8,
+            "supported": frame_config.distance_supported,
+        },
         "capture": {
             "trace_csv_count": len(args.trace_csv),
             "stream_csv_count": len(args.stream_csv),
@@ -285,7 +345,10 @@ def main() -> int:
 
     print(
         "validated capture for replay "
-        f"{plan['name']}: {width}x{height} distance={distance:g} "
+        f"{plan['name']}: {frame_config.width}x{frame_config.height} "
+        f"distance={frame_config.effective_distance:g} "
+        f"requested_distance={frame_config.requested_distance:g} "
+        f"distance_supported={str(frame_config.distance_supported).lower()} "
         f"dc={len(dc_tokens)} ac_metadata={len(ac_metadata_tokens)} "
         f"ac={len(ac_tokens)} frame_bytes={len(frame)} codestream_bytes={len(codestream)}"
     )

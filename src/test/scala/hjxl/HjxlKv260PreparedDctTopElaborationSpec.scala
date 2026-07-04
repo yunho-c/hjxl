@@ -76,7 +76,8 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers {
         "m_axis_trace_tlast",
         "busy",
         "overflow",
-        "protocol_error"
+        "protocol_error",
+        "unsupported_distance"
       )
     ) {
       withClue(s"missing generated KV260 top port $port") {
