@@ -15,6 +15,8 @@ class FrameDctOnlyDcTokenTraceStageSpec extends AnyFreeSpec with Matchers with C
     dut.io.config.ysize.poke(height.U)
     dut.io.config.distanceQ8.poke(256.U)
     dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
+    dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
+    dut.io.config.fixedRawQuant.poke(0.U)
     dut.io.config.enableXyb.poke(true.B)
     dut.io.config.enableDct.poke(true.B)
     dut.io.config.enableQuant.poke(true.B)

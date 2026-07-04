@@ -10,10 +10,11 @@ import chisel3.util._
   * This is the first frame scheduler for the quantized block boundary. It uses
   * the current approximate RGB->XYB and 8x8 DCT path, then feeds each raster
   * block through `DctOnlyQuantizeBlock`. Adaptive quantization and CFL maps are
-  * not implemented here yet: every block uses a fixed adjusted quant value and
-  * zero tile CFL multipliers. `FrameConfig.distanceQ8` selects the
+  * not implemented here yet: every block uses one fixed adjusted quant value
+  * and zero tile CFL multipliers. `FrameConfig.distanceQ8` selects the
   * distance-derived AC/DC scalar parameters from `DistanceParamsLookup`;
-  * `FrameConfig.fixedPointScale` can still override only the AC scale Q16.
+  * `FrameConfig.fixedPointScale` and `fixedInvQacQ16` can still override only
+  * the AC scale path.
   */
 class FrameDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   private val blockDim = HjxlConstants.BlockDim
@@ -112,21 +113,16 @@ class FrameDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
     dctB.io.input.bits(i) := xybPixels(i).xybB
   }
 
-  val scaleQ16 = Mux(
-    io.config.fixedPointScale === 0.U,
-    distanceParams.io.params.scaleQ16,
-    io.config.fixedPointScale
-  )
-  val quant = QuantizeDct8x8Block.DefaultRawQuant.U(8.W)
-  val quantScaleProduct = scaleQ16 * quant
-  val invQacQ16 = (BigInt(1) << 32).U(64.W) / quantScaleProduct
+  val acScale = Module(new AcQuantScaleSelector(c))
+  acScale.io.config := io.config
+  acScale.io.distance := distanceParams.io.params
 
   val quantizer = Module(new DctOnlyQuantizeBlock(c))
   quantizer.io.input.valid := state === emitting
   quantizer.io.output.ready := true.B
-  quantizer.io.input.bits.quant := quant
-  quantizer.io.input.bits.scaleQ16 := scaleQ16
-  quantizer.io.input.bits.invQacQ16 := invQacQ16(31, 0)
+  quantizer.io.input.bits.quant := acScale.io.params.rawQuant
+  quantizer.io.input.bits.scaleQ16 := acScale.io.params.scaleQ16
+  quantizer.io.input.bits.invQacQ16 := acScale.io.params.invQacQ16
   quantizer.io.input.bits.xQmMultiplierQ16 := distanceParams.io.params.xQmMultiplierQ16
   quantizer.io.input.bits.ytox := 0.S
   quantizer.io.input.bits.ytob := 0.S

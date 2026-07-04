@@ -99,7 +99,8 @@ Read these libjxl-tiny files before making architectural changes:
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`, defaulting unsupported values
   to distance 1. It emits global AC scale, quantized DC scale, inverse DC
-  factors, X quant-matrix multiplier, and EPF iterations. Use
+  factors, fixed raw-quant-5 AC reciprocal, X quant-matrix multiplier, and EPF
+  iterations. Use
   `tools/hjxl_reference.py --distance-params-json ...` to regenerate or check
   entries against the local libjxl-tiny Python port.
 - `FrameDct8x8TraceStage` buffers the RGB frame, converts each padded 8x8 block
@@ -111,6 +112,14 @@ Read these libjxl-tiny files before making architectural changes:
   multiplier Q16 inputs, then emits quantized coefficients and a DC-excluding
   nonzero count. It does not replace the missing whole-frame AQ/CFL/Y-roundtrip
   quantization path.
+- `AcQuantScaleSelector` chooses the AC scale and reciprocal pair used by
+  frame schedulers. A zero `FrameConfig.fixedPointScale` means use
+  `DistanceParamsLookup`; a nonzero value means use the explicit
+  `fixedPointScale` and `fixedInvQacQ16` pair. A zero
+  `FrameConfig.fixedRawQuant` means adjusted raw quant 5; a nonzero value is a
+  global fixed-path raw quant override and must be paired with the matching
+  reciprocal. Keep this boundary small and directly tested instead of
+  validating the selection through expensive frame-level Verilator tests.
 - `DctQuantizeTraceStage` is the prepared-block trace wrapper for that
   primitive. It emits 64 `QuantizedAc` trace records followed by one
   `NumNonzeros` record. Use it to validate quantization streams without wiring
@@ -139,9 +148,11 @@ Read these libjxl-tiny files before making architectural changes:
   scheduler. It buffers/pads RGB, computes approximate XYB and DCT per raster
   8x8 block, then emits 192 `QuantizedAc`, three `QuantDc`, and three
   `NumNonzeros` records per block. It intentionally still uses fixed adjusted
-  raw quant 5 and zero CFL multipliers, but it now consumes distance-derived
+  one global adjusted raw quant value and zero CFL multipliers, but it now consumes distance-derived
   AC/DC scalar parameters from `DistanceParamsLookup`. `FrameConfig.fixedPointScale`
-  overrides only the AC scale Q16; zero uses the distance lookup. Do not
+  plus `fixedInvQacQ16` overrides only the AC scale path; zero scale uses the
+  distance lookup scale and reciprocal. `FrameConfig.fixedRawQuant` can override
+  the default raw quant 5 globally for trace experiments. Do not
   describe it as adaptive-quantization parity.
 - `DcTokenize` provides libjxl-tiny DC token helpers: signed-token packing,
   clamped-gradient prediction, and the compressed gradient-context LUT.
@@ -181,12 +192,11 @@ Read these libjxl-tiny files before making architectural changes:
   for fixed all-DCT AC tokens. It recomputes the current fixed DCT-only
   quantized block stream, predicts nonzero counts from west/north block
   history, and emits full Y/X/B block AC streams through
-  `DctOnlyAcBlockTokenTraceStage`. It is not selected by `HjxlCore`; keep it
-  standalone until the top-level no longer instantiates every heavy trace path.
+  `DctOnlyAcBlockTokenTraceStage`.
 - `HjxlAcTokenCore` wraps the full AC-token frame scheduler as a dedicated
   compile-time top. Use `sbt 'runMain hjxl.ElaborateAcTokens'` for this path
-  instead of routing it through `HjxlCore`; attempting to runtime-mux it into
-  `HjxlCore` makes unrelated Verilator top-level tests impractical.
+  instead of routing it through `HjxlCore`; attempting to instantiate it inside
+  `HjxlCore` makes route-specific Verilator top-level tests impractical.
 - Entropy coding, entropy table optimization, and bitstream assembly are still
   future work.
 - `FrameAcStrategyTraceStage` emits one default DCT-first AC strategy value per
@@ -210,16 +220,17 @@ Read these libjxl-tiny files before making architectural changes:
   explicit tolerance because the hardware boundary uses rounded fixed-point DCT
   coefficients.
 - `--distance-params-json` exports libjxl-tiny distance parameters. Use it to
-  update or audit `DistanceParamsLookup` entries.
+  update or audit `DistanceParamsLookup` entries. Its `inv_qac_q16` field is
+  computed for `--fixed-raw-quant`, which defaults to 5.
 - `--fixed-dct-only-dc-tokens-npy`,
   `--fixed-dct-only-ac-metadata-tokens-npy`, and
   `--fixed-dct-only-ac-tokens-npy` export logical `(context, value)` token
-  streams for raw-quant-5, zero-CFL, all-DCT fixtures. Use these to cross-check
-  token order and context formulas against libjxl-tiny. For nontrivial images,
-  exact value parity still depends on improving the fixed-point transform and
-  quantization path. Current Scala tests use the AC-metadata oracle directly
-  and use the AC oracle for a constant frame where all AC coefficients are zero
-  and the token stream is exactly comparable.
+  streams for `--fixed-raw-quant` (default 5), zero-CFL, all-DCT fixtures. Use
+  these to cross-check token order and context formulas against libjxl-tiny. For
+  nontrivial images, exact value parity still depends on improving the
+  fixed-point transform and quantization path. Current Scala tests use the
+  AC-metadata oracle directly and use the AC oracle for a constant frame where
+  all AC coefficients are zero and the token stream is exactly comparable.
 - `--fixed-dct-only-frame-bin` and `--fixed-dct-only-codestream-bin` serialize
   the fixed logical tokens through libjxl-tiny's entropy optimizer and bitstream
   writer. Treat these as host-side oracle artifacts for the near-term
@@ -243,8 +254,9 @@ Read these libjxl-tiny files before making architectural changes:
 - `HjxlCore` currently exposes padded-input, XYB, raw-DCT, fixed-parameter
   quantized-DCT, fixed-parameter DC-token, fixed AC-metadata-token, or default
   AC-strategy trace streams. `FrameConfig.tokenSelect` chooses token substreams:
-  currently `Dc` or `AcMetadata` through `HjxlCore`; AC nonzero/full AC token
-  streams are standalone trace stages.
+  `Dc`, `AcMetadata`, or `AcTokens`; full AC-token and AC nonzero-only streams
+  remain standalone trace stages exposed through `HjxlAcTokenCore` or their
+  direct stage modules.
   `HjxlCore(traceRoute = ...)` can restrict elaboration to one compile-time
   trace route while preserving the same public IO and runtime config contract
   for that route. Use this form in focused tests; compiling the all-route shell

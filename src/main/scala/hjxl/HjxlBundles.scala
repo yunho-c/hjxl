@@ -9,6 +9,8 @@ class FrameConfig(c: HjxlConfig) extends Bundle {
   val ysize = UInt(c.coordBits.W)
   val distanceQ8 = UInt(16.W)
   val fixedPointScale = UInt(16.W)
+  val fixedInvQacQ16 = UInt(32.W)
+  val fixedRawQuant = UInt(8.W)
   val enableXyb = Bool()
   val enableDct = Bool()
   val enableQuant = Bool()

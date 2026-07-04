@@ -17,12 +17,16 @@ class FrameDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers with 
       width: Int,
       height: Int,
       distanceQ8: Int = DistanceParamsLookup.Distance1Q8,
-      fixedPointScale: Int = QuantizeDct8x8Block.DefaultScaleQ16
+      fixedPointScale: Int = QuantizeDct8x8Block.DefaultScaleQ16,
   ): Unit = {
     dut.io.config.xsize.poke(width.U)
     dut.io.config.ysize.poke(height.U)
     dut.io.config.distanceQ8.poke(distanceQ8.U)
     dut.io.config.fixedPointScale.poke(fixedPointScale.U)
+    val fixedInvQacQ16 =
+      if (fixedPointScale == 0) 0 else QuantizeDct8x8Block.invQacQ16For(fixedPointScale)
+    dut.io.config.fixedInvQacQ16.poke(fixedInvQacQ16.U)
+    dut.io.config.fixedRawQuant.poke(0.U)
     dut.io.config.enableXyb.poke(true.B)
     dut.io.config.enableDct.poke(true.B)
     dut.io.config.enableQuant.poke(true.B)

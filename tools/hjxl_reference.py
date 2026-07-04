@@ -227,7 +227,7 @@ def dct_only_quant_outputs_from_python_port(image, distance: float):
     return raw_quant_field, ytox_map, ytob_map, quantized_ac, num_nonzeros, num_nonzeros_map, quant_dc
 
 
-def distance_params_from_python_port(distance: float):
+def distance_params_from_python_port(distance: float, fixed_raw_quant: int = 5):
     root = _libjxl_tiny_root()
     _add_libjxl_tiny(root)
     from jxl_tiny.quantization import (  # pylint: disable=import-outside-toplevel
@@ -248,6 +248,8 @@ def distance_params_from_python_port(distance: float):
         "global_scale": int(params.global_scale),
         "quant_dc": int(params.quant_dc),
         "scale_q16": int(params.global_scale),
+        "fixed_raw_quant": int(fixed_raw_quant),
+        "inv_qac_q16": int((1 << 32) // (int(params.global_scale) * int(fixed_raw_quant))),
         "scale": float(params.scale),
         "scale_dc": float(params.scale_dc),
         "inv_dc_factor_q16": inv_dc_factor_q16,
@@ -381,7 +383,9 @@ def dct_only_prepared_blocks_from_python_port(image, distance: float):
     }
 
 
-def fixed_dct_only_token_outputs_from_python_port(image, distance: float):
+def fixed_dct_only_token_outputs_from_python_port(
+    image, distance: float, fixed_raw_quant: int = 5
+):
     np = _load_numpy()
     root = _libjxl_tiny_root()
     _add_libjxl_tiny(root)
@@ -407,7 +411,7 @@ def fixed_dct_only_token_outputs_from_python_port(image, distance: float):
     x_tiles = _ceil_div(xsize, TILE_DIM)
     y_tiles = _ceil_div(ysize, TILE_DIM)
 
-    raw_quant_field = np.full((y_blocks, x_blocks), 5, dtype=np.uint8)
+    raw_quant_field = np.full((y_blocks, x_blocks), fixed_raw_quant, dtype=np.uint8)
     ac_strategy = np.full((y_blocks, x_blocks), np.uint8((DCT << 1) | 1))
     ytox_map = np.zeros((y_tiles, x_tiles), dtype=np.int8)
     ytob_map = np.zeros((y_tiles, x_tiles), dtype=np.int8)
@@ -431,7 +435,9 @@ def fixed_dct_only_token_outputs_from_python_port(image, distance: float):
     )
 
 
-def fixed_dct_only_bitstream_outputs_from_python_port(image, distance: float):
+def fixed_dct_only_bitstream_outputs_from_python_port(
+    image, distance: float, fixed_raw_quant: int = 5
+):
     root = _libjxl_tiny_root()
     _add_libjxl_tiny(root)
     from jxl_tiny.bitstream import (  # pylint: disable=import-outside-toplevel
@@ -440,7 +446,7 @@ def fixed_dct_only_bitstream_outputs_from_python_port(image, distance: float):
     )
 
     dc, ac_metadata, ac, ac_strategy = fixed_dct_only_token_outputs_from_python_port(
-        image, distance
+        image, distance, fixed_raw_quant
     )
     _, ysize, xsize = image.shape
     frame = frame_bytes(dc, ac_metadata, ac, ac_strategy, distance)
@@ -486,6 +492,12 @@ def main() -> int:
         default="gradient",
     )
     parser.add_argument("--distance", type=float, default=1.0)
+    parser.add_argument(
+        "--fixed-raw-quant",
+        type=int,
+        default=5,
+        help="fixed all-DCT adjusted raw quant value for fixed-token oracles",
+    )
     parser.add_argument("--pfm", type=Path, help="optional PFM output path")
     parser.add_argument("--jxl", type=Path, help="optional Python-port JXL output path")
     parser.add_argument(
@@ -617,6 +629,8 @@ def main() -> int:
         help="optional bare codestream bytes assembled from token-input npy files",
     )
     args = parser.parse_args()
+    if args.fixed_raw_quant <= 0 or args.fixed_raw_quant > 255:
+        raise SystemExit("--fixed-raw-quant must be in the range 1..255")
 
     image = generate_fixture(args.width, args.height, args.pattern)
     quant_metadata = None
@@ -641,7 +655,7 @@ def main() -> int:
         nonlocal fixed_dct_only_token_outputs
         if fixed_dct_only_token_outputs is None:
             fixed_dct_only_token_outputs = fixed_dct_only_token_outputs_from_python_port(
-                image, args.distance
+                image, args.distance, args.fixed_raw_quant
             )
         return fixed_dct_only_token_outputs
 
@@ -649,7 +663,7 @@ def main() -> int:
         nonlocal fixed_dct_only_bitstream_outputs
         if fixed_dct_only_bitstream_outputs is None:
             fixed_dct_only_bitstream_outputs = fixed_dct_only_bitstream_outputs_from_python_port(
-                image, args.distance
+                image, args.distance, args.fixed_raw_quant
             )
         return fixed_dct_only_bitstream_outputs
 
@@ -764,7 +778,7 @@ def main() -> int:
     if args.distance_params_json is not None:
         args.distance_params_json.parent.mkdir(parents=True, exist_ok=True)
         args.distance_params_json.write_text(
-            json.dumps(distance_params_from_python_port(args.distance), indent=2),
+            json.dumps(distance_params_from_python_port(args.distance, args.fixed_raw_quant), indent=2),
             encoding="utf-8",
         )
     if args.fixed_dct_only_dc_tokens_npy is not None:

@@ -9,8 +9,8 @@ import chisel3.util._
   *
   * This stage mirrors libjxl-tiny's `ac_metadata_tokens` order for the current
   * hardware subset: zero Y-to-X/Y-to-B CFL tile maps, all-DCT first-block
-  * strategy tokens, fixed raw quant-field tokens, and fixed block metadata
-  * literals. Token traces use `trace.group = token ordinal`,
+  * strategy tokens, fixed raw quant-field tokens from `FrameConfig`, and fixed
+  * block metadata literals. Token traces use `trace.group = token ordinal`,
   * `trace.index = context`, and `trace.value = packed residual/literal`.
   */
 class FrameDctOnlyAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
@@ -70,8 +70,14 @@ class FrameDctOnlyAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) extend
   val isQuant = emitIndex >= quantStart && emitIndex < blockMetadataStart
   val cflMap = emitIndex / Mux(totalTiles === 0.U, 1.U, totalTiles)
   val quantOrdinal = emitIndex - quantStart
-  val quantLeft = Mux(quantOrdinal === 0.U, Tokenize.DctStrategyCode.U, (QuantizeDct8x8Block.DefaultRawQuant - 1).U)
-  val quantCurrent = (QuantizeDct8x8Block.DefaultRawQuant - 1).S
+  val selectedRawQuant = Mux(
+    io.config.fixedRawQuant === 0.U,
+    QuantizeDct8x8Block.DefaultRawQuant.U,
+    io.config.fixedRawQuant
+  )
+  val selectedQuantField = selectedRawQuant - 1.U
+  val quantLeft = Mux(quantOrdinal === 0.U, Tokenize.DctStrategyCode.U, selectedQuantField)
+  val quantCurrent = Cat(0.U(1.W), selectedQuantField).asSInt
   val quantResidual = quantCurrent - Cat(0.U(1.W), quantLeft).asSInt
 
   io.input.ready := state === receiving && !configOutOfRange

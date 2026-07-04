@@ -70,8 +70,9 @@ AXI wrappers.
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`; unsupported values currently
   fall back to distance 1. It emits the global AC scale, quantized DC scale,
-  X/Y/B inverse DC factors, X quant-matrix multiplier, and EPF iteration count
-  generated from the current libjxl-tiny Python formula.
+  fixed raw-quant-5 AC reciprocal, X/Y/B inverse DC factors, X quant-matrix
+  multiplier, and EPF iteration count generated from the current libjxl-tiny
+  Python formula.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive matching libjxl-tiny's
   recursive scaled-DCT structure within fixed-point tolerance. It is the kernel
   for the future 8x8 and rectangular transform stages.
@@ -94,6 +95,13 @@ AXI wrappers.
   AQ/CFL fields, Y roundtrip reconstruction, chroma residual subtraction, and
   quantized DC plane handling before it can claim libjxl-tiny quantized-block
   parity.
+- `AcQuantScaleSelector` is the reusable frame-scheduler boundary for choosing
+  AC quantization scale parameters. A zero `FrameConfig.fixedPointScale` selects
+  `DistanceParamsLookup` scale and reciprocal; a nonzero value selects the
+  explicit `fixedPointScale` and `fixedInvQacQ16` pair. A zero
+  `FrameConfig.fixedRawQuant` keeps adjusted raw quant 5; a nonzero value
+  overrides the fixed-path raw quant globally and must be paired with the
+  matching reciprocal.
 - `DctQuantizeTraceStage` wraps `QuantizeDct8x8Block` as a prepared-block trace
   boundary. It accepts one block's coefficients and quant parameters, emits 64
   `QuantizedAc` records with `trace.index = channel * 64 + coefficient`, then
@@ -131,10 +139,12 @@ AXI wrappers.
   scheduler. It buffers and pads RGB like `FrameDct8x8TraceStage`, converts
   each raster block through approximate XYB and DCT, then emits 198 records per
   block: 192 `QuantizedAc`, three `QuantDc`, and three `NumNonzeros` records.
-  This stage deliberately still fixes adjusted raw quant to 5 and tile CFL
-  multipliers to zero, but it now takes distance-derived AC/DC scalar
-  parameters from `DistanceParamsLookup`. `FrameConfig.fixedPointScale` can
-  override only the AC scale Q16; a zero value uses the lookup scale.
+  This stage deliberately still uses one global adjusted raw quant value and
+  zero tile CFL multipliers, but it now takes distance-derived AC/DC scalar
+  parameters from `DistanceParamsLookup`. `FrameConfig.fixedPointScale` plus
+  `fixedInvQacQ16` can override only the AC scale path; a zero scale value uses
+  the lookup scale and reciprocal. `FrameConfig.fixedRawQuant` can override the
+  default raw quant 5 globally for trace experiments.
 - `DcTokenize` implements the libjxl-tiny signed-token packing, clamped
   gradient predictor, and compressed 1024-entry gradient-context lookup used by
   DC tokenization.
@@ -184,8 +194,8 @@ AXI wrappers.
   the same fixed DCT-only quantized block data as `FrameDctOnlyQuantizeTraceStage`,
   predicts nonzero counts from west/north block history, then emits each block's
   full Y/X/B AC token stream through `DctOnlyAcBlockTokenTraceStage`. It is kept
-  out of `HjxlCore` for now to avoid bloating the top-level simulator while the
-  token boundary is still trace-only.
+  out of `HjxlCore` because even route-specific Verilator top-level compilation
+  is impractical while this scheduler is still large and trace-only.
 - `HjxlAcTokenCore` is a compile-time top wrapper around
   `FrameDctOnlyAcTokenTraceStage`. Use `sbt 'runMain hjxl.ElaborateAcTokens'`
   when SystemVerilog for the full AC-token path is needed without instantiating
@@ -223,18 +233,20 @@ AXI wrappers.
   until frame-level fixed-point staging is locked down.
 - `tools/hjxl_reference.py --distance-params-json ...` writes the libjxl-tiny
   distance parameters used to populate `DistanceParamsLookup`. Regenerate this
-  when updating lookup entries or when the local reference changes.
+  when updating lookup entries or when the local reference changes. The JSON
+  also includes the reciprocal for `--fixed-raw-quant`, defaulting to raw quant
+  5.
 - `tools/hjxl_reference.py --fixed-dct-only-dc-tokens-npy ...`,
   `--fixed-dct-only-ac-metadata-tokens-npy ...`, and
   `--fixed-dct-only-ac-tokens-npy ...` write logical `(context, value)` token
-  streams for the current fixed all-DCT assumptions: raw quant 5, zero CFL maps,
-  all ordinary DCT blocks, and the requested distance's libjxl-tiny scale
-  parameters. Use these to validate token ordering and context formulas against
-  libjxl-tiny; exact RTL value parity still depends on closing the fixed-point
-  transform/quantization gap for nontrivial images. The current Scala tests use
-  these oracles for fixed AC-metadata tokens and for a constant-frame AC-token
-  case where all AC coefficients are zero, so those streams are exactly
-  comparable today.
+  streams for the current fixed all-DCT assumptions: `--fixed-raw-quant`
+  defaulting to 5, zero CFL maps, all ordinary DCT blocks, and the requested
+  distance's libjxl-tiny scale parameters. Use these to validate token ordering
+  and context formulas against libjxl-tiny; exact RTL value parity still
+  depends on closing the fixed-point transform/quantization gap for nontrivial
+  images. The current Scala tests use these oracles for fixed AC-metadata
+  tokens and for a constant-frame AC-token case where all AC coefficients are
+  zero, so those streams are exactly comparable today.
 - `tools/hjxl_reference.py --fixed-dct-only-frame-bin ...` and
   `--fixed-dct-only-codestream-bin ...` serialize those fixed logical token
   streams through libjxl-tiny's entropy optimizer and bitstream writer. These

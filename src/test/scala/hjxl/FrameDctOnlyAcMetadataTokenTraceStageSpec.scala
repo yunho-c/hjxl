@@ -10,11 +10,18 @@ import org.scalatest.matchers.must.Matchers
 class FrameDctOnlyAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matchers with ChiselSim {
   private val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 8)
 
-  private def pokeConfig(dut: FrameDctOnlyAcMetadataTokenTraceStage, width: Int, height: Int): Unit = {
+  private def pokeConfig(
+      dut: FrameDctOnlyAcMetadataTokenTraceStage,
+      width: Int,
+      height: Int,
+      fixedRawQuant: Int = 0
+  ): Unit = {
     dut.io.config.xsize.poke(width.U)
     dut.io.config.ysize.poke(height.U)
     dut.io.config.distanceQ8.poke(256.U)
     dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
+    dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
+    dut.io.config.fixedRawQuant.poke(fixedRawQuant.U)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(false.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -75,6 +82,40 @@ class FrameDctOnlyAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matcher
 
       dut.io.trace.valid.expect(false.B)
       dut.io.input.ready.expect(true.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
+  "FrameDctOnlyAcMetadataTokenTraceStage uses fixed raw quant overrides in quant-field tokens" in {
+    simulate(new FrameDctOnlyAcMetadataTokenTraceStage(config)) { dut =>
+      val width = 8
+      val height = 1
+      val rawQuant = 7
+      pokeConfig(dut, width, height, fixedRawQuant = rawQuant)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      for (x <- 0 until width) {
+        drivePixel(dut, x, y = 0)
+      }
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+
+      for (ordinal <- 0 until 3) {
+        withClue(s"metadata pre-quant token $ordinal") {
+          dut.io.trace.valid.expect(true.B)
+        }
+        dut.clock.step()
+      }
+
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.stage.expect(TraceStage.AcMetadataTokens.U)
+      dut.io.trace.bits.group.expect(3.U)
+      dut.io.trace.bits.index.expect(6.U)
+      dut.io.trace.bits.value.expect(12.S)
+      dut.clock.step()
+
       dut.io.overflow.expect(false.B)
     }
   }

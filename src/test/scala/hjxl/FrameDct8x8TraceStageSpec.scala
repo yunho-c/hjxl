@@ -22,6 +22,8 @@ class FrameDct8x8TraceStageSpec extends AnyFreeSpec with Matchers with ChiselSim
     dut.io.config.ysize.poke(height.U)
     dut.io.config.distanceQ8.poke(256.U)
     dut.io.config.fixedPointScale.poke(256.U)
+    dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.invQacQ16For(256).U)
+    dut.io.config.fixedRawQuant.poke(0.U)
     dut.io.config.enableXyb.poke(true.B)
     dut.io.config.enableDct.poke(true.B)
     dut.io.config.enableQuant.poke(false.B)

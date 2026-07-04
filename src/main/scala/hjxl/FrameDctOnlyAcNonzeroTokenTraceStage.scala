@@ -88,20 +88,16 @@ class FrameDctOnlyAcNonzeroTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends
       dctB.io.input.bits(i) := xybPixels(i).xybB
     }
 
-    val scaleQ16 = Mux(
-      io.config.fixedPointScale === 0.U,
-      distanceParams.io.params.scaleQ16,
-      io.config.fixedPointScale
-    )
-    val quant = QuantizeDct8x8Block.DefaultRawQuant.U(8.W)
-    val invQacQ16 = (BigInt(1) << 32).U(64.W) / (scaleQ16 * quant)
+    val acScale = Module(new AcQuantScaleSelector(c))
+    acScale.io.config := io.config
+    acScale.io.distance := distanceParams.io.params
 
     val quantizer = Module(new DctOnlyQuantizeBlock(c))
     quantizer.io.input.valid := state === emitting
     quantizer.io.output.ready := true.B
-    quantizer.io.input.bits.quant := quant
-    quantizer.io.input.bits.scaleQ16 := scaleQ16
-    quantizer.io.input.bits.invQacQ16 := invQacQ16(31, 0)
+    quantizer.io.input.bits.quant := acScale.io.params.rawQuant
+    quantizer.io.input.bits.scaleQ16 := acScale.io.params.scaleQ16
+    quantizer.io.input.bits.invQacQ16 := acScale.io.params.invQacQ16
     quantizer.io.input.bits.xQmMultiplierQ16 := distanceParams.io.params.xQmMultiplierQ16
     quantizer.io.input.bits.ytox := 0.S
     quantizer.io.input.bits.ytob := 0.S

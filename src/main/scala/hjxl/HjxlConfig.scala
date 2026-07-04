@@ -47,7 +47,8 @@ object TraceStage {
 object TokenTraceSelect {
   val Dc = 0
   val AcMetadata = 1
-  val AcNonzero = 2
+  val AcTokens = 2
+  val AcNonzero = AcTokens
 }
 
 object AcStrategyCode {

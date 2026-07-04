@@ -12,8 +12,12 @@ object QuantizeDct8x8Block {
 
   val DefaultRawQuant = 5
   val DefaultScaleQ16 = DistanceParamsLookup.Default.scaleQ16
+  val DefaultInvQacQ16 = DistanceParamsLookup.Default.invQacQ16
   val DefaultQmMultiplierQ16 = 1 << QmFractionBits
   val DefaultInvDcFactorQ16: Seq[Int] = DistanceParamsLookup.Default.invDcFactorQ16
+
+  def invQacQ16For(scaleQ16: Int, rawQuant: Int = DefaultRawQuant): Int =
+    ((BigInt(1) << 32) / (BigInt(scaleQ16) * BigInt(rawQuant))).toInt
 
   val DctXInvQ16: Seq[Long] = Seq(
     0, 206438240, 205734432, 173580464, 146452064, 123563264, 104251904, 87958504,

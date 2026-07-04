@@ -11,9 +11,10 @@ import chisel3.util._
   * quantized X/Y/B raster block into `DctOnlyAcBlockTokenTraceStage`, so each
   * block emits the nonzero-count prefixes and the coefficient scan/value tokens.
   * It intentionally keeps the same fixed quantization defaults as
-  * `FrameDctOnlyQuantizeTraceStage`: adjusted raw quant 5, zero CFL, and
+  * `FrameDctOnlyQuantizeTraceStage`: fixed adjusted raw quant, zero CFL, and
   * distance-derived scalar parameters from `DistanceParamsLookup`, with
-  * `fixedPointScale` still able to override only the AC scale Q16.
+  * `fixedPointScale` plus `fixedInvQacQ16` still able to override only the AC
+  * scale path.
   */
 class FrameDctOnlyAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   private val blockDim = HjxlConstants.BlockDim
@@ -92,20 +93,16 @@ class FrameDctOnlyAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
       dctB.io.input.bits(i) := xybPixels(i).xybB
     }
 
-    val scaleQ16 = Mux(
-      io.config.fixedPointScale === 0.U,
-      distanceParams.io.params.scaleQ16,
-      io.config.fixedPointScale
-    )
-    val quant = QuantizeDct8x8Block.DefaultRawQuant.U(8.W)
-    val invQacQ16 = ((BigInt(1) << 32).U(64.W) / (scaleQ16 * quant))(31, 0)
+    val acScale = Module(new AcQuantScaleSelector(c))
+    acScale.io.config := io.config
+    acScale.io.distance := distanceParams.io.params
 
     val quantizer = Module(new DctOnlyQuantizeBlock(c))
     quantizer.io.input.valid := state === startBlock
     quantizer.io.output.ready := true.B
-    quantizer.io.input.bits.quant := quant
-    quantizer.io.input.bits.scaleQ16 := scaleQ16
-    quantizer.io.input.bits.invQacQ16 := invQacQ16
+    quantizer.io.input.bits.quant := acScale.io.params.rawQuant
+    quantizer.io.input.bits.scaleQ16 := acScale.io.params.scaleQ16
+    quantizer.io.input.bits.invQacQ16 := acScale.io.params.invQacQ16
     quantizer.io.input.bits.xQmMultiplierQ16 := distanceParams.io.params.xQmMultiplierQ16
     quantizer.io.input.bits.ytox := 0.S
     quantizer.io.input.bits.ytob := 0.S

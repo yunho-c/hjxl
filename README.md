@@ -22,8 +22,13 @@ linearly interpolates a Q8 cube-root table before emitting Q12 XYB samples.
 `DistanceParamsLookup` provides the first hardware distance-parameter boundary
 for common Q8 distances `64`, `128`, `256`, `512`, `1024`, and `2048`, with
 unsupported values falling back to distance 1. The fixed DCT-only quant/token
-frame schedulers use those distance-derived AC/DC scalar parameters, while
-`fixedPointScale` remains an AC-scale override for trace experiments.
+frame schedulers use those distance-derived AC/DC scalar parameters, including
+the fixed raw-quant-5 AC reciprocal, while `fixedPointScale` plus
+`fixedInvQacQ16` remain AC-scale overrides for trace experiments. `fixedRawQuant`
+can override the default adjusted raw quant 5 globally for fixed-path traces.
+`AcQuantScaleSelector` is the small reusable RTL boundary that chooses between
+lookup parameters and explicit override parameters before frame schedulers feed
+`DctOnlyQuantizeBlock`.
 There is also a standalone DCT-only 8x8 AC quantization primitive that consumes
 the adjusted raw quant value and distance-derived AC scale. Prepared DCT blocks
 can be run through `DctQuantizeTraceStage` to emit `QuantizedAc` and
@@ -56,7 +61,7 @@ for one all-DCT block. `FrameDctOnlyAcTokenTraceStage` is the first full
 standalone frame scheduler for `AcTokens`: it emits nonzero prefixes and
 coefficient scan/value tokens for every fixed all-DCT raster block/channel. It
 is directly tested and exposed through the dedicated `HjxlAcTokenCore` wrapper,
-but not routed through the runtime-multiplexed `HjxlCore`.
+not through the runtime-multiplexed `HjxlCore`.
 `HjxlCore` also accepts an optional compile-time `traceRoute` parameter used by
 simulation tests to instantiate only the selected route. The default still
 builds the all-route integration shell.
@@ -97,6 +102,7 @@ Generate a small libjxl-tiny reference fixture:
 
 ```sh
 python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
+  --fixed-raw-quant 5 \
   --pfm build-codex/fixtures/gradient-17x9.pfm \
   --input-padded-npy build-codex/fixtures/gradient-17x9-input-padded.npy \
   --xyb-npy build-codex/fixtures/gradient-17x9-xyb.npy \
