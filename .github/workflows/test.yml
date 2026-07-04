@@ -42,14 +42,19 @@ jobs:
       - name: Python Tool Syntax
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
-            tools/hjxl_reference.py \
-            tools/hjxl_stream_trace.py \
-            tools/hjxl_trace_tokens.py \
-            tools/hjxl_trace_to_codestream.py \
             tools/hjxl_compare_tokens.py \
-            tools/hjxl_prepared_token_inputs.py \
+            tools/hjxl_host_bundle.py \
+            tools/hjxl_manifest_header.py \
             tools/hjxl_prepared_blocks.py \
-            tools/hjxl_quant_trace_to_prepared_tokens.py
+            tools/hjxl_prepared_token_inputs.py \
+            tools/hjxl_quant_trace_to_prepared_tokens.py \
+            tools/hjxl_reference.py \
+            tools/hjxl_replay_capture.py \
+            tools/hjxl_rgb_stream.py \
+            tools/hjxl_stream_buffer.py \
+            tools/hjxl_stream_trace.py \
+            tools/hjxl_trace_to_codestream.py \
+            tools/hjxl_trace_tokens.py
       - name: SBT Test
         run: sbt test
       - name: mill Test

@@ -43,6 +43,15 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     dut.io.input.valid.poke(false.B)
   }
 
+  private def waitForTraceValid(dut: HjxlCore): Unit = {
+    var cycles = 0
+    while (dut.io.trace.valid.peekValue().asBigInt == 0 && cycles < 32) {
+      dut.clock.step()
+      cycles += 1
+    }
+    cycles must be < 32
+  }
+
   private def expectTraceLastOnlyOnFinalBeat(
       dut: HjxlCore,
       totalBeats: Int,
@@ -218,6 +227,46 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.trace.bits.stage.expect(TraceStage.AcMetadataTokens.U)
       dut.io.trace.bits.group.expect(4.U)
       dut.io.traceLast.expect(true.B)
+    }
+  }
+
+  "HjxlCore routes to full AC token traces when the focused AC-token route is selected" in {
+    simulate(new HjxlCore(config, traceRoute = TraceStage.AcTokens)) { dut =>
+      pokeConfig(
+        dut,
+        enableXyb = true,
+        enableDct = true,
+        enableQuant = true,
+        enableTokenize = true,
+        tokenSelect = TokenTraceSelect.AcTokens
+      )
+      dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
+      dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      driveOnePixel(dut)
+      dut.io.trace.ready.poke(true.B)
+
+      val expected = Seq(
+        (0, 80, 0),
+        (1, 82, 0),
+        (2, 82, 0)
+      )
+      for (((group, context, value), ordinal) <- expected.zipWithIndex) {
+        waitForTraceValid(dut)
+        withClue(s"AC token route beat $ordinal") {
+          dut.io.trace.bits.stage.expect(TraceStage.AcTokens.U)
+          dut.io.trace.bits.group.expect(group.U)
+          dut.io.trace.bits.index.expect(context.U)
+          dut.io.trace.bits.value.expect(value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
+        }
+        dut.clock.step()
+      }
+      dut.io.trace.valid.expect(false.B)
+      dut.io.overflow.expect(false.B)
     }
   }
 }

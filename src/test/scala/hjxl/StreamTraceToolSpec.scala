@@ -13,6 +13,9 @@ import scala.sys.process.Process
 import scala.sys.process.ProcessLogger
 
 class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
+  private val libjxlTinyRoot =
+    Path.of(sys.env.getOrElse("LIBJXL_TINY", "/Users/yunhocho/GitHub/libjxl-tiny"))
+
   private case class CommandResult(exitCode: Int, output: String)
 
   private def requireNumpy(): Unit =
@@ -21,10 +24,23 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
       "python3 with numpy is required for stream-trace integration tests"
     )
 
+  private def requireReferenceTools(): Unit = {
+    assume(
+      Files.isDirectory(libjxlTinyRoot.resolve("python")),
+      s"libjxl-tiny Python checkout not found at $libjxlTinyRoot"
+    )
+    requireNumpy()
+  }
+
   private def runCommand(command: Seq[String]): CommandResult = {
     val output = scala.collection.mutable.ArrayBuffer.empty[String]
     val logger = ProcessLogger(line => output += line, line => output += line)
-    val exitCode = Process(command, TestPaths.repoRoot.toFile, "PYTHONDONTWRITEBYTECODE" -> "1").!(logger)
+    val exitCode = Process(
+      command,
+      TestPaths.repoRoot.toFile,
+      "LIBJXL_TINY" -> libjxlTinyRoot.toString,
+      "PYTHONDONTWRITEBYTECODE" -> "1"
+    ).!(logger)
     CommandResult(exitCode, output.mkString("\n"))
   }
 
@@ -99,6 +115,63 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
         path.toString
       )
     ).trim
+
+  private def writePackedTokenCapture(
+      dcTokens: Path,
+      acMetadataTokens: Path,
+      acTokens: Path,
+      acStrategy: Path,
+      streamBin: Path,
+      lastBin: Path
+  ): Unit = {
+    val script =
+      """import sys, numpy as np
+        |dc = np.load(sys.argv[1])
+        |acmeta = np.load(sys.argv[2])
+        |ac = np.load(sys.argv[3])
+        |strategy = np.load(sys.argv[4]).reshape(-1)
+        |stream_path = sys.argv[5]
+        |last_path = sys.argv[6]
+        |
+        |def pack(stage, group, index, value):
+        |    return (
+        |        (int(stage) & 0xff)
+        |        | ((int(group) & 0xffff) << 8)
+        |        | ((int(index) & 0xffffffff) << 24)
+        |        | ((int(value) & 0xffffffff) << 56)
+        |    )
+        |
+        |words = []
+        |for group, (context, value) in enumerate(dc):
+        |    words.append(pack(10, group, int(context), int(value)))
+        |for index, value in enumerate(strategy):
+        |    words.append(pack(6, 0, index, int(value)))
+        |for group, (context, value) in enumerate(acmeta):
+        |    words.append(pack(11, group, int(context), int(value)))
+        |for group, (context, value) in enumerate(ac):
+        |    words.append(pack(12, group, int(context), int(value)))
+        |
+        |with open(stream_path, "wb") as handle:
+        |    for word in words:
+        |        handle.write(int(word).to_bytes(11, byteorder="little", signed=False))
+        |        handle.write(bytes(5))
+        |with open(last_path, "wb") as handle:
+        |    handle.write(bytes([0] * (len(words) - 1) + [1]))
+        |""".stripMargin
+    expectSuccess(
+      Seq(
+        "python3",
+        "-c",
+        script,
+        dcTokens.toString,
+        acMetadataTokens.toString,
+        acTokens.toString,
+        acStrategy.toString,
+        streamBin.toString,
+        lastBin.toString
+      )
+    )
+  }
 
   private def writeRgbPfm(path: Path, width: Int, height: Int, topDownPixels: Seq[(Float, Float, Float)]): Unit = {
     topDownPixels.length mustBe width * height
@@ -346,10 +419,17 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     headerOutput must include(s"wrote $header")
     val headerText = Files.readString(header).replace("\r\n", "\n")
     headerText must include("#define HJXL_PREPARED_MANIFEST_FORMAT \"hjxl.prepared_dct_stream_manifest.v1\"")
+    headerText must include("#define HJXL_PREPARED_TARGET_INTERFACE \"prepared_dct_axi_stream\"")
+    headerText must include("#define HJXL_PREPARED_TARGET_STREAM_SHELL \"HjxlPreparedDctAxiStreamCore\"")
+    headerText must include("#define HJXL_PREPARED_TARGET_CONTROLLED_SHELL \"HjxlPreparedDctAxiLiteStreamCore\"")
+    headerText must include("#define HJXL_PREPARED_TARGET_KV260_TOP \"HjxlKv260PreparedDctTop\"")
     headerText must include("#define HJXL_PREPARED_STREAM_WORD_COUNT 201u")
     headerText must include("#define HJXL_PREPARED_INPUT_DATA_BITS 32u")
     headerText must include("#define HJXL_PREPARED_STREAM_WORD_BYTES 4u")
     headerText must include("#define HJXL_PREPARED_STREAM_BYTE_COUNT 804u")
+    headerText must include("#define HJXL_PREPARED_TRACE_PACKED_BITS 88u")
+    headerText must include("#define HJXL_PREPARED_TRACE_PACKED_BYTES 11u")
+    headerText must include("#define HJXL_PREPARED_KV260_TRACE_CAPTURE_WORD_BYTES 16u")
     headerText must include("#define HJXL_PREPARED_REG_XSIZE 0x00000004u")
     headerText must include("#define HJXL_PREPARED_STATUS_BUSY_BIT 1u")
     headerText must include("{ 0x0000001cu, 0x0000020eu, 0x0000000fu }, /* flags */")
@@ -359,6 +439,9 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     headerText must include(
       "sizeof(HJXL_PREPARED_AXI_LITE_WRITES) / sizeof(HJXL_PREPARED_AXI_LITE_WRITES[0]) == " +
         "HJXL_PREPARED_AXI_LITE_WRITE_COUNT"
+    )
+    headerText must include(
+      "HJXL_PREPARED_TRACE_PACKED_BYTES == (HJXL_PREPARED_TRACE_PACKED_BITS + 7u) / 8u"
     )
     compileGeneratedHeaderSmoke(header, "HJXL_PREPARED")
 
@@ -416,6 +499,9 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     Files.exists(hostBundleDir.resolve("prepared-stream.csv")) mustBe true
     Files.exists(hostBundleDir.resolve("prepared-control.csv")) mustBe true
     compileGeneratedHeaderSmoke(hostBundleDir.resolve("prepared.h"), "HJXL_PREPARED_BUNDLE")
+    Files.readString(hostBundleDir.resolve("prepared.h")).replace("\r\n", "\n") must include(
+      "#define HJXL_PREPARED_BUNDLE_TARGET_INTERFACE \"prepared_dct_axi_stream\""
+    )
     val preparedIndex = Files.readString(hostBundleDir.resolve("prepared-bundle.json")).replace("\r\n", "\n")
     preparedIndex must include("\"format\": \"hjxl.host_bundle.v1\"")
     preparedIndex must include("\"checksums\"")
@@ -423,6 +509,10 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     preparedIndex must include("\"header\": \"prepared.h\"")
     preparedIndex must include("\"stream_bin\": \"prepared-stream.bin\"")
     preparedIndex must include("\"manifest_format\": \"hjxl.prepared_dct_stream_manifest.v1\"")
+    preparedIndex must include("\"target\"")
+    preparedIndex must include("\"interface\": \"prepared_dct_axi_stream\"")
+    preparedIndex must include("\"controlled_shell\": \"HjxlPreparedDctAxiLiteStreamCore\"")
+    preparedIndex must include("\"kv260_top\": \"HjxlKv260PreparedDctTop\"")
     preparedIndex must include("\"byte_count\": 804")
     preparedIndex must include("\"input_data_bytes\": 4")
     preparedIndex must include("\"word_count\": 201")
@@ -483,6 +573,15 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
       s""""axi_lite_csv_resolved": "${cIncludePath(hostBundleDir.resolve("prepared-control.csv"))}""""
     )
     preparedReplayPlan must include("\"byte_count\": 804")
+    preparedReplayPlan must include("\"target\"")
+    preparedReplayPlan must include("\"interface\": \"prepared_dct_axi_stream\"")
+    preparedReplayPlan must include("\"stream_shell\": \"HjxlPreparedDctAxiStreamCore\"")
+    preparedReplayPlan must include("\"controlled_shell\": \"HjxlPreparedDctAxiLiteStreamCore\"")
+    preparedReplayPlan must include("\"kv260_top\": \"HjxlKv260PreparedDctTop\"")
+    preparedReplayPlan must include("\"trace\"")
+    preparedReplayPlan must include("\"packed_bits\": 88")
+    preparedReplayPlan must include("\"packed_bytes\": 11")
+    preparedReplayPlan must include("\"default_capture_word_bytes\": 16")
     preparedReplayPlan must include("\"write_count\": 7")
     preparedReplayPlan must include("\"register\": \"flags\"")
     preparedReplayPlan must include("\"data\": 526")
@@ -502,6 +601,9 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
       "\"format\": \"hjxl.host_replay_plan.v1\""
     )
     Files.readString(preparedReplayPlanJson).replace("\r\n", "\n") must include("\"byte_count\": 804")
+    Files.readString(preparedReplayPlanJson).replace("\r\n", "\n") must include(
+      "\"interface\": \"prepared_dct_axi_stream\""
+    )
     val preparedReplayPlanValidateOutput = expectSuccess(
       Seq(
         "python3",
@@ -583,6 +685,14 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     val legacyReplayPlan = preparedReplayPlanFromRelativeIndex
       .replace(s""""bundle_index": "$relativePreparedBundleIndex"""", """"bundle_index": "prepared-bundle.json"""")
       .replaceFirst("""(?m)^  "bundle_index_resolved": "[^"]+",\n""", "")
+      .replaceFirst(
+        """(?s),\n  "target": \{\n    "controlled_shell": "[^"]+",\n    "input_stream": "[^"]+",\n    "interface": "[^"]+",\n    "kv260_top": (?:"[^"]+"|null),\n    "stream_shell": "[^"]+"\n  \},\n""",
+        ",\n"
+      )
+      .replaceFirst(
+        """(?s),\n  "trace": \{\n    "default_capture_word_bytes": 16,\n    "group_bits": 16,\n    "index_bits": 32,\n    "packed_bits": 88,\n    "packed_bytes": 11,\n    "stage_bits": 8,\n    "trace_value_bits": 32\n  \}\n""",
+        "\n"
+      )
     Files.writeString(legacyReplayPlanJson, legacyReplayPlan)
     val legacyReplayPlanValidateOutput = expectSuccess(
       Seq(
@@ -623,6 +733,40 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
 
     val preparedBundleIndex = hostBundleDir.resolve("prepared-bundle.json")
     val originalPreparedIndex = Files.readString(preparedBundleIndex)
+    Files.writeString(
+      preparedBundleIndex,
+      originalPreparedIndex.replaceFirst(
+        """(?s),\n  "target": \{\n    "controlled_shell": "[^"]+",\n    "input_stream": "[^"]+",\n    "interface": "[^"]+",\n    "kv260_top": (?:"[^"]+"|null),\n    "stream_shell": "[^"]+"\n  \}\n""",
+        "\n"
+      )
+    )
+    val legacyPreparedBundleOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        preparedBundleIndex.toString
+      )
+    )
+    legacyPreparedBundleOutput must include("validated host bundle prepared with 201 stream words")
+    Files.writeString(preparedBundleIndex, originalPreparedIndex)
+
+    Files.writeString(
+      preparedBundleIndex,
+      originalPreparedIndex.replace("\"interface\": \"prepared_dct_axi_stream\"", "\"interface\": \"rgb_axi_stream\"")
+    )
+    val invalidPreparedTarget = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        preparedBundleIndex.toString
+      )
+    )
+    invalidPreparedTarget.exitCode mustBe 1
+    invalidPreparedTarget.output must include("target metadata does not match source manifest")
+    Files.writeString(preparedBundleIndex, originalPreparedIndex)
+
     Files.writeString(preparedBundleIndex, originalPreparedIndex.replace("\"byte_count\": 804", "\"byte_count\": 803"))
     val invalidPreparedByteCount = runCommand(
       Seq(
@@ -794,10 +938,17 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     )
     val headerText = Files.readString(header).replace("\r\n", "\n")
     headerText must include("#define HJXL_RGB_MANIFEST_FORMAT \"hjxl.rgb_stream_manifest.v1\"")
+    headerText must include("#define HJXL_RGB_TARGET_INTERFACE \"rgb_axi_stream\"")
+    headerText must include("#define HJXL_RGB_TARGET_STREAM_SHELL \"HjxlAxiStreamCore\"")
+    headerText must include("#define HJXL_RGB_TARGET_CONTROLLED_SHELL \"HjxlAxiLiteStreamCore\"")
+    headerText must include("#define HJXL_RGB_TARGET_KV260_TOP \"\"")
     headerText must include("#define HJXL_RGB_STREAM_WORD_COUNT 4u")
     headerText must include("#define HJXL_RGB_INPUT_DATA_BITS 48u")
     headerText must include("#define HJXL_RGB_STREAM_WORD_BYTES 6u")
     headerText must include("#define HJXL_RGB_STREAM_BYTE_COUNT 24u")
+    headerText must include("#define HJXL_RGB_TRACE_PACKED_BITS 88u")
+    headerText must include("#define HJXL_RGB_TRACE_PACKED_BYTES 11u")
+    headerText must include("#define HJXL_RGB_KV260_TRACE_CAPTURE_WORD_BYTES 16u")
     headerText must include("#define HJXL_RGB_REG_FLAGS 0x0000001cu")
     headerText must include("{ 0x00000004u, 0x00000002u, 0x0000000fu }, /* xsize */")
     headerText must include("{ 0x0000001cu, 0x00000207u, 0x0000000fu }, /* flags */")
@@ -806,6 +957,9 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     )
     headerText must include(
       "sizeof(HJXL_RGB_AXI_LITE_WRITES) / sizeof(HJXL_RGB_AXI_LITE_WRITES[0]) == HJXL_RGB_AXI_LITE_WRITE_COUNT"
+    )
+    headerText must include(
+      "HJXL_RGB_TRACE_PACKED_BYTES == (HJXL_RGB_TRACE_PACKED_BITS + 7u) / 8u"
     )
     compileGeneratedHeaderSmoke(header, "HJXL_RGB")
 
@@ -854,6 +1008,9 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     Files.readAllBytes(hostBundleDir.resolve("rgb-stream.bin")).length mustBe 24
     Files.readAllBytes(hostBundleDir.resolve("rgb-last.bin")).map(_ & 0xff).toSeq mustBe Seq(0, 0, 0, 1)
     compileGeneratedHeaderSmoke(hostBundleDir.resolve("rgb.h"), "HJXL_RGB_BUNDLE")
+    Files.readString(hostBundleDir.resolve("rgb.h")).replace("\r\n", "\n") must include(
+      "#define HJXL_RGB_BUNDLE_TARGET_INTERFACE \"rgb_axi_stream\""
+    )
     Files.readString(hostBundleDir.resolve("rgb-bundle.json")).replace("\r\n", "\n") must include(
       "\"axi_lite_write_count\": 7"
     )
@@ -865,6 +1022,15 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     )
     Files.readString(hostBundleDir.resolve("rgb-bundle.json")).replace("\r\n", "\n") must include(
       "\"source_manifest\": \"rgb-manifest.json\""
+    )
+    Files.readString(hostBundleDir.resolve("rgb-bundle.json")).replace("\r\n", "\n") must include(
+      "\"interface\": \"rgb_axi_stream\""
+    )
+    Files.readString(hostBundleDir.resolve("rgb-bundle.json")).replace("\r\n", "\n") must include(
+      "\"controlled_shell\": \"HjxlAxiLiteStreamCore\""
+    )
+    Files.readString(hostBundleDir.resolve("rgb-bundle.json")).replace("\r\n", "\n") must include(
+      "\"kv260_top\": null"
     )
 
     val rgbBundleValidateOutput = expectSuccess(
@@ -958,6 +1124,10 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     noLastReplayPlan must include("\"last_bin\": null")
     noLastReplayPlan must include("\"last_bin_resolved\": null")
     noLastReplayPlan must include("\"byte_count\": 24")
+    noLastReplayPlan must include("\"interface\": \"rgb_axi_stream\"")
+    noLastReplayPlan must include("\"stream_shell\": \"HjxlAxiStreamCore\"")
+    noLastReplayPlan must include("\"controlled_shell\": \"HjxlAxiLiteStreamCore\"")
+    noLastReplayPlan must include("\"default_capture_word_bytes\": 16")
 
     val corruptedRows = Files.readString(streamCsv).replace("\r\n", "\n").trim.split("\n").toVector
     Files.writeString(streamCsv, (corruptedRows.dropRight(1) :+ corruptedRows.last.replace(",1", ",0")).mkString("\n") + "\n")
@@ -971,6 +1141,294 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     )
     invalid.exitCode mustBe 1
     invalid.output must include("final stream row does not assert last")
+  }
+
+  "hjxl_replay_capture.py validates a KV260-style captured token stream from a replay plan" in {
+    requireReferenceTools()
+
+    val temp = Files.createTempDirectory("hjxl-replay-capture-")
+    val width = 16
+    val height = 8
+    val pfm = temp.resolve("input.pfm")
+    val streamCsv = temp.resolve("rgb-stream.csv")
+    val controlCsv = temp.resolve("rgb-control.csv")
+    val manifestJson = temp.resolve("rgb-manifest.json")
+    val bundleDir = temp.resolve("host-bundle")
+    val replayPlan = temp.resolve("replay-plan.json")
+    val dcTokens = temp.resolve("dc.npy")
+    val acMetadataTokens = temp.resolve("acmeta.npy")
+    val acTokens = temp.resolve("ac.npy")
+    val acStrategy = temp.resolve("strategy.npy")
+    val expectedCodestream = temp.resolve("expected.jxl")
+    val captureBin = temp.resolve("capture.bin")
+    val captureLast = temp.resolve("capture-last.bin")
+    val rawCaptureBin = temp.resolve("capture-raw.bin")
+    val rawCaptureLast = temp.resolve("capture-raw-last.bin")
+    val assembledCodestream = temp.resolve("assembled.jxl")
+    val bundleIndexCodestream = temp.resolve("bundle-index-assembled.jxl")
+    val rawCodestream = temp.resolve("raw-assembled.jxl")
+    val capturedDcTokens = temp.resolve("captured-dc.npy")
+    val summaryJson = temp.resolve("summary.json")
+    val rawSummaryJson = temp.resolve("raw-summary.json")
+    val expectedInputByteCount = width * height * 6
+
+    val pixels = for {
+      y <- 0 until height
+      x <- 0 until width
+    } yield {
+      val base = (x + y).toFloat / (width + height).toFloat
+      (base, x.toFloat / width.toFloat, y.toFloat / height.toFloat)
+    }
+    writeRgbPfm(pfm, width = width, height = height, topDownPixels = pixels)
+
+    expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_rgb_stream.py",
+        "--pfm",
+        pfm.toString,
+        "--stream-csv",
+        streamCsv.toString,
+        "--axi-lite-csv",
+        controlCsv.toString,
+        "--manifest-json",
+        manifestJson.toString,
+        "--enable-dct",
+        "--enable-quant",
+        "--enable-tokenize",
+        "--token-select",
+        "ac-tokens",
+        "--distance-q8",
+        "256"
+      )
+    )
+    expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--manifest-json",
+        manifestJson.toString,
+        "--output-dir",
+        bundleDir.toString,
+        "--name",
+        "capture",
+        "--symbol-prefix",
+        "HJXL_CAPTURE",
+        "--replay-plan-json",
+        replayPlan.toString
+      )
+    )
+    Files.readString(replayPlan).replace("\r\n", "\n") must include("\"data\": 16")
+    Files.readString(replayPlan).replace("\r\n", "\n") must include("\"data\": 8")
+
+    expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_reference.py",
+        "--width",
+        width.toString,
+        "--height",
+        height.toString,
+        "--pattern",
+        "gradient",
+        "--fixed-dct-only-dc-tokens-npy",
+        dcTokens.toString,
+        "--fixed-dct-only-ac-metadata-tokens-npy",
+        acMetadataTokens.toString,
+        "--fixed-dct-only-ac-tokens-npy",
+        acTokens.toString,
+        "--default-ac-strategy-npy",
+        acStrategy.toString,
+        "--fixed-dct-only-codestream-bin",
+        expectedCodestream.toString
+      )
+    )
+    writePackedTokenCapture(dcTokens, acMetadataTokens, acTokens, acStrategy, captureBin, captureLast)
+    Files.readAllBytes(captureBin).length % 16 mustBe 0
+    val rawPackedScript =
+      """import sys
+        |raw = open(sys.argv[1], "rb").read()
+        |with open(sys.argv[2], "wb") as handle:
+        |    handle.write(b"".join(raw[index:index + 11] for index in range(0, len(raw), 16)))
+        |""".stripMargin
+    expectSuccess(
+      Seq(
+        "python3",
+        "-c",
+        rawPackedScript,
+        captureBin.toString,
+        rawCaptureBin.toString
+      )
+    )
+    Files.copy(captureLast, rawCaptureLast)
+
+    val captureOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_replay_capture.py",
+        "--replay-plan-json",
+        replayPlan.toString,
+        "--stream-bin",
+        captureBin.toString,
+        "--last-bin",
+        captureLast.toString,
+        "--codestream-bin",
+        assembledCodestream.toString,
+        "--expect-codestream-bin",
+        expectedCodestream.toString,
+        "--expect-target-interface",
+        "rgb_axi_stream",
+        "--expect-target-controlled-shell",
+        "HjxlAxiLiteStreamCore",
+        "--dc-tokens-npy",
+        capturedDcTokens.toString,
+        "--summary-json",
+        summaryJson.toString
+      )
+    )
+    captureOutput must include("validated capture for replay capture: 16x8 distance=1")
+    Files.readAllBytes(assembledCodestream).toSeq mustBe Files.readAllBytes(expectedCodestream).toSeq
+    Files.readAllBytes(capturedDcTokens).toSeq mustBe Files.readAllBytes(dcTokens).toSeq
+    val summary = Files.readString(summaryJson).replace("\r\n", "\n")
+    summary must include("\"format\": \"hjxl.capture_summary.v1\"")
+    summary must include("\"target\"")
+    summary must include("\"interface\": \"rgb_axi_stream\"")
+    summary must include("\"controlled_shell\": \"HjxlAxiLiteStreamCore\"")
+    summary must include("\"group_bits\": 16")
+    summary must include("\"trace_value_bits\": 32")
+    summary must include("\"stream_word_bytes\": 16")
+    summary must include("\"requires_final_last\": true")
+    summary must include("\"width\": 16")
+    summary must include("\"height\": 8")
+
+    val bundleIndexOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_replay_capture.py",
+        "--bundle-index",
+        bundleDir.resolve("capture-bundle.json").toString,
+        "--stream-bin",
+        captureBin.toString,
+        "--last-bin",
+        captureLast.toString,
+        "--codestream-bin",
+        bundleIndexCodestream.toString,
+        "--expect-codestream-bin",
+        expectedCodestream.toString
+      )
+    )
+    bundleIndexOutput must include("validated capture for replay capture: 16x8 distance=1")
+    Files.readAllBytes(bundleIndexCodestream).toSeq mustBe Files.readAllBytes(expectedCodestream).toSeq
+
+    val rawCaptureOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_replay_capture.py",
+        "--replay-plan-json",
+        replayPlan.toString,
+        "--stream-bin",
+        rawCaptureBin.toString,
+        "--last-bin",
+        rawCaptureLast.toString,
+        "--stream-word-bytes",
+        "11",
+        "--codestream-bin",
+        rawCodestream.toString,
+        "--expect-codestream-bin",
+        expectedCodestream.toString,
+        "--summary-json",
+        rawSummaryJson.toString
+      )
+    )
+    rawCaptureOutput must include("validated capture for replay capture: 16x8 distance=1")
+    Files.readAllBytes(rawCodestream).toSeq mustBe Files.readAllBytes(expectedCodestream).toSeq
+    Files.readString(rawSummaryJson).replace("\r\n", "\n") must include("\"stream_word_bytes\": 11")
+    Files.readString(rawSummaryJson).replace("\r\n", "\n") must include("\"interface\": \"rgb_axi_stream\"")
+
+    val invalidWordBytes = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_replay_capture.py",
+        "--replay-plan-json",
+        replayPlan.toString,
+        "--stream-bin",
+        captureBin.toString,
+        "--last-bin",
+        captureLast.toString,
+        "--stream-word-bytes",
+        "0",
+        "--expect-codestream-bin",
+        expectedCodestream.toString
+      )
+    )
+    invalidWordBytes.exitCode mustBe 1
+    invalidWordBytes.output must include("--stream-word-bytes must be positive")
+    invalidWordBytes.output must not include "Traceback"
+
+    val invalidTarget = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_replay_capture.py",
+        "--replay-plan-json",
+        replayPlan.toString,
+        "--stream-bin",
+        captureBin.toString,
+        "--last-bin",
+        captureLast.toString,
+        "--expect-target-interface",
+        "prepared_dct_axi_stream",
+        "--expect-codestream-bin",
+        expectedCodestream.toString
+      )
+    )
+    invalidTarget.exitCode mustBe 1
+    invalidTarget.output must include("replay plan target interface expected 'prepared_dct_axi_stream', got 'rgb_axi_stream'")
+    invalidTarget.output must not include "Traceback"
+
+    val originalReplayPlan = Files.readString(replayPlan)
+    Files.writeString(
+      replayPlan,
+      originalReplayPlan.replace(
+        s""""byte_count": $expectedInputByteCount""",
+        s""""byte_count": ${expectedInputByteCount - 1}"""
+      )
+    )
+    val stalePlanResult = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_replay_capture.py",
+        "--replay-plan-json",
+        replayPlan.toString,
+        "--stream-bin",
+        captureBin.toString,
+        "--last-bin",
+        captureLast.toString,
+        "--expect-codestream-bin",
+        expectedCodestream.toString
+      )
+    )
+    stalePlanResult.exitCode mustBe 1
+    stalePlanResult.output must include("replay plan does not match described bundle")
+    stalePlanResult.output must not include "Traceback"
+    Files.writeString(replayPlan, originalReplayPlan)
+  }
+
+  "hjxl_replay_capture.py rejects missing capture inputs before loading a plan" in {
+    val temp = Files.createTempDirectory("hjxl-replay-capture-missing-input-")
+    val result = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_replay_capture.py",
+        "--bundle-index",
+        temp.resolve("missing-bundle.json").toString,
+        "--summary-json",
+        temp.resolve("summary.json").toString
+      )
+    )
+
+    result.exitCode mustBe 1
+    result.output must include("at least one --trace-csv, --stream-csv, or --stream-bin input is required")
+    result.output must not include "Traceback"
   }
 
   "hjxl_stream_trace.py rejects early TLAST in single-frame mode" in {

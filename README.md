@@ -319,11 +319,13 @@ python3 tools/hjxl_manifest_header.py \
   --symbol-prefix HJXL_RGB_BUNDLE
 ```
 
-The header contains the manifest format, stream word count, input data width,
-stream word/byte counts, register offsets, status/control bit positions, and an
+The header contains the manifest format, target interface/shell names, stream
+word count, input data width, stream word/byte counts, register offsets,
+status/control bit positions, trace packing/capture width macros, and an
 ordered `address,data,strb` write table derived from the manifest's AXI-Lite
 config. C11/C++ consumers also get compile-time assertions tying stream byte
-count and AXI-Lite write-table length back to the generated macros.
+count, trace byte count, and AXI-Lite write-table length back to the generated
+macros.
 Generate replayable stream payload bytes from the same manifest:
 
 ```sh
@@ -349,15 +351,18 @@ python3 tools/hjxl_host_bundle.py \
   --replay-plan-json build-codex/fixtures/gradient-17x9-rgb-host/replay-plan.json
 ```
 
-The resulting `*-bundle.json` records the manifest format, generated file
-paths, stream word count, input stream byte width, total stream byte count for
-DMA transfers, and symbol prefix so host scripts do not need to rediscover the
-bundle layout. It also records SHA-256 checksums for the bundle-local artifacts.
-The bundle contains a local manifest copy plus replay stream/control CSV copies,
-and the index uses bundle-relative artifact paths so the directory can be moved
-as a unit. Use `--no-last-bin` only for host paths that derive TLAST from the
-DMA transfer length; validation still checks final-TLAST semantics through the
-bundle-local stream CSV.
+The resulting `*-bundle.json` records the manifest format, target interface
+metadata, generated file paths, stream word count, input stream byte width,
+total stream byte count for DMA transfers, and symbol prefix so host scripts do
+not need to rediscover the bundle layout. The `target` block distinguishes RGB
+stream bundles for `HjxlAxiLiteStreamCore` from prepared-DCT bundles for
+`HjxlPreparedDctAxiLiteStreamCore` / `HjxlKv260PreparedDctTop`. It also records
+SHA-256 checksums for the bundle-local artifacts. The bundle contains a local
+manifest copy plus replay stream/control CSV copies, and the index uses
+bundle-relative artifact paths so the directory can be moved as a unit. Use
+`--no-last-bin` only for host paths that derive TLAST from the DMA transfer
+length; validation still checks final-TLAST semantics through the bundle-local
+stream CSV.
 Validate the handoff bundle before using it from host code:
 
 ```sh
@@ -365,10 +370,12 @@ python3 tools/hjxl_host_bundle.py \
   --validate-bundle build-codex/fixtures/gradient-17x9-rgb-host/gradient-17x9-rgb-bundle.json
 ```
 
-Bundle validation re-reads the source manifest, checks the generated header,
-stream payload, optional TLAST sidecar, copied AXI-Lite control CSV, stream
-metadata, AXI-Lite write count, and SHA-256 checksums against the manifest, and
-fails on stale or hand-edited artifacts.
+Bundle validation re-reads the source manifest, checks the target metadata,
+generated header, stream payload, optional TLAST sidecar, copied AXI-Lite
+control CSV, stream metadata, AXI-Lite write count, and SHA-256 checksums
+against the manifest, and fails on stale or hand-edited artifacts. Older bundle
+indexes without `target` still validate, but contradictory target metadata does
+not.
 To inspect the host replay sequence without writing a driver yet, emit a
 machine-readable replay plan:
 
@@ -379,9 +386,11 @@ python3 tools/hjxl_host_bundle.py \
 
 The replay plan validates the bundle first, then prints bundle-relative and
 absolute resolved stream payload paths, diagnostic stream/control CSV paths, DMA
-byte count, optional TLAST sidecar paths, ordered AXI-Lite writes, status bit
-positions, the canonical `bundle_index_resolved` path, and artifact checksums
-as `hjxl.host_replay_plan.v1` JSON.
+byte count, optional TLAST sidecar paths, target interface metadata, ordered
+AXI-Lite writes, status bit positions, trace packing geometry, the default
+capture word size for the current KV260 wrapper, the canonical
+`bundle_index_resolved` path, and artifact checksums as
+`hjxl.host_replay_plan.v1` JSON.
 Add `--replay-plan-json path/to/plan.json` to write the same validated replay
 plan to a file for host scripts; it can be used with either bundle generation
 or `--describe-bundle`. Validate a saved plan before replay:
@@ -395,7 +404,34 @@ Replay-plan validation regenerates the plan from the referenced bundle index
 and fails if the saved file is stale. When `bundle_index_resolved` is present,
 validation uses that canonical path so saved plans can live outside the bundle
 directory; older plans without it fall back to resolving `bundle_index` relative
-to the saved plan file.
+to the saved plan file. Older v1 replay plans without `target` or `trace` also
+validate against the regenerated bundle description.
+
+After a host replay captures `m_axis_trace_tdata`, validate and assemble that
+capture against the same replay plan:
+
+```sh
+python3 tools/hjxl_replay_capture.py \
+  --replay-plan-json build-codex/fixtures/gradient-17x9-rgb-host/replay-plan.json \
+  --expect-target-interface rgb_axi_stream \
+  --stream-bin build-codex/traces/gradient-17x9-kv260-trace.bin \
+  --last-bin build-codex/traces/gradient-17x9-kv260-trace-last.bin \
+  --codestream-bin build-codex/traces/gradient-17x9-rtl.jxl \
+  --expect-codestream-bin build-codex/fixtures/gradient-17x9-dct-only.jxl \
+  --summary-json build-codex/traces/gradient-17x9-capture-summary.json
+```
+
+This helper validates the replay plan before using it, derives width, height,
+and distance from the ordered AXI-Lite writes, then feeds the captured trace into
+the same host assembler used by `tools/hjxl_trace_to_codestream.py`. Binary
+capture input defaults to the replay plan's trace metadata: 16-byte words for
+the 128-bit `HjxlKv260PreparedDctTop` trace output today. Pass
+`--stream-word-bytes 11` for raw packed 88-bit trace dumps. Use
+`--expect-target-interface`, `--expect-target-controlled-shell`, or
+`--expect-target-kv260-top` in host scripts that must reject the wrong replay
+target before capture assembly. Older replay plans
+without a `trace` block still validate; the capture helper falls back to the
+current 16-bit group, 32-bit value, and 16-byte KV260 capture defaults.
 
 `HjxlAxiLiteStreamCore` exposes the same input/output streams, but drives
 `FrameConfig` through 32-bit AXI-Lite registers:
@@ -446,6 +482,11 @@ to bytes: 11 bytes for the default 88-bit trace stream. Use
 packed stream captures directly with repeated `--stream-csv` or `--stream-bin`
 inputs and the same `--group-bits`, `--trace-value-bits`,
 `--stream-word-bytes`, and `--require-stream-final-last` options.
+For replay-plan-based host bring-up, prefer `tools/hjxl_replay_capture.py`; it
+derives the frame dimensions and distance from the saved control writes and
+derives trace geometry from the replay plan unless explicitly overridden. It
+also emits an optional `hjxl.capture_summary.v1` JSON report with the replay
+target metadata, capture geometry, token counts, and byte counts.
 
 Assemble frame and bare codestream bytes directly from a token `StageTrace`
 CSV dump:
@@ -530,8 +571,9 @@ Validation checks manifest format, stream word count, block count, final-only
 TLAST, stream CSV columns, AXI-Lite CSV columns, full-byte strobes, register
 values, and source prepared-JSON metadata when the source file is present.
 Use `tools/hjxl_manifest_header.py` on the same prepared-DCT manifest to emit
-host constants and the ordered control-write table for the current
-`HjxlKv260PreparedDctTop` control plane. Use `tools/hjxl_stream_buffer.py` on
+host constants, target interface macros, and the ordered control-write table
+for the current `HjxlKv260PreparedDctTop` control plane. Use
+`tools/hjxl_stream_buffer.py` on
 that manifest to emit the 32-bit little-endian prepared-block stream payload
 and optional TLAST sidecar, or prefer `tools/hjxl_host_bundle.py` to generate
 and `--validate-bundle` to verify the complete prepared-DCT host handoff.

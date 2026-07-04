@@ -11,18 +11,18 @@ from hjxl_reference import _add_libjxl_tiny, _libjxl_tiny_root, _load_numpy
 from hjxl_trace_tokens import TOKEN_STAGES, ac_strategy_grid, load_trace_rows, token_pairs
 
 
-def _write_bytes(path: Path, data: bytes) -> None:
+def write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
 
 
-def _write_array(path: Path, array) -> None:
+def write_array(path: Path, array) -> None:
     np = _load_numpy()
     path.parent.mkdir(parents=True, exist_ok=True)
     np.save(path, np.asarray(array))
 
 
-def _compare_bytes(label: str, expected_path: Path, actual: bytes) -> list[str]:
+def compare_bytes(label: str, expected_path: Path, actual: bytes) -> list[str]:
     expected = expected_path.read_bytes()
     if actual == expected:
         return []
@@ -196,23 +196,23 @@ def main() -> int:
         return 1
 
     if args.dc_tokens_npy is not None:
-        _write_array(args.dc_tokens_npy, dc_tokens)
+        write_array(args.dc_tokens_npy, dc_tokens)
     if args.ac_metadata_tokens_npy is not None:
-        _write_array(args.ac_metadata_tokens_npy, ac_metadata_tokens)
+        write_array(args.ac_metadata_tokens_npy, ac_metadata_tokens)
     if args.ac_tokens_npy is not None:
-        _write_array(args.ac_tokens_npy, ac_tokens)
+        write_array(args.ac_tokens_npy, ac_tokens)
     if args.ac_strategy_npy is not None:
-        _write_array(args.ac_strategy_npy, ac_strategy)
+        write_array(args.ac_strategy_npy, ac_strategy)
     if args.frame_bin is not None:
-        _write_bytes(args.frame_bin, frame)
+        write_bytes(args.frame_bin, frame)
     if args.codestream_bin is not None:
-        _write_bytes(args.codestream_bin, codestream)
+        write_bytes(args.codestream_bin, codestream)
 
     errors: list[str] = []
     if args.expect_frame_bin is not None:
-        errors.extend(_compare_bytes("frame", args.expect_frame_bin, frame))
+        errors.extend(compare_bytes("frame", args.expect_frame_bin, frame))
     if args.expect_codestream_bin is not None:
-        errors.extend(_compare_bytes("codestream", args.expect_codestream_bin, codestream))
+        errors.extend(compare_bytes("codestream", args.expect_codestream_bin, codestream))
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1

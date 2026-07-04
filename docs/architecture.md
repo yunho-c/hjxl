@@ -430,7 +430,7 @@ KV260 prepared-DCT top as the current Vivado-facing top-level shape.
   count, final-only TLAST, CSV columns, AXI-Lite strobes/register values, and
   source prepared-JSON metadata when present. Use
   `tools/hjxl_manifest_header.py` on the saved manifest to generate the
-  matching C host constants and control-write table, and
+  matching C host constants, target macros, and control-write table, and
   `tools/hjxl_stream_buffer.py` to generate little-endian stream payload bytes
   plus an optional one-byte-per-word TLAST sidecar.
 - `tools/hjxl_reference.py --dct-only-frame-bin ...` and
@@ -514,10 +514,11 @@ KV260 prepared-DCT top as the current Vivado-facing top-level shape.
   for host runners. This is the current host-side fixture path for RGB
   stream-shell simulation before DMA buffers or KV260 drivers exist.
   `tools/hjxl_manifest_header.py --manifest-json ... --header ...` turns the
-  generated manifest into C constants, stream byte-count macros, and an ordered
+  generated manifest into C constants, target interface/shell macros, stream
+  byte-count macros, trace packing/capture width macros, and an ordered
   AXI-Lite write table for host-driver stubs. The generated header includes
-  C11/C++ static assertions for stream byte-count and write-table-length
-  consistency so stale host handoff artifacts fail early.
+  C11/C++ static assertions for stream byte-count, trace byte-count, and
+  write-table-length consistency so stale host handoff artifacts fail early.
   `tools/hjxl_stream_buffer.py --manifest-json ... --stream-bin ...` turns it
   into little-endian stream payload bytes for deterministic replay.
   `tools/hjxl_host_bundle.py --manifest-json ...
@@ -525,26 +526,46 @@ KV260 prepared-DCT top as the current Vivado-facing top-level shape.
   artifacts plus a bundle index. The bundle includes a local manifest copy and
   replay stream/control CSV copies, with bundle-relative artifact paths in the
   index so the directory can be moved as a unit. The index's
-  `stream.byte_count` is the intended host/DMA transfer byte count for the input
-  payload, and SHA-256 checksums cover the bundle-local artifacts. Its
+  `target` block distinguishes RGB AXI-stream bundles for `HjxlAxiLiteStreamCore`
+  from prepared-DCT bundles for `HjxlPreparedDctAxiLiteStreamCore` and the
+  current `HjxlKv260PreparedDctTop`. The index's `stream.byte_count` is the
+  intended host/DMA transfer byte count for the input payload, and SHA-256
+  checksums cover the bundle-local artifacts. Its
   `--validate-bundle` mode re-reads the source manifest and checks the generated
-  header, stream payload, optional TLAST sidecar, copied AXI-Lite control CSV,
-  stream metadata, AXI-Lite write count, and artifact checksums before host
-  replay. `--no-last-bin` is valid for host paths that derive TLAST from
-  transfer length; final-TLAST semantics are still validated through the
-  bundle-local stream CSV. `--describe-bundle` validates the bundle and emits
-  `hjxl.host_replay_plan.v1` JSON with bundle-relative and absolute resolved
-  stream payload paths, diagnostic stream/control CSV paths, DMA byte count,
-  optional TLAST sidecar paths, ordered AXI-Lite writes, status bits, and
-  artifact checksums for early host bring-up scripts. `bundle_index_resolved`
-  records the canonical source bundle-index path. `--replay-plan-json ...`
-  writes the same validated plan to a file during bundle generation or
-  `--describe-bundle` for scripts that should not parse stdout.
+  header, target metadata, stream payload, optional TLAST sidecar, copied
+  AXI-Lite control CSV, stream metadata, AXI-Lite write count, and artifact
+  checksums before host replay. `--no-last-bin` is valid for host paths that
+  derive TLAST from transfer length; final-TLAST semantics are still validated
+  through the bundle-local stream CSV. `--describe-bundle` validates the bundle
+  and emits `hjxl.host_replay_plan.v1` JSON with bundle-relative and absolute
+  resolved stream payload paths, diagnostic stream/control CSV paths, DMA byte
+  count, optional TLAST sidecar paths, target interface metadata, ordered
+  AXI-Lite writes, status bits, trace packing geometry, default capture word
+  bytes, and artifact checksums
+  for early host bring-up scripts. `bundle_index_resolved` records the canonical
+  source bundle-index path. `--replay-plan-json ...` writes the same validated
+  plan to a file during bundle generation or `--describe-bundle` for scripts
+  that should not parse stdout.
   `--validate-replay-plan ...` regenerates the plan from the referenced bundle
   index and fails if the saved file is stale. When present,
   `bundle_index_resolved` is used for validation so saved plans can live outside
   the bundle directory; older plans without it resolve `bundle_index` relative
-  to the saved plan file.
+  to the saved plan file. Older v1 bundles or replay plans without `target`
+  still validate, but contradictory target metadata is rejected.
+  `tools/hjxl_replay_capture.py --replay-plan-json ... --stream-bin ...
+  --last-bin ... --codestream-bin ... --expect-codestream-bin ...` is the
+  replay-plan-aware post-capture checker. It validates the plan, derives width,
+  height, and distance from the AXI-Lite writes, and feeds captured trace rows
+  into the same libjxl-tiny-backed assembler as `hjxl_trace_to_codestream.py`.
+  Binary captures default to the plan's trace metadata: 16-byte words for the
+  KV260 wrapper's 128-bit trace output today. `--stream-word-bytes 11` handles
+  raw packed 88-bit traces. `--expect-target-interface`,
+  `--expect-target-controlled-shell`, and `--expect-target-kv260-top` let host
+  scripts reject captures prepared for the wrong shell before assembly. Older
+  v1 replay plans without a `trace` block still
+  validate and use the current group/value width and KV260 capture defaults.
+  `--summary-json` writes a `hjxl.capture_summary.v1` report with replay target
+  metadata, capture geometry, token counts, and byte counts for host logs.
   `HjxlAxiStreamCoreSpec` drives that generated stream into RTL and decodes the
   resulting packed trace stream, and `HjxlAxiLiteStreamCoreSpec` repeats the
   flow using the generated AXI-Lite CSV to program the controlled shell, so both
@@ -564,6 +585,9 @@ KV260 prepared-DCT top as the current Vivado-facing top-level shape.
   `TraceToCodestreamToolSpec` covers multi-file trace input, packed stream
   byte-parity input, expected-byte mismatch diagnostics, and malformed trace
   rejection for this CLI.
+  For replay-plan-based host runs, use `hjxl_replay_capture.py` so dimensions
+  and distance come from the validated control-plane bundle instead of a manual
+  command line.
 - `tools/hjxl_compare_tokens.py` compares converted token arrays against oracle
   arrays. It is exact by default for stream length, contexts, values, and AC
   strategy grid entries; use its value-delta mode only as a diagnostic while

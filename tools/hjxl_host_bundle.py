@@ -11,7 +11,19 @@ import json
 from pathlib import Path
 import shutil
 
-from hjxl_manifest_header import header_text, input_data_bits, register_writes
+from hjxl_manifest_header import (
+    KV260_TRACE_CAPTURE_WORD_BYTES,
+    TRACE_GROUP_BITS,
+    TRACE_INDEX_BITS,
+    TRACE_PACKED_BITS,
+    TRACE_PACKED_BYTES,
+    TRACE_STAGE_BITS,
+    TRACE_VALUE_BITS,
+    header_text,
+    input_data_bits,
+    register_writes,
+    target_metadata,
+)
 from hjxl_stream_buffer import stream_rows_from_manifest, write_stream_buffers
 
 
@@ -152,6 +164,9 @@ def validate_host_bundle(index_path: Path) -> dict:
         manifest = json.load(handle)
     if index.get("manifest_format") != manifest.get("format"):
         raise ValueError(f"{index_path}: manifest_format does not match source manifest")
+    expected_target = target_metadata(manifest.get("format"))
+    if "target" in index and index["target"] != expected_target:
+        raise ValueError(f"{index_path}: target metadata does not match source manifest")
 
     rows, input_data_bits, input_data_bytes = stream_rows_from_manifest(manifest_path)
     stream = index["stream"]
@@ -233,6 +248,7 @@ def describe_host_bundle(index_path: Path) -> dict:
         "bundle_dir": str(bundle_dir.resolve()),
         "name": index["name"],
         "manifest_format": index["manifest_format"],
+        "target": target_metadata(index["manifest_format"]),
         "artifacts": {
             "header": artifacts["header"],
             "header_resolved": _resolved_path(header),
@@ -251,6 +267,15 @@ def describe_host_bundle(index_path: Path) -> dict:
             "word_count": index["stream"]["word_count"],
             "word_bytes": index["stream"]["input_data_bytes"],
             "byte_count": index["stream"]["byte_count"],
+        },
+        "trace": {
+            "stage_bits": TRACE_STAGE_BITS,
+            "group_bits": TRACE_GROUP_BITS,
+            "index_bits": TRACE_INDEX_BITS,
+            "trace_value_bits": TRACE_VALUE_BITS,
+            "packed_bits": TRACE_PACKED_BITS,
+            "packed_bytes": TRACE_PACKED_BYTES,
+            "default_capture_word_bytes": KV260_TRACE_CAPTURE_WORD_BYTES,
         },
         "axi_lite": {
             "write_count": len(writes),
@@ -285,6 +310,10 @@ def validate_replay_plan(plan_path: Path) -> dict:
     expected["bundle_index"] = bundle_index
     if "bundle_index_resolved" not in plan:
         expected.pop("bundle_index_resolved", None)
+    if "trace" not in plan:
+        expected.pop("trace", None)
+    if "target" not in plan:
+        expected.pop("target", None)
     if plan != expected:
         raise ValueError(f"{plan_path}: replay plan does not match described bundle")
     return plan
@@ -359,6 +388,7 @@ def write_host_bundle(
         "source_manifest": manifest_copy.name,
         "original_manifest": str(manifest_path),
         "manifest_format": manifest.get("format"),
+        "target": target_metadata(manifest.get("format")),
         "name": safe_name,
         "artifacts": {
             "header": _artifact_path(header, output_dir),

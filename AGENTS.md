@@ -414,12 +414,13 @@ Read these libjxl-tiny files before making architectural changes:
   before replay.
 - `tools/hjxl_manifest_header.py --manifest-json ... --header ...` consumes
   RGB or prepared-DCT stream/control manifests and writes a C header containing
-  stream word count, input data width, stream byte counts, AXI-Lite register
-  offsets, status bits, and the ordered config-write table. Keep it
+  target interface/shell macros, stream word count, input data width, stream
+  byte counts, trace packing/capture width macros, AXI-Lite register offsets,
+  status bits, and the ordered config-write table. Keep it
   manifest-driven so host code does not duplicate register constants by hand.
-  The generated header includes C11/C++ static assertions for stream byte count
-  and AXI-Lite write-table length; preserve those checks when changing the host
-  handoff format.
+  The generated header includes C11/C++ static assertions for stream byte count,
+  trace byte count, and AXI-Lite write-table length; preserve those checks when
+  changing the host handoff format.
 - `tools/hjxl_stream_buffer.py --manifest-json ... --stream-bin ...
   --last-bin ...` consumes RGB or prepared-DCT manifests and writes
   little-endian stream payload bytes plus an optional one-byte-per-word TLAST
@@ -430,30 +431,55 @@ Read these libjxl-tiny files before making architectural changes:
   payload, optional TLAST sidecar, and a `*-bundle.json` artifact index from the
   same manifest. It also copies a bundle-local manifest plus replay
   stream/control CSVs and records relative artifact paths so the bundle
-  directory can move as a unit. The index's `stream.byte_count` is the intended
+  directory can move as a unit. The index's `target` block is the explicit host
+  contract: RGB manifests target `HjxlAxiLiteStreamCore`, while prepared-DCT
+  manifests target `HjxlPreparedDctAxiLiteStreamCore` and the current
+  `HjxlKv260PreparedDctTop`. The index's `stream.byte_count` is the intended
   host/DMA transfer byte count for the input payload, and its SHA-256 checksums
   cover the bundle-local artifacts. `--no-last-bin` is valid only when the host
   path derives TLAST from transfer length; bundle validation still checks
   final-TLAST semantics through the stream CSV. Use the lower-level
   header/buffer tools only when tests need to check one artifact in isolation. Run
   `tools/hjxl_host_bundle.py --validate-bundle ...` before host replay; it
-  checks the bundle index, generated header, stream payload, optional TLAST
-  sidecar, copied AXI-Lite control CSV, stream metadata, and AXI-Lite write
-  count against the source manifest, then verifies artifact checksums.
+  checks the bundle index, target metadata, generated header, stream payload,
+  optional TLAST sidecar, copied AXI-Lite control CSV, stream metadata, and
+  AXI-Lite write count against the source manifest, then verifies artifact
+  checksums. Older bundle indexes without `target` still validate, but
+  contradictory target metadata should be treated as a hard error.
   `tools/hjxl_host_bundle.py --describe-bundle ...` validates the bundle and
   prints `hjxl.host_replay_plan.v1` JSON with bundle-relative and absolute resolved
   stream payload paths, diagnostic stream/control CSV paths, DMA byte count,
-  optional TLAST sidecar paths, ordered AXI-Lite writes, status bits, and
-  artifact checksums. `bundle_index_resolved` is the canonical bundle-index
-  path for host scripts. Use that shape for host bring-up scripts before
-  writing platform-specific drivers. Add `--replay-plan-json ...` during bundle
-  generation or `--describe-bundle` when a host script needs a stable
-  replay-plan file instead of stdout. Run
+  optional TLAST sidecar paths, target interface metadata, ordered AXI-Lite
+  writes, status bits, trace packing geometry, default capture word bytes, and
+  artifact checksums.
+  `bundle_index_resolved` is the canonical bundle-index path for host scripts.
+  Use that shape for host bring-up scripts before writing platform-specific
+  drivers. Add `--replay-plan-json ...` during bundle generation or
+  `--describe-bundle` when a host script needs a stable replay-plan file
+  instead of stdout. Run
   `tools/hjxl_host_bundle.py --validate-replay-plan ...` before consuming a
   saved plan; it regenerates the plan from the referenced bundle index and
   fails if the saved file is stale. When present, `bundle_index_resolved` is
   used for validation so saved plans can live outside the bundle directory;
   older plans without it resolve `bundle_index` relative to the saved plan file.
+  Older v1 replay plans without `target` or `trace` still validate against the
+  regenerated bundle description.
+- `tools/hjxl_replay_capture.py --replay-plan-json ... --stream-bin ...
+  --last-bin ... --codestream-bin ... --expect-codestream-bin ...` is the
+  preferred post-DMA capture checker for host bring-up. It validates the saved
+  replay plan before use, derives width, height, and distance from the ordered
+  AXI-Lite writes, then assembles captured token traces through the same
+  libjxl-tiny-backed path as `tools/hjxl_trace_to_codestream.py`. Binary capture
+  input defaults to the plan's trace metadata: 16-byte words for
+  `HjxlKv260PreparedDctTop`'s 128-bit `m_axis_trace_tdata` today. Pass
+  `--stream-word-bytes 11` for raw packed 88-bit trace dumps. Use
+  `--expect-target-interface`, `--expect-target-controlled-shell`, and
+  `--expect-target-kv260-top` when a host script must reject the wrong replay
+  target before capture assembly. Older v1 replay
+  plans without a `trace` block still validate, and this helper falls back to
+  the current group/value width and KV260 capture defaults. Use `--summary-json`
+  to write a `hjxl.capture_summary.v1` report with replay target metadata,
+  capture geometry, token counts, and byte counts next to captured artifacts.
 - `tools/hjxl_quant_trace_to_prepared_tokens.py --trace-csv ... --width ...
   --height ... --dc-csv ... --ac-csv ...` converts quantization traces into the
   prepared-token simulator CSVs. It requires complete `QuantDc`,
@@ -513,7 +539,8 @@ Read these libjxl-tiny files before making architectural changes:
   `tools/hjxl_trace_tokens.py`, direct `--stream-csv` and `--stream-bin` token
   extraction, generated host-header compile smokes when `cc` or `c++` is
   available, portable host bundle relocation validation, and the
-  `tools/hjxl_trace_to_codestream.py` packed-stream paths.
+  `tools/hjxl_trace_to_codestream.py` packed-stream paths. It also covers
+  replay-plan-driven capture validation through `tools/hjxl_replay_capture.py`.
 - `tools/hjxl_rgb_stream.py --pfm ... --stream-csv ...` converts RGB PFM files
   into the raster `data,last` input stream expected by `HjxlAxiStreamCore` and
   `HjxlAxiLiteStreamCore`. It restores top-to-bottom PFM row order, quantizes
