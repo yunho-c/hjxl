@@ -29,6 +29,7 @@ class FramePreparedDctOnlyQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig()) 
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new DctOnlyQuantizeBlockInput(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
@@ -144,6 +145,7 @@ class FramePreparedDctOnlyQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig()) 
       (state === emitAc) -> acTokens.io.trace.bits
     )
   )
+  io.traceLast := state === emitAc && acTokens.io.traceLast
   io.busy :=
     state =/= receiving || receivedBlocks =/= 0.U || dcTokens.io.busy ||
       metadataTokens.io.busy || acTokens.io.busy

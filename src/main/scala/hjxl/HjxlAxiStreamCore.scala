@@ -18,10 +18,9 @@ class AxiStreamWord(dataBits: Int) extends Bundle {
   * coordinates consumed by `HjxlCore`.
   *
   * The trace output packs one `StageTrace` row as `{value, index, group, stage}`,
-  * with `stage` in the low eight bits. `trace.bits.last` is asserted for the
-  * fixed-size trace routes whose frame length is derivable from `FrameConfig`.
-  * Variable-length full AC-token output keeps `last` low until that route
-  * exposes an explicit completion contract.
+  * with `stage` in the low eight bits. `trace.bits.last` is asserted for each
+  * route's final frame trace word, including the variable-length full AC-token
+  * route.
   */
 class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRoute.All) extends Module {
   val pixelDataBits = c.pixelBits * 3
@@ -128,15 +127,19 @@ class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCore
   val quantizedTraceLast =
     trace.stage === TraceStage.NumNonzeros.U && lastIndex(trace.group, traceBlocks) && trace.index === 2.U
   val dcTokenTraceLast =
-    trace.stage === TraceStage.DcTokens.U && lastIndex(trace.group, traceBlocks * 3.U)
+    trace.stage === TraceStage.DcTokens.U && (lastIndex(trace.group, traceBlocks * 3.U) || core.io.traceLast)
   val acMetadataTraceLast =
-    trace.stage === TraceStage.AcMetadataTokens.U && lastIndex(trace.group, traceTiles * 2.U + traceBlocks * 3.U)
+    trace.stage === TraceStage.AcMetadataTokens.U &&
+      (lastIndex(trace.group, traceTiles * 2.U + traceBlocks * 3.U) || core.io.traceLast)
   val acStrategyTraceLast =
     trace.stage === TraceStage.AcStrategy.U && lastIndex(trace.index, traceBlocks)
+  val acTokenTraceLast =
+    trace.stage === TraceStage.AcTokens.U && core.io.traceLast
 
   io.trace.bits.last := core.io.trace.valid && (
     paddedTraceLast || rawDctTraceLast || quantizedTraceLast ||
-      dcTokenTraceLast || acMetadataTraceLast || acStrategyTraceLast
+      dcTokenTraceLast || acMetadataTraceLast || acStrategyTraceLast ||
+      acTokenTraceLast
   )
   io.protocolError := protocolError
 }

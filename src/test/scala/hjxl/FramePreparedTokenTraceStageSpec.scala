@@ -138,6 +138,7 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
           dut.io.trace.bits.group.expect(trace.group.U)
           dut.io.trace.bits.index.expect(trace.index.U)
           dut.io.trace.bits.value.expect(trace.value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
         }
         dut.clock.step()
       }
@@ -167,6 +168,7 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
       dut.io.trace.bits.group.expect(0.U)
       dut.io.trace.bits.index.expect(26.U)
       dut.io.trace.bits.value.expect(704.S)
+      dut.io.traceLast.expect(false.B)
 
       for (_ <- 0 until 3) {
         dut.clock.step()
@@ -175,6 +177,7 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
         dut.io.trace.bits.group.expect(0.U)
         dut.io.trace.bits.index.expect(26.U)
         dut.io.trace.bits.value.expect(704.S)
+        dut.io.traceLast.expect(false.B)
       }
 
       dut.io.trace.ready.poke(true.B)
@@ -184,6 +187,7 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
       dut.io.trace.bits.group.expect(1.U)
       dut.io.trace.bits.index.expect(13.U)
       dut.io.trace.bits.value.expect(0.S)
+      dut.io.traceLast.expect(false.B)
       dut.io.overflow.expect(false.B)
     }
   }
@@ -360,6 +364,7 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
       dut.io.trace.ready.poke(true.B)
 
       val traces = scala.collection.mutable.ArrayBuffer.empty[ExpectedTrace]
+      val traceLastValues = scala.collection.mutable.ArrayBuffer.empty[Boolean]
       for (ordinal <- 0 until dcTokenCount + strategyCount + metadataCount + expectedAcTokenCount) {
         waitForTraceValid(dut)
         traces += ExpectedTrace(
@@ -368,6 +373,7 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
           dut.io.trace.bits.index.peekValue().asBigInt.toInt,
           dut.io.trace.bits.value.peekValue().asBigInt.toInt
         )
+        traceLastValues += dut.io.traceLast.peekValue().asBigInt.testBit(0)
         dut.clock.step()
       }
 
@@ -383,6 +389,11 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
       acTraces.map(_.stage).forall(_ == TraceStage.AcTokens) mustBe true
       acTraces.map(_.group) mustBe (0 until expectedAcTokenCount)
       acTraces.exists(_.value != 0) mustBe true
+      traceLastValues.zipWithIndex.foreach { case (traceLast, ordinal) =>
+        withClue(s"prepared combined traceLast at output ordinal $ordinal") {
+          traceLast mustBe (ordinal == traces.length - 1)
+        }
+      }
 
       dut.io.trace.valid.expect(false.B)
       dut.io.overflow.expect(false.B)

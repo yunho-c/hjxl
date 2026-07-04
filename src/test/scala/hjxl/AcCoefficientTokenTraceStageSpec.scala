@@ -97,6 +97,7 @@ class AcCoefficientTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
           dut.io.trace.bits.group.expect((group + ordinal).U)
           dut.io.trace.bits.index.expect(context.U)
           dut.io.trace.bits.value.expect(value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
         }
         dut.clock.step()
       }
@@ -154,6 +155,7 @@ class AcCoefficientTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
           dut.io.trace.bits.group.expect((group + ordinal).U)
           dut.io.trace.bits.index.expect(context.U)
           dut.io.trace.bits.value.expect(value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
         }
         dut.clock.step()
       }
@@ -189,6 +191,7 @@ class AcCoefficientTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
       dut.io.trace.bits.group.expect(group.U)
       dut.io.trace.bits.index.expect(expectedContext.U)
       dut.io.trace.bits.value.expect(0.S)
+      dut.io.traceLast.expect(true.B)
       dut.clock.step()
       dut.io.trace.valid.expect(false.B)
       dut.io.input.ready.expect(true.B)
@@ -231,6 +234,7 @@ class AcCoefficientTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
           dut.io.trace.bits.group.expect((group + ordinal).U)
           dut.io.trace.bits.index.expect(context.U)
           dut.io.trace.bits.value.expect(value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
         }
         dut.clock.step()
       }

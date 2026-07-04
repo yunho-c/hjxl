@@ -54,7 +54,7 @@ class PreparedDctElaborationSpec extends AnyFreeSpec with Matchers {
     text
   }
 
-  private def expectPreparedDctPorts(systemVerilog: String): Unit = {
+  private def expectPreparedDctPorts(systemVerilog: String, expectTraceLast: Boolean): Unit = {
     val expectedPorts = Seq(
       "io_config_xsize",
       "io_config_ysize",
@@ -81,7 +81,7 @@ class PreparedDctElaborationSpec extends AnyFreeSpec with Matchers {
       "io_trace_bits_value",
       "io_busy",
       "io_overflow"
-    )
+    ) ++ (if (expectTraceLast) Seq("io_traceLast") else Seq.empty)
     for (port <- expectedPorts) {
       withClue(s"missing generated port $port") {
         systemVerilog must include(port)
@@ -94,12 +94,12 @@ class PreparedDctElaborationSpec extends AnyFreeSpec with Matchers {
       "FramePreparedDctOnlyQuantizeTraceStage",
       new FramePreparedDctOnlyQuantizeTraceStage(config)
     )
-    expectPreparedDctPorts(quantize)
+    expectPreparedDctPorts(quantize, expectTraceLast = false)
 
     val quantizeTokens = elaborateAndRead(
       "FramePreparedDctOnlyQuantizeTokenTraceStage",
       new FramePreparedDctOnlyQuantizeTokenTraceStage(config)
     )
-    expectPreparedDctPorts(quantizeTokens)
+    expectPreparedDctPorts(quantizeTokens, expectTraceLast = true)
   }
 }

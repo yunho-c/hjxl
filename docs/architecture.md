@@ -154,7 +154,8 @@ stream shell as the current KV260/Vivado-facing top-level shape.
   runs `DctOnlyQuantizeBlock`, buffers quantized DC/AC/nonzero frame state, and
   internally drives prepared DC, AC-metadata, and AC-token schedulers in the
   required output order. Unlike `FramePreparedTokenTraceStage`, it can describe
-  the prepared raw-quant and CFL values used during quantization.
+  the prepared raw-quant and CFL values used during quantization. It exposes
+  `traceLast` on the final AC-token trace beat for host capture.
 - `FrameDctOnlyQuantizeTraceStage` is the first frame-level quantized-block
   scheduler. It buffers and pads RGB like `FrameDct8x8TraceStage`, converts
   each raster block through approximate XYB and DCT, then emits 198 records per
@@ -191,6 +192,8 @@ stream shell as the current KV260/Vivado-facing top-level shape.
   literals in libjxl-tiny order. Token traces use
   `trace.stage = AcMetadataTokens`, `trace.group = token ordinal`,
   `trace.index = context`, and `trace.value = packed residual or literal`.
+  `FrameDctOnlyDcTokenTraceStage` and `FrameDctOnlyAcMetadataTokenTraceStage`
+  both expose `traceLast` on their final fixed-length token trace beat.
 - `FramePreparedAcMetadataTokenTraceStage` emits AC-metadata token traces from
   prepared raster block metadata. Each input block supplies raw quant, Y-to-X
   CFL, and Y-to-B CFL values. The stage stores raw quant per block and CFL per
@@ -202,8 +205,9 @@ stream shell as the current KV260/Vivado-facing top-level shape.
   path. It predicts each count from top/left block nonzero history, applies
   libjxl-tiny's nonzero bucket context formula for ordinary DCT, and emits
   `trace.stage = AcTokens`, `trace.group = token ordinal`, `trace.index =
-  context`, and `trace.value = nonzero count`. It is currently a standalone
-  frame stage rather than an `HjxlCore` route, and it does not yet emit
+  context`, and `trace.value = nonzero count`; `traceLast` marks the final
+  prefix token. It is currently a standalone frame stage rather than an
+  `HjxlCore` route, and it does not yet emit
   coefficient scan tokens.
 - `AcCoefficientTokenTraceStage` emits prepared-block ordinary-DCT AC
   coefficient scan tokens. The caller provides quantized coefficients, channel,
@@ -229,7 +233,9 @@ stream shell as the current KV260/Vivado-facing top-level shape.
   schedulers with fixed all-DCT AC strategy and AC-metadata trace generation.
   Its input boundary is prepared quantized DC samples plus prepared quantized AC
   blocks; its output boundary is the same `StageTrace` CSV shape consumed by
-  `tools/hjxl_trace_tokens.py` and the host bitstream assembler.
+  `tools/hjxl_trace_tokens.py` and the host bitstream assembler. It exposes
+  `traceLast` on the final AC-token trace beat, giving the combined prepared
+  boundary an explicit frame delimiter.
 - `FrameDctOnlyAcTokenTraceStage` is the first complete RGB-input standalone
   frame scheduler for the fixed all-DCT AC token stream. It buffers/pads RGB,
   computes the same fixed DCT-only quantized block data as
@@ -244,18 +250,21 @@ stream shell as the current KV260/Vivado-facing top-level shape.
   when SystemVerilog for the full AC-token path is needed as a dedicated top;
   use `new HjxlCore(traceRoute = TraceStage.AcTokens)` or
   `sbt 'runMain hjxl.ElaborateCoreAcTokens'` when the public core IO shell is
-  useful for focused simulation or integration. `HjxlCoreRouteElaborationSpec`
-  guards that split so the default all-route shell stays smaller.
+  useful for focused simulation or integration. Token schedulers expose
+  `traceLast`; `HjxlCore` carries it for DC, AC-metadata, and focused AC-token
+  routes, and the dedicated AC top exposes it alongside the trace stream.
+  `HjxlCoreRouteElaborationSpec` guards that split so the default all-route
+  shell stays smaller.
 - `HjxlAxiStreamCore` wraps `HjxlCore` in an AXI4-Stream-shaped raster input
   and trace output. Input data packs R/G/B into consecutive `pixelBits` fields
   with R in the low bits, checks input `last` against the configured raster
   frame length, and exposes sticky `protocolError` plus a `clearProtocolError`
   input for host recovery. Output data packs `{value,index,group,stage}` with
-  `stage` in the low eight bits. Output `last` is asserted for fixed-size
-  routes whose frame length is known from `FrameConfig`: padded input, XYB, raw
-  DCT, quantized traces, DC tokens, AC-metadata tokens, and AC strategy.
-  Variable-length full AC-token traces keep output `last` low until that route
-  exposes an explicit completion contract. Use
+  `stage` in the low eight bits. Output `last` is asserted on each route's
+  final frame trace word: fixed-size padded input, XYB, raw DCT, quantized
+  traces, DC tokens, AC-metadata tokens, and AC strategy use lengths derived
+  from `FrameConfig`, while the variable-length full AC-token route uses the
+  scheduler's explicit final-token sideband. Use
   `sbt 'runMain hjxl.ElaborateAxiStream'` for the default shell or
   `sbt 'runMain hjxl.ElaborateAxiStreamCoreAcTokens'` for the focused
   full-AC-token shell.
@@ -264,29 +273,37 @@ stream shell as the current KV260/Vivado-facing top-level shape.
   after DCT/AQ/CFL scalar generation but before quantized DC/AC tokenization.
 - `ElaboratePreparedDctOnlyQuantizeTokens` generates standalone SystemVerilog
   for the direct prepared-DCT quantize-to-token wrapper. This is the closest
-  current RTL artifact to a prepared-transform encoder core.
+  current RTL artifact to a prepared-transform encoder core, and it exposes
+  `traceLast` for frame-level capture boundaries.
 - `PreparedDctElaborationSpec` is the focused FIRTool emission regression for
   those prepared-DCT standalone tops. It emits SystemVerilog into a temporary
   directory and checks for the expected modules plus the structured
   prepared-block input, trace output, busy, and overflow ports, so generated RTL
   or top-level IO breakage is caught without committing generated files.
 - `HjxlAxiStreamCoreSpec` covers the stream shell's raster coordinate
-  generation, trace-row packing, fixed-size output TLAST, and input TLAST
+  generation, trace-row packing, fixed-size route output TLAST, and input TLAST
   protocol checking on cheap routes. It also captures real packed output from
   the padded-input stream shell and decodes it with `tools/hjxl_stream_trace.py`
-  so the Chisel packing and host decoder stay aligned.
+  so the Chisel packing and host decoder stay aligned. Full AC-token TLAST
+  alignment is covered at the token-stage and frame-scheduler levels because
+  the focused AXI AC-token simulation is expensive.
 - `HjxlAxiStreamElaborationSpec` guards the generated stream-shell port surface
   and checks that the focused AC-token stream top includes the full AC-token
   scheduler while the default stream top omits it.
 - `ElaboratePreparedAcMetadataTokens` generates standalone SystemVerilog for
-  the prepared AC-metadata token scheduler.
+  the prepared AC-metadata token scheduler. The generated top exposes
+  `traceLast` for fixed-length metadata capture boundaries.
 - `ElaboratePreparedDcTokens` and `ElaboratePreparedAcTokens` generate
   standalone SystemVerilog for the exact prepared-token boundaries. Use these
   when integrating or timing the token path after quantized DC/AC planes are
-  supplied by a future quantization scheduler.
+  supplied by a future quantization scheduler. The prepared DC and AC tops
+  expose `traceLast` for frame-level capture boundaries.
 - `ElaboratePreparedTokens` generates the combined prepared fixed-token top and
   is the preferred RTL artifact for the current host bitstream assembly
-  boundary.
+  boundary. Its generated top also exposes `traceLast` for the combined
+  DC/strategy/metadata/AC trace stream.
+- `PreparedTokenElaborationSpec` guards the generated trace port surface for
+  prepared DC, AC-metadata, AC, and combined token tops.
 - Full frame-level quantized-block parity remains open: AQ/CFL map plumbing,
   distance parameter generation, dynamic reciprocal scaling, rectangular
   strategy scheduling, and comparison against `tools/hjxl_reference.py`
@@ -429,8 +446,9 @@ stream shell as the current KV260/Vivado-facing top-level shape.
   and AC token trace emission. It also checks
   `FramePreparedDctOnlyQuantizeTokenTraceStage` against that staged handoff and
   against libjxl-tiny token-array oracles for DC, AC-metadata, AC, and strategy
-  streams. The same regression converts the direct wrapper's token `StageTrace`
-  output through `tools/hjxl_trace_tokens.py`, uses
+  streams, including final-beat `traceLast` framing. The same regression
+  converts the direct wrapper's token `StageTrace` output through
+  `tools/hjxl_trace_tokens.py`, uses
   `tools/hjxl_compare_tokens.py` for exact token-array comparison, and verifies
   the host assembler output matches the direct libjxl-tiny DCT-only frame and
   codestream bytes. It also feeds the direct wrapper `StageTrace` CSV through

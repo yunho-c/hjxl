@@ -46,9 +46,9 @@ Use a hardware/software split:
   words as `{value,index,group,stage}` with `stage` in the low eight bits.
   Input data packs R/G/B in consecutive `pixelBits` fields with R in the low
   bits. `protocolError` is sticky and cleared by `clearProtocolError`. Output
-  `last` is valid for fixed-size routes whose frame length is known from
-  `FrameConfig`; full AC-token traces still keep `last` low until that
-  variable-length route exposes frame completion.
+  `last` is valid for every current route: fixed-size routes derive their frame
+  length from `FrameConfig`, and the variable-length full AC-token route uses
+  the scheduler's explicit final-token sideband.
 - Keep stage outputs traceable against libjxl-tiny names and array shapes.
 
 Use stage-tolerant accuracy:
@@ -166,6 +166,7 @@ Read these libjxl-tiny files before making architectural changes:
   drives prepared DC, AC-metadata, and AC-token schedulers internally to emit
   DC, strategy, metadata, and AC token traces. This wrapper preserves prepared
   raw-quant and CFL metadata instead of falling back to fixed raw-quant/zero-CFL
+  metadata, and its `traceLast` output marks the final AC-token trace beat.
   metadata.
 - `FrameDctOnlyQuantizeTraceStage` is the current frame-level quant trace
   scheduler. It buffers/pads RGB, computes approximate XYB and DCT per raster
@@ -194,12 +195,14 @@ Read these libjxl-tiny files before making architectural changes:
   same fixed-parameter DCT-only frame path and emits only DC tokens, in Y/X/B
   plane order. For token traces, `trace.group` is the token ordinal,
   `trace.index` is the token context, and `trace.value` is the packed residual.
-  It delegates predictor/context/residual packing to `DcTokenTraceStage`.
+  It delegates predictor/context/residual packing to `DcTokenTraceStage`; its
+  `traceLast` output marks the final DC token.
 - `FrameDctOnlyAcMetadataTokenTraceStage` emits the fixed-path AC metadata
   tokens: zero CFL tile maps, all-DCT strategy choices, fixed raw quant-field
   values, and fixed block metadata literals. It uses
   `trace.stage = AcMetadataTokens`, `trace.group = token ordinal`,
-  `trace.index = context`, and `trace.value = packed residual or literal`.
+  `trace.index = context`, and `trace.value = packed residual or literal`; its
+  `traceLast` output marks the final metadata token.
 - `FramePreparedAcMetadataTokenTraceStage` emits AC metadata tokens from
   prepared raster block metadata. Feed one raw quant, Y-to-X CFL, and Y-to-B CFL
   value per raster block. It stores raw quant per block and CFL per tile, then
@@ -208,9 +211,9 @@ Read these libjxl-tiny files before making architectural changes:
 - `FrameDctOnlyAcNonzeroTokenTraceStage` emits the nonzero-count prefix tokens
   for AC coefficient tokenization in ordinary-DCT block/channel order. It uses
   `trace.stage = AcTokens`, `trace.group = token ordinal`, `trace.index =
-  context`, and `trace.value = nonzero count`. It does not emit coefficient
-  scan/value tokens yet. It is currently a standalone frame stage; do not claim
-  it is selected by `HjxlCore`.
+  context`, and `trace.value = nonzero count`; `traceLast` marks the final
+  prefix token. It does not emit coefficient scan/value tokens yet. It is
+  currently a standalone frame stage; do not claim it is selected by `HjxlCore`.
 - `AcCoefficientTokenTraceStage` emits prepared-block ordinary-DCT coefficient
   scan/value tokens after the nonzero-count prefix. Feed it quantized
   coefficients, channel, nonzero count, and the first token ordinal; it emits
@@ -229,7 +232,9 @@ Read these libjxl-tiny files before making architectural changes:
 - `FramePreparedTokenTraceStage` is the combined exact prepared-token boundary.
   Feed it prepared quantized DC samples first, then prepared quantized AC blocks.
   It emits DC tokens, AC strategy traces, AC metadata tokens, and AC tokens in a
-  single `StageTrace` stream suitable for `tools/hjxl_trace_tokens.py`.
+  single `StageTrace` stream suitable for `tools/hjxl_trace_tokens.py`. Its
+  `traceLast` output is asserted with the final AC-token trace beat for the
+  frame.
 - `FrameDctOnlyAcTokenTraceStage` is the complete RGB-input standalone frame
   scheduler for fixed all-DCT AC tokens. It recomputes the current fixed DCT-only
   quantized block stream, predicts nonzero counts from west/north block
@@ -242,6 +247,9 @@ Read these libjxl-tiny files before making architectural changes:
   `sbt 'runMain hjxl.ElaborateCoreAcTokens'` when generated SystemVerilog should
   keep the public core IO shell while instantiating only that route. The default
   all-route shell intentionally does not instantiate this heavy scheduler.
+  Token schedulers export `traceLast`; `HjxlCore` carries it for DC,
+  AC-metadata, and focused AC-token routes, while `HjxlAxiStreamCore` maps it
+  to stream TLAST for capture.
 - Use `sbt 'runMain hjxl.ElaborateAxiStream'` for the default AXI-stream-shaped
   wrapper and `sbt 'runMain hjxl.ElaborateAxiStreamCoreAcTokens'` for the same
   stream wrapper focused on the full AC-token route. These write
@@ -257,7 +265,8 @@ Read these libjxl-tiny files before making architectural changes:
 - Use `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'` to generate
   the direct prepared-DCT quantize-to-token wrapper. It writes
   `generated-prepared-dct-only-quantize-tokens/`; keep the generated directory
-  out of git.
+  out of git. The generated top exposes `traceLast` for frame-level capture
+  boundaries.
 - `PreparedDctElaborationSpec` is the focused FIRTool/SystemVerilog emission
   regression for the prepared-DCT quantization and direct quantize-to-token
   standalone tops. It also checks the structured prepared-block input and trace
@@ -272,7 +281,10 @@ Read these libjxl-tiny files before making architectural changes:
   `sbt 'runMain hjxl.ElaboratePreparedTokens'` for the combined host-boundary
   top. These write `generated-prepared-dc-tokens/`,
   `generated-prepared-ac-tokens/`, and `generated-prepared-tokens/`; keep the
-  generated directories out of git.
+  generated directories out of git. The prepared DC, AC-metadata, AC, and
+  combined prepared-token tops expose `traceLast` for frame-level capture
+  boundaries. `PreparedTokenElaborationSpec` guards that generated trace port
+  surface.
 - Entropy coding, entropy table optimization, and bitstream assembly are still
   future work.
 - `FrameAcStrategyTraceStage` emits one default DCT-first AC strategy value per
@@ -357,11 +369,10 @@ Read these libjxl-tiny files before making architectural changes:
   the raster block ordinal and require image width/height for reshaping.
 - `tools/hjxl_stream_trace.py --stream-csv ... --trace-csv ...` decodes packed
   `HjxlAxiStreamCore` trace captures with `data,last` or `tdata,tlast` columns
-  back into `StageTrace` CSV. Use `--require-final-last` for fixed-size routes
-  where output TLAST is meaningful; omit it for variable-length full AC-token
-  captures until that route has completion semantics. `StreamTraceToolSpec`
-  covers this helper, its handoff into `tools/hjxl_trace_tokens.py`, direct
-  `--stream-csv` token extraction, and the
+  back into `StageTrace` CSV. Use `--require-final-last` for single-frame
+  captures from all current routes, including focused full AC-token captures.
+  `StreamTraceToolSpec` covers this helper, its handoff into
+  `tools/hjxl_trace_tokens.py`, direct `--stream-csv` token extraction, and the
   `tools/hjxl_trace_to_codestream.py --stream-csv` path.
 - `tools/hjxl_trace_to_codestream.py --trace-csv ... --width ... --height ...
   --frame-bin ... --codestream-bin ...` is the one-step host assembler for RTL
@@ -394,8 +405,9 @@ Read these libjxl-tiny files before making architectural changes:
   `FramePreparedTokenTraceStage` through the full fixed all-DCT logical trace
   stream. It also checks `FramePreparedDctOnlyQuantizeTokenTraceStage` against
   that staged handoff and against libjxl-tiny token-array oracles for DC,
-  AC-metadata, AC, and strategy streams. It converts the direct wrapper's token
-  `StageTrace` rows with `tools/hjxl_trace_tokens.py`, compares them with
+  AC-metadata, AC, and strategy streams, including final-beat `traceLast`
+  framing. It converts the direct wrapper's token `StageTrace` rows with
+  `tools/hjxl_trace_tokens.py`, compares them with
   `tools/hjxl_compare_tokens.py`, and verifies the host assembler output
   matches the direct libjxl-tiny DCT-only frame and bare JPEG XL codestream
   bytes. It also feeds the same direct-wrapper trace CSV to

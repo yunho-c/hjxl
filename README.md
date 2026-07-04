@@ -49,25 +49,34 @@ quantization path can match libjxl-tiny's float reference on the oracle fixture;
 the RGB-input DCT path still emits Q12 coefficients.
 `FramePreparedDctOnlyQuantizeTokenTraceStage` bridges the same prepared-DCT
 input boundary directly into fixed all-DCT logical token traces by internally
-buffering quantized results and driving `FramePreparedTokenTraceStage`.
+buffering quantized results and driving `FramePreparedTokenTraceStage`. It also
+exposes `traceLast` on the final AC-token trace beat.
+The combined prepared-token boundary exposes `traceLast` on the final AC-token
+trace beat, so generated prepared-token RTL has a concrete frame delimiter for
+host capture.
+Standalone prepared DC, AC-metadata, and AC-token tops also expose `traceLast`,
+and `PreparedTokenElaborationSpec` checks that generated trace port surface.
 `FrameDctOnlyQuantizeTraceStage` schedules padded raster blocks through that
 path with fixed distance-1 quantization defaults so future token stages have a
 frame-shaped trace source before full AQ/CFL hardware is available.
 `FrameDctOnlyDcTokenTraceStage` emits the first logical token stream: DC
-predictor contexts and packed residuals in libjxl-tiny Y/X/B plane order.
+predictor contexts and packed residuals in libjxl-tiny Y/X/B plane order, with
+`traceLast` on the final DC token.
 `DcTokenTraceStage` exposes the same DC predictor/token packing as a prepared
 single-sample boundary once quantized DC planes already exist, and
 `FramePreparedDcTokenTraceStage` schedules complete prepared quantized DC planes
 through that exact token boundary in libjxl-tiny Y/X/B raster order.
 `FrameDctOnlyAcMetadataTokenTraceStage` emits fixed-path CFL, AC-strategy,
-quant-field, and block-metadata tokens.
+quant-field, and block-metadata tokens, with `traceLast` on the final metadata
+token.
 `FramePreparedAcMetadataTokenTraceStage` emits the same AC-metadata token
 substream from prepared per-block raw quant values and per-tile CFL
 multipliers, so prepared-DCT quantization can carry coherent metadata into the
 token boundary.
 `FrameDctOnlyAcNonzeroTokenTraceStage` is a directly tested standalone frame
 stage for the first `AcTokens` substream: nonzero-count contexts and values for
-each block/channel. `AcCoefficientTokenTraceStage` emits prepared-block AC
+each block/channel, with `traceLast` on the final prefix token.
+`AcCoefficientTokenTraceStage` emits prepared-block AC
 coefficient scan tokens with libjxl-tiny's DCT coefficient order and
 zero-density contexts, and `AcBlockTokenTraceStage` combines the nonzero prefix
 with those coefficient tokens for one prepared block/channel.
@@ -231,11 +240,11 @@ For generated AXI-stream shells, input pixels are raster ordered. Pack
 `last` against `FrameConfig.xsize * FrameConfig.ysize` and exposes a sticky
 `protocolError`; pulse `clearProtocolError` to clear it without resetting the
 core. Output trace words are packed as `{value,index,group,stage}`, with
-`stage` in the low eight bits. Output `last` is asserted for fixed-size trace
-routes whose frame length is known from `FrameConfig`: padded input, XYB, raw
-DCT, quantized traces, DC tokens, AC-metadata tokens, and AC strategy.
-Variable-length full AC-token traces keep output `last` low until that route
-exposes an explicit completion contract.
+`stage` in the low eight bits. Output `last` is asserted on the final trace
+word for each current route: fixed-size padded input, XYB, raw DCT, quantized
+traces, DC tokens, AC-metadata tokens, and AC strategy use lengths derived from
+`FrameConfig`, while the variable-length full AC-token route uses the AC-token
+scheduler's explicit final-token sideband.
 
 Convert packed AXI-stream trace captures back into the StageTrace CSV shape
 used by the host tools:
@@ -248,9 +257,8 @@ python3 tools/hjxl_stream_trace.py \
 ```
 
 The input CSV may use `data,last` or `tdata,tlast` columns. `--require-final-last`
-is appropriate for fixed-size trace routes where `HjxlAxiStreamCore` asserts
-output `last`; omit it for variable-length full AC-token traces until that
-route has a completion contract.
+is appropriate for single-frame captures from all current `HjxlAxiStreamCore`
+routes, including focused full AC-token traces.
 `tools/hjxl_trace_tokens.py` and `tools/hjxl_trace_to_codestream.py` also accept
 the same packed stream captures directly with repeated `--stream-csv` inputs and
 the same `--group-bits`, `--trace-value-bits`, and

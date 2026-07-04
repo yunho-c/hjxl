@@ -505,6 +505,7 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
 
       for (ordinal <- 0 until expectedTraceCount) {
         waitForCombinedTrace(dut, s"combined token trace ordinal $ordinal")
+        dut.io.traceLast.expect((ordinal == expectedTraceCount - 1).B)
         traces += peekCombinedTrace(dut)
         dut.clock.step()
       }
@@ -797,6 +798,7 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
         withClue(s"backpressured cycle $cycle") {
           dut.io.trace.valid.expect(true.B)
           peekCombinedTrace(dut) mustBe firstTrace
+          dut.io.traceLast.expect(false.B)
         }
         dut.clock.step()
       }
@@ -804,6 +806,7 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
       dut.io.trace.ready.poke(true.B)
       for (ordinal <- 0 until expectedTraceCount) {
         waitForCombinedTrace(dut, s"combined token trace drain ordinal $ordinal")
+        dut.io.traceLast.expect((ordinal == expectedTraceCount - 1).B)
         dut.clock.step()
       }
 
@@ -841,6 +844,7 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
       dut.io.trace.ready.poke(true.B)
       for (ordinal <- 0 until expectedTraceCount) {
         waitForCombinedTrace(dut, s"combined token trace lifecycle ordinal $ordinal")
+        dut.io.traceLast.expect((ordinal == expectedTraceCount - 1).B)
         dut.clock.step()
       }
 

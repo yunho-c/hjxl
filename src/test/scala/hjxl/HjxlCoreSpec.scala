@@ -132,6 +132,17 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.trace.valid.expect(true.B)
       dut.io.trace.bits.stage.expect(TraceStage.DcTokens.U)
       dut.io.trace.bits.group.expect(0.U)
+      dut.io.traceLast.expect(false.B)
+      dut.clock.step()
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.stage.expect(TraceStage.DcTokens.U)
+      dut.io.trace.bits.group.expect(1.U)
+      dut.io.traceLast.expect(false.B)
+      dut.clock.step()
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.stage.expect(TraceStage.DcTokens.U)
+      dut.io.trace.bits.group.expect(2.U)
+      dut.io.traceLast.expect(true.B)
     }
   }
 
@@ -149,6 +160,19 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.trace.bits.group.expect(0.U)
       dut.io.trace.bits.index.expect(2.U)
       dut.io.trace.bits.value.expect(0.S)
+      dut.io.traceLast.expect(false.B)
+      for (ordinal <- 1 until 4) {
+        dut.clock.step()
+        dut.io.trace.valid.expect(true.B)
+        dut.io.trace.bits.stage.expect(TraceStage.AcMetadataTokens.U)
+        dut.io.trace.bits.group.expect(ordinal.U)
+        dut.io.traceLast.expect(false.B)
+      }
+      dut.clock.step()
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.stage.expect(TraceStage.AcMetadataTokens.U)
+      dut.io.trace.bits.group.expect(4.U)
+      dut.io.traceLast.expect(true.B)
     }
   }
 }

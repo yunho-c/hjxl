@@ -37,6 +37,7 @@ class FramePreparedAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) exten
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new PreparedAcMetadataBlockInput(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
@@ -136,6 +137,7 @@ class FramePreparedAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) exten
 
   io.input.ready := state === receiving && !configOutOfRange
   io.trace.valid := state === emitting
+  io.traceLast := state === emitting && totalTokens =/= 0.U && emitIndex === totalTokens - 1.U
   io.busy := state =/= receiving || received =/= 0.U
   io.overflow := overflow || configOutOfRange
   io.trace.bits.stage := TraceStage.AcMetadataTokens.U

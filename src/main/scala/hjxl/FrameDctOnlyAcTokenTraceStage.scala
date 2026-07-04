@@ -29,6 +29,7 @@ class FrameDctOnlyAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
@@ -172,6 +173,7 @@ class FrameDctOnlyAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   io.input.ready := state === receiving && !configOutOfRange
   io.trace.valid := state === emitBlock && blockTokens.io.trace.valid
   io.trace.bits := blockTokens.io.trace.bits
+  io.traceLast := state === emitBlock && totalBlocks =/= 0.U && blockOrdinal === totalBlocks - 1.U && blockTokens.io.traceLast
   io.busy := state =/= receiving || received =/= 0.U
   io.overflow := overflow || configOutOfRange
 

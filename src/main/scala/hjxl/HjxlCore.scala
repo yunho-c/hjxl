@@ -14,6 +14,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
   })
 
   private def includes(stage: Int): Boolean =
@@ -179,6 +180,14 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDctTrace -> dctTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAcStrategyTrace -> acStrategyTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useXybTrace -> xybTrace.map(_.io.trace.bits).getOrElse(inactiveTrace)
+    )
+  )
+  io.traceLast := MuxCase(
+    false.B,
+    Seq(
+      useDcTokenTrace -> dcTokenTrace.map(_.io.traceLast).getOrElse(false.B),
+      useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.traceLast).getOrElse(false.B),
+      useAcTokenTrace -> acTokenTrace.map(_.io.traceLast).getOrElse(false.B)
     )
   )
 }

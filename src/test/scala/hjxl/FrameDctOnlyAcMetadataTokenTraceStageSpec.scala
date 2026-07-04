@@ -76,6 +76,7 @@ class FrameDctOnlyAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matcher
           dut.io.trace.bits.group.expect(ordinal.U)
           dut.io.trace.bits.index.expect(context.U)
           dut.io.trace.bits.value.expect(value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
         }
         dut.clock.step()
       }
@@ -114,6 +115,15 @@ class FrameDctOnlyAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matcher
       dut.io.trace.bits.group.expect(3.U)
       dut.io.trace.bits.index.expect(6.U)
       dut.io.trace.bits.value.expect(12.S)
+      dut.io.traceLast.expect(false.B)
+      dut.clock.step()
+
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.stage.expect(TraceStage.AcMetadataTokens.U)
+      dut.io.trace.bits.group.expect(4.U)
+      dut.io.trace.bits.index.expect(0.U)
+      dut.io.trace.bits.value.expect(8.S)
+      dut.io.traceLast.expect(true.B)
       dut.clock.step()
 
       dut.io.overflow.expect(false.B)

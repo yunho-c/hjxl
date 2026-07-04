@@ -18,10 +18,12 @@ class HjxlAcTokenCore(c: HjxlConfig = HjxlConfig()) extends Module {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
   })
 
   val acTokens = Module(new FrameDctOnlyAcTokenTraceStage(c))
   acTokens.io.config := io.config
   acTokens.io.input <> io.input
   io.trace <> acTokens.io.trace
+  io.traceLast := acTokens.io.traceLast
 }

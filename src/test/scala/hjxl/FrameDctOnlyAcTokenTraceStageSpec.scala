@@ -222,6 +222,7 @@ class FrameDctOnlyAcTokenTraceStageSpec extends AnyFreeSpec with Matchers with C
           dut.io.trace.bits.group.expect(ordinal.U)
           dut.io.trace.bits.index.expect(context.U)
           dut.io.trace.bits.value.expect(value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
         }
         dut.clock.step()
       }
@@ -266,6 +267,7 @@ class FrameDctOnlyAcTokenTraceStageSpec extends AnyFreeSpec with Matchers with C
           dut.io.trace.bits.group.expect(ordinal.U)
           dut.io.trace.bits.index.expect(context.U)
           dut.io.trace.bits.value.expect(value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
         }
         dut.clock.step()
       }

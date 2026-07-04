@@ -26,6 +26,7 @@ class FramePreparedDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(SInt(c.traceValueBits.W)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
@@ -91,6 +92,7 @@ class FramePreparedDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
   io.input.ready := state === receiving && !configOutOfRange
   io.trace.valid := dcTokens.io.trace.valid
   io.trace.bits := dcTokens.io.trace.bits
+  io.traceLast := state === emitting && totalSamples =/= 0.U && emitIndex === totalSamples - 1.U && dcTokens.io.trace.valid
   io.busy := state =/= receiving || received =/= 0.U
   io.overflow := overflow || configOutOfRange
 

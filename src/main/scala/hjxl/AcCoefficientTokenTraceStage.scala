@@ -37,6 +37,7 @@ class DctOnlyAcBlockTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   val io = IO(new Bundle {
     val input = Flipped(Decoupled(new DctOnlyAcBlockTokenTraceInput(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
     val busy = Output(Bool())
   })
 
@@ -67,6 +68,7 @@ class DctOnlyAcBlockTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   io.input.ready := state === idle
   io.trace.valid := state === emitChannel && channelTokens.io.trace.valid
   io.trace.bits := channelTokens.io.trace.bits
+  io.traceLast := state === emitChannel && channelOrdinal === 2.U && channelTokens.io.traceLast
   io.busy := state =/= idle
 
   when(io.input.fire) {
@@ -106,6 +108,7 @@ class AcBlockTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   val io = IO(new Bundle {
     val input = Flipped(Decoupled(new AcBlockTokenTraceInput(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
     val busy = Output(Bool())
   })
 
@@ -134,6 +137,7 @@ class AcBlockTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   io.trace.valid := Mux(state === emitPrefix, true.B, coefficientTokens.io.trace.valid && state === emitCoefficients)
   io.busy := state =/= idle
   io.trace.bits := Mux(state === emitPrefix, prefixTrace, coefficientTokens.io.trace.bits)
+  io.traceLast := Mux(state === emitPrefix, input.numNonzeros === 0.U, coefficientTokens.io.traceLast)
 
   when(io.input.fire) {
     input := io.input.bits
@@ -163,6 +167,7 @@ class AcCoefficientTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module 
   val io = IO(new Bundle {
     val input = Flipped(Decoupled(new AcCoefficientTokenTraceInput(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
     val busy = Output(Bool())
   })
 
@@ -192,6 +197,7 @@ class AcCoefficientTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module 
   io.trace.bits.group := baseGroup + emitted
   io.trace.bits.index := context
   io.trace.bits.value := packedCoefficient
+  io.traceLast := io.trace.valid && coefficient =/= 0.S && remaining === 1.U
 
   when(io.input.fire) {
     baseGroup := io.input.bits.group
