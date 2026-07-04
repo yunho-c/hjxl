@@ -217,6 +217,27 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
     }
   }
 
+  "HjxlPreparedDctAxiLiteStreamCore exposes busy and overflow status bits" in {
+    simulate(new HjxlPreparedDctAxiLiteStreamCore(config)) { dut =>
+      init(dut)
+      axiWrite(dut, HjxlAxiLiteRegister.Xsize, 16) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.Ysize, 8) must be(AxiLiteResponse.Okay)
+
+      driveStreamWord(dut, data = 1, last = false, clue = "first prepared status word")
+      dut.io.busy.expect(true.B)
+      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(2) -> AxiLiteResponse.Okay)
+    }
+
+    simulate(new HjxlPreparedDctAxiLiteStreamCore(config)) { dut =>
+      init(dut)
+      axiWrite(dut, HjxlAxiLiteRegister.Xsize, 17) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.Ysize, 8) must be(AxiLiteResponse.Okay)
+
+      dut.io.overflow.expect(true.B)
+      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(4) -> AxiLiteResponse.Okay)
+    }
+  }
+
   "HjxlPreparedDctAxiLiteStreamCore controlled stream assembles to libjxl-tiny codestream bytes" in {
     requireReferenceTools()
 
@@ -340,11 +361,15 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
       driveStreamWord(dut, data = 1, last = true, clue = "early prepared TLAST")
       dut.io.input.valid.poke(false.B)
       dut.io.protocolError.expect(true.B)
-      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(1) -> AxiLiteResponse.Okay)
+      val (status, statusResp) = axiRead(dut, HjxlAxiLiteRegister.StatusControl)
+      statusResp must be(AxiLiteResponse.Okay)
+      (status & 1) must be(BigInt(1))
 
       axiWrite(dut, HjxlAxiLiteRegister.StatusControl, 1) must be(AxiLiteResponse.Okay)
       dut.io.protocolError.expect(false.B)
-      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(0) -> AxiLiteResponse.Okay)
+      val (clearedStatus, clearedStatusResp) = axiRead(dut, HjxlAxiLiteRegister.StatusControl)
+      clearedStatusResp must be(AxiLiteResponse.Okay)
+      (clearedStatus & 1) must be(BigInt(0))
     }
   }
 

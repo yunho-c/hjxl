@@ -4,7 +4,10 @@ package hjxl
 
 import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.file.Files
+import java.nio.file.Path
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
 import scala.sys.process.Process
@@ -12,6 +15,7 @@ import scala.sys.process.ProcessLogger
 
 class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
   private case class CommandResult(exitCode: Int, output: String)
+  private case class StreamWord(data: BigInt, last: Boolean)
 
   private val config = HjxlConfig(maxFrameWidth = 8, maxFrameHeight = 8)
 
@@ -47,6 +51,25 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
 
   private def rgb(r: Int, g: Int, b: Int): BigInt =
     BigInt(r & 0xffff) | (BigInt(g & 0xffff) << 16) | (BigInt(b & 0xffff) << 32)
+
+  private def writeRgbPfm(path: Path, width: Int, height: Int, topDownPixels: Seq[(Float, Float, Float)]): Unit = {
+    topDownPixels.length mustBe width * height
+    val header = s"PF\n$width $height\n-1.0\n".getBytes("US-ASCII")
+    val data = ByteBuffer.allocate(width * height * 3 * 4).order(ByteOrder.LITTLE_ENDIAN)
+    for (row <- (0 until height).reverse; x <- 0 until width) {
+      val (r, g, b) = topDownPixels(row * width + x)
+      data.putFloat(r)
+      data.putFloat(g)
+      data.putFloat(b)
+    }
+    Files.write(path, header ++ data.array())
+  }
+
+  private def readStreamCsv(path: Path): Seq[StreamWord] =
+    Files.readString(path).replace("\r\n", "\n").trim.split("\n").toVector.drop(1).map { line =>
+      val columns = line.split(",", -1)
+      StreamWord(BigInt(columns(0)), columns(1).toInt != 0)
+    }
 
   private def unpackTraceData(data: BigInt): (Int, Int, Int, Int) = {
     val stage = (data & 0xff).toInt
@@ -145,6 +168,93 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     rows(1) mustBe "0,0,0,10"
     rows(2) mustBe "0,0,1,40"
     rows.last mustBe "0,0,191,60"
+  }
+
+  "HjxlAxiStreamCore consumes RGB stream CSV generated from PFM" in {
+    val temp = Files.createTempDirectory("hjxl-axi-rgb-stream-input-")
+    val pfm = temp.resolve("input.pfm")
+    val inputStreamCsv = temp.resolve("rgb-input-stream.csv")
+    val outputStreamCsv = temp.resolve("rtl-output-stream.csv")
+    val traceCsv = temp.resolve("decoded-trace.csv")
+
+    writeRgbPfm(
+      pfm,
+      width = 2,
+      height = 1,
+      topDownPixels = Seq((0.0f, 0.5f, 1.0f), (0.25f, 0.75f, -0.25f))
+    )
+
+    val convertResult = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_rgb_stream.py",
+        "--pfm",
+        pfm.toString,
+        "--stream-csv",
+        inputStreamCsv.toString
+      )
+    )
+    withClue(convertResult.output) {
+      convertResult.exitCode mustBe 0
+    }
+    convertResult.output must include("wrote 2 RGB stream words for 2x1")
+    val inputRows = readStreamCsv(inputStreamCsv)
+    inputRows mustBe Seq(StreamWord(rgb(0, 128, 256), last = false), StreamWord(rgb(64, 192, -64), last = true))
+
+    val captured = scala.collection.mutable.ArrayBuffer.empty[StreamWord]
+    simulate(new HjxlAxiStreamCore(config, traceRoute = TraceStage.InputPadded)) { dut =>
+      pokeConfig(dut, width = 2, height = 1)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      for (row <- inputRows) {
+        drivePixel(dut, row.data, row.last)
+      }
+      dut.io.input.valid.poke(false.B)
+      dut.io.protocolError.expect(false.B)
+
+      dut.io.trace.ready.poke(true.B)
+      for (_ <- 0 until 192) {
+        dut.io.trace.valid.expect(true.B)
+        captured += StreamWord(
+          dut.io.trace.bits.data.peekValue().asBigInt,
+          dut.io.trace.bits.last.peekValue().asBigInt.testBit(0)
+        )
+        dut.clock.step()
+      }
+      dut.io.trace.valid.expect(false.B)
+    }
+
+    Files.writeString(
+      outputStreamCsv,
+      "data,last\n" + captured.map(row => s"${row.data},${if (row.last) 1 else 0}").mkString("\n") + "\n"
+    )
+    val decodeResult = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_stream_trace.py",
+        "--stream-csv",
+        outputStreamCsv.toString,
+        "--trace-csv",
+        traceCsv.toString,
+        "--require-final-last"
+      )
+    )
+    withClue(decodeResult.output) {
+      decodeResult.exitCode mustBe 0
+    }
+    decodeResult.output must include("decoded 192 stream trace rows")
+
+    val rows = Files.readString(traceCsv).replace("\r\n", "\n").trim.split("\n").toVector
+    rows.head mustBe "stage,group,index,value"
+    rows(1) mustBe "0,0,0,0"
+    rows(2) mustBe "0,0,1,64"
+    rows(65) mustBe "0,0,64,128"
+    rows(66) mustBe "0,0,65,192"
+    rows(129) mustBe "0,0,128,256"
+    rows(130) mustBe "0,0,129,-64"
+    rows.last mustBe "0,0,191,-64"
   }
 
   "HjxlAxiStreamCore asserts output TLAST for fixed-size AC strategy traces" in {

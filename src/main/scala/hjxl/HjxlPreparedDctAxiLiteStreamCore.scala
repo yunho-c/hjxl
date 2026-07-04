@@ -9,8 +9,9 @@ import chisel3.util._
   *
   * This keeps the same register map as `HjxlAxiLiteStreamCore` so the RGB
   * stream shell and the prepared-DCT stream shell share one host control shape.
-  * The prepared-DCT stream consumes `xsize`/`ysize` and status/control directly;
-  * the remaining `FrameConfig` fields are preserved for a uniform top-level
+  * The prepared-DCT stream consumes `xsize`/`ysize` and status/control directly:
+  * status bit 0 is protocol error, bit 1 is busy, and bit 2 is overflow. The
+  * remaining `FrameConfig` fields are preserved for a uniform top-level
   * interface and future prepared-path experiments.
   */
 class HjxlPreparedDctAxiLiteStreamCore(
@@ -201,7 +202,7 @@ class HjxlPreparedDctAxiLiteStreamCore(
   switch(readWord) {
     is(word(HjxlAxiLiteRegister.StatusControl)) {
       readOkay := true.B
-      readData := Cat(0.U(31.W), stream.io.protocolError)
+      readData := Cat(0.U(29.W), stream.io.overflow, stream.io.busy, stream.io.protocolError)
     }
     is(word(HjxlAxiLiteRegister.Xsize)) {
       readOkay := true.B

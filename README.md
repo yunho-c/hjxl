@@ -257,19 +257,58 @@ For generated AXI-stream shells, input pixels are raster ordered. Pack
 `[47:32]` for the default 16-bit pixel configuration. The wrapper checks input
 `last` against `FrameConfig.xsize * FrameConfig.ysize` and exposes a sticky
 `protocolError`; pulse `clearProtocolError` to clear it without resetting the
-core. Output trace words are packed as `{value,index,group,stage}`, with
+core. It also forwards active-route `busy` and `overflow` status for host
+polling and fault reporting. Output trace words are packed as
+`{value,index,group,stage}`, with
 `stage` in the low eight bits. Output `last` is asserted on the final trace
 word for each current route: padded input, XYB, raw DCT, quantized traces, DC
 tokens, AC-metadata tokens, AC strategy, and the variable-length full AC-token
 route all expose a scheduler `traceLast` sideband that the stream wrapper
 carries to TLAST.
 
+Convert a linear RGB PFM into an input stream CSV for `HjxlAxiStreamCore` or
+`HjxlAxiLiteStreamCore` simulation/DMA bring-up:
+
+```sh
+python3 tools/hjxl_rgb_stream.py \
+  --pfm build-codex/fixtures/gradient-17x9.pfm \
+  --stream-csv build-codex/fixtures/gradient-17x9-rgb-stream.csv \
+  --axi-lite-csv build-codex/fixtures/gradient-17x9-rgb-control.csv \
+  --manifest-json build-codex/fixtures/gradient-17x9-rgb-manifest.json
+```
+
+The converter reads RGB PFM files in top-to-bottom raster order, quantizes
+linear samples to signed Q8 by default, packs R/G/B into consecutive
+`pixelBits` fields, and asserts `last` only on the final pixel. With
+`--axi-lite-csv`, it also emits `address,data,strb` writes for the shared
+AXI-Lite register map, deriving `xsize` and `ysize` from the PFM header and
+using padded-input route defaults unless route flags such as `--enable-xyb` or
+`--enable-dct` are supplied. `--manifest-json` records the source PFM, image
+size, stream packing, generated file paths, register map, status/control bits,
+and selected config values for host runners. Use `--pixel-bits` and
+`--fraction-bits` when simulating a non-default stream configuration.
+`HjxlAxiStreamCoreSpec` covers the current host loop from PFM to RGB input
+stream CSV, through RTL padded-input trace emission, and back through
+`tools/hjxl_stream_trace.py`; `HjxlAxiLiteStreamCoreSpec` covers the same input
+stream after programming the DUT from the generated AXI-Lite CSV.
+
+Validate an existing RGB stream/control bundle before replay:
+
+```sh
+python3 tools/hjxl_rgb_stream.py \
+  --validate-manifest build-codex/fixtures/gradient-17x9-rgb-manifest.json
+```
+
+Validation checks manifest format, stream word count, final-only TLAST, stream
+CSV columns, AXI-Lite CSV columns, full-byte strobes, and register values
+against the manifest's config block.
+
 `HjxlAxiLiteStreamCore` exposes the same input/output streams, but drives
 `FrameConfig` through 32-bit AXI-Lite registers:
 
 | Address | Register | Bits |
 | --- | --- | --- |
-| `0x00` | status/control | read bit 0 = sticky stream `protocolError`; write bit 0 = clear |
+| `0x00` | status/control | read bit 0 = sticky stream `protocolError`, bit 1 = `busy`, bit 2 = `overflow`; write bit 0 = clear protocol error |
 | `0x04` | `xsize` | image width |
 | `0x08` | `ysize` | image height |
 | `0x0c` | `distanceQ8` | distance in Q8 |
@@ -367,8 +406,9 @@ checks that the resulting packed token trace stream assembles to the same frame
 and bare codestream bytes as libjxl-tiny's direct DCT-only path.
 `HjxlPreparedDctAxiLiteStreamCore` wraps this prepared-DCT stream shell with the
 same 32-bit AXI-Lite register map as `HjxlAxiLiteStreamCore`; `xsize`, `ysize`,
-and status/control are consumed directly, while the rest of `FrameConfig` is
-kept on the common control surface for future prepared-path experiments. Its
+and status/control are consumed directly for framing, busy/overflow visibility,
+and protocol-error clearing, while the rest of `FrameConfig` is kept on the
+common control surface for future prepared-path experiments. Its
 spec programs `xsize`/`ysize` through AXI-Lite, drives the same prepared-block
 stream CSV, and checks assembled bytes against libjxl-tiny.
 

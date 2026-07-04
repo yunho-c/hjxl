@@ -15,6 +15,8 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val trace = Decoupled(new StageTrace(c))
     val traceLast = Output(Bool())
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
   })
 
   private def includes(stage: Int): Boolean =
@@ -193,6 +195,32 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.traceLast).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.traceLast).getOrElse(false.B),
       useAcStrategyTrace -> acStrategyTrace.map(_.io.traceLast).getOrElse(false.B)
+    )
+  )
+  io.busy := MuxCase(
+    false.B,
+    Seq(
+      useInputTrace -> inputTrace.map(_.io.busy).getOrElse(false.B),
+      useXybTrace -> xybTrace.map(_.io.busy).getOrElse(false.B),
+      useDctTrace -> dctTrace.map(_.io.busy).getOrElse(false.B),
+      useQuantTrace -> quantTrace.map(_.io.busy).getOrElse(false.B),
+      useDcTokenTrace -> dcTokenTrace.map(_.io.busy).getOrElse(false.B),
+      useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.busy).getOrElse(false.B),
+      useAcTokenTrace -> acTokenTrace.map(_.io.busy).getOrElse(false.B),
+      useAcStrategyTrace -> acStrategyTrace.map(_.io.busy).getOrElse(false.B)
+    )
+  )
+  io.overflow := MuxCase(
+    false.B,
+    Seq(
+      useInputTrace -> inputTrace.map(_.io.overflow).getOrElse(false.B),
+      useXybTrace -> xybTrace.map(_.io.overflow).getOrElse(false.B),
+      useDctTrace -> dctTrace.map(_.io.overflow).getOrElse(false.B),
+      useQuantTrace -> quantTrace.map(_.io.overflow).getOrElse(false.B),
+      useDcTokenTrace -> dcTokenTrace.map(_.io.overflow).getOrElse(false.B),
+      useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.overflow).getOrElse(false.B),
+      useAcTokenTrace -> acTokenTrace.map(_.io.overflow).getOrElse(false.B),
+      useAcStrategyTrace -> acStrategyTrace.map(_.io.overflow).getOrElse(false.B)
     )
   )
 }

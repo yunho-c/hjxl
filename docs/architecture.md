@@ -271,19 +271,20 @@ AXI-Lite stream shell as the current KV260/Vivado-facing top-level shape.
 - `HjxlAxiStreamCore` wraps `HjxlCore` in an AXI4-Stream-shaped raster input
   and trace output. Input data packs R/G/B into consecutive `pixelBits` fields
   with R in the low bits, checks input `last` against the configured raster
-  frame length, and exposes sticky `protocolError` plus a `clearProtocolError`
-  input for host recovery. Output data packs `{value,index,group,stage}` with
-  `stage` in the low eight bits. Output `last` is asserted on each route's
-  final frame trace word by carrying the selected scheduler's `traceLast`
-  sideband to TLAST. Use
+  frame length, and exposes active-route `busy`/`overflow` status plus sticky
+  `protocolError` and a `clearProtocolError` input for host recovery. Output
+  data packs `{value,index,group,stage}` with `stage` in the low eight bits.
+  Output `last` is asserted on each route's final frame trace word by carrying
+  the selected scheduler's `traceLast` sideband to TLAST. Use
   `sbt 'runMain hjxl.ElaborateAxiStream'` for the default shell or
   `sbt 'runMain hjxl.ElaborateAxiStreamCoreAcTokens'` for the focused
   full-AC-token shell.
 - `HjxlAxiLiteStreamCore` wraps that stream shell with AXI-Lite configuration
   registers while preserving the same raster input stream and packed trace
   output stream. The 32-bit register map is: `0x00` status/control
-  (`protocolError` read at bit 0, clear on write bit 0), `0x04` `xsize`,
-  `0x08` `ysize`, `0x0c` `distanceQ8`, `0x10` `fixedPointScale`, `0x14`
+  (`protocolError` read at bit 0, `busy` at bit 1, `overflow` at bit 2, clear
+  protocol error on write bit 0), `0x04` `xsize`, `0x08` `ysize`, `0x0c`
+  `distanceQ8`, `0x10` `fixedPointScale`, `0x14`
   `fixedInvQacQ16`, `0x18` `fixedRawQuant`, and `0x1c` flags
   (`enableXyb`, `enableDct`, `enableQuant`, `enableTokenize`, and
   `tokenSelect` at bits 9:8). Writes honor byte strobes; unmapped word
@@ -314,7 +315,8 @@ AXI-Lite stream shell as the current KV260/Vivado-facing top-level shape.
   `data,last` stream format from the prepared-block JSON oracle.
 - `HjxlPreparedDctAxiLiteStreamCore` wraps the prepared-DCT stream shell with
   the common AXI-Lite register map. `xsize`, `ysize`, and status/control are
-  consumed directly for stream framing and protocol-error recovery; the other
+  consumed directly for stream framing, busy/overflow reporting, and
+  protocol-error recovery; the other
   `FrameConfig` registers remain exposed for a uniform host control surface and
   future prepared-path experiments. Use
   `sbt 'runMain hjxl.ElaboratePreparedDctAxiLiteStream'` when both the
@@ -469,6 +471,25 @@ AXI-Lite stream shell as the current KV260/Vivado-facing top-level shape.
   covers signed value decoding, accepted column aliases, TLAST rejection, the
   handoff into `tools/hjxl_trace_tokens.py`, direct `--stream-csv` token
   extraction, and `tools/hjxl_trace_to_codestream.py --stream-csv` validation.
+- `tools/hjxl_rgb_stream.py --pfm ... --stream-csv ...` converts linear RGB
+  PFM files into raster `data,last` input stream CSVs for `HjxlAxiStreamCore`
+  and `HjxlAxiLiteStreamCore`. It restores top-to-bottom raster order from the
+  PFM bottom-row-first payload, quantizes floats to signed Q8 by default, packs
+  R/G/B into consecutive component fields, and asserts final TLAST only on the
+  last pixel. With `--axi-lite-csv`, it also emits the matching
+  `address,data,strb` control writes for the shared AXI-Lite register map,
+  including PFM-derived `xsize`/`ysize` and requested route flags. With
+  `--manifest-json`, it records the generated artifacts, image dimensions,
+  stream packing, register map, status/control bits, and selected config values
+  for host runners. This is the current host-side fixture path for RGB
+  stream-shell simulation before DMA buffers or KV260 drivers exist.
+  `HjxlAxiStreamCoreSpec` drives that generated stream into RTL and decodes the
+  resulting packed trace stream, and `HjxlAxiLiteStreamCoreSpec` repeats the
+  flow using the generated AXI-Lite CSV to program the controlled shell, so both
+  host-side stream directions and the control-plane handoff are covered
+  together. `tools/hjxl_rgb_stream.py --validate-manifest ...` validates saved
+  bundles by checking stream row count, final-only TLAST, CSV columns, AXI-Lite
+  strobes, and register values against the manifest.
 - `tools/hjxl_trace_to_codestream.py --trace-csv ... --width ... --height ...
   --frame-bin ... --codestream-bin ...` is the direct host assembler for RTL
   token traces. It performs the same token extraction as `hjxl_trace_tokens.py`,

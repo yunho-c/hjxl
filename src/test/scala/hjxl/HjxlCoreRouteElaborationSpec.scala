@@ -53,6 +53,8 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must include("io_trace_bits_stage")
     text must include("io_trace_bits_value")
     text must include("io_traceLast")
+    text must include("io_busy")
+    text must include("io_overflow")
   }
 
   "HjxlCore default all-route elaboration keeps the full AC-token scheduler out" in {
@@ -60,6 +62,8 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     val text = combinedText(files)
     text must include("module HjxlCore")
     text must include("io_traceLast")
+    text must include("io_busy")
+    text must include("io_overflow")
     text must not include "module FrameDctOnlyAcTokenTraceStage"
   }
 }

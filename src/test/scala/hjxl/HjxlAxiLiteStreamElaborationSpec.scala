@@ -68,6 +68,8 @@ class HjxlAxiLiteStreamElaborationSpec extends AnyFreeSpec with Matchers {
       "io_trace_valid",
       "io_trace_bits_data",
       "io_trace_bits_last",
+      "io_busy",
+      "io_overflow",
       "io_protocolError"
     )
     for (port <- expectedPorts) {

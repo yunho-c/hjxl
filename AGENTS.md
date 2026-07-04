@@ -47,7 +47,8 @@ Use a hardware/software split:
   Input data packs R/G/B in consecutive `pixelBits` fields with R in the low
   bits. `protocolError` is sticky and cleared by `clearProtocolError`. Output
   `last` is valid for every current route and follows the selected scheduler's
-  `traceLast` final-beat sideband.
+  `traceLast` final-beat sideband. `busy` and `overflow` are forwarded from the
+  selected trace route for host polling and fault reporting.
 - `HjxlAxiLiteStreamCore` is the current KV260-facing controlled shell. It
   wraps `HjxlAxiStreamCore` with a minimal 32-bit AXI-Lite register map for
   `FrameConfig` and status/control while preserving the same AXI4-Stream input
@@ -281,8 +282,9 @@ Read these libjxl-tiny files before making architectural changes:
   full-AC-token controlled wrapper. These write `generated-axi-lite-stream/`
   and `generated-axi-lite-stream-core-ac-tokens/`; keep both generated
   directories out of git. The register map is: `0x00` status/control
-  (`protocolError` read bit 0, clear on write bit 0), `0x04` `xsize`, `0x08`
-  `ysize`, `0x0c` `distanceQ8`, `0x10` `fixedPointScale`, `0x14`
+  (`protocolError` read bit 0, `busy` read bit 1, `overflow` read bit 2,
+  clear protocol error on write bit 0), `0x04` `xsize`, `0x08` `ysize`,
+  `0x0c` `distanceQ8`, `0x10` `fixedPointScale`, `0x14`
   `fixedInvQacQ16`, `0x18` `fixedRawQuant`, and `0x1c` flags
   (`enableXyb`, `enableDct`, `enableQuant`, `enableTokenize`, `tokenSelect` in
   bits 9:8). `HjxlAxiLiteStreamCoreSpec` covers register reads/writes, byte
@@ -433,6 +435,24 @@ Read these libjxl-tiny files before making architectural changes:
   `StreamTraceToolSpec` covers this helper, its handoff into
   `tools/hjxl_trace_tokens.py`, direct `--stream-csv` token extraction, and the
   `tools/hjxl_trace_to_codestream.py --stream-csv` path.
+- `tools/hjxl_rgb_stream.py --pfm ... --stream-csv ...` converts RGB PFM files
+  into the raster `data,last` input stream expected by `HjxlAxiStreamCore` and
+  `HjxlAxiLiteStreamCore`. It restores top-to-bottom PFM row order, quantizes
+  linear samples to signed Q8 by default, packs R/G/B into consecutive
+  `pixelBits` fields, and asserts `last` only on the final pixel. With
+  `--axi-lite-csv`, it also emits `address,data,strb` writes for the shared
+  AXI-Lite register map, including PFM-derived `xsize`/`ysize` and route flags.
+  With `--manifest-json`, it records source/image metadata, stream packing,
+  generated artifact paths, the AXI-Lite register map, status/control bits, and
+  config values. Keep this helper aligned with `RgbToXybApprox.InputFractionBits`,
+  the stream wrapper's component packing, and `HjxlAxiLiteRegister`.
+  `HjxlAxiStreamCoreSpec` exercises the current path from PFM to RGB stream,
+  RTL, and trace decoding, and `HjxlAxiLiteStreamCoreSpec` exercises the same
+  path using the generated AXI-Lite CSV to configure the DUT; preserve those
+  regressions when changing host input packing or the control register map.
+  Use `tools/hjxl_rgb_stream.py --validate-manifest ...` before replaying a
+  saved host bundle; it checks stream row count, final-only TLAST, CSV columns,
+  AXI-Lite strobes, and register values against the manifest.
 - `tools/hjxl_trace_to_codestream.py --trace-csv ... --width ... --height ...
   --frame-bin ... --codestream-bin ...` is the one-step host assembler for RTL
   token traces. It extracts DC, AC-metadata, AC, and strategy token artifacts

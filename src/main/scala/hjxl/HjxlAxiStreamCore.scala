@@ -31,6 +31,8 @@ class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCore
     val clearProtocolError = Input(Bool())
     val input = Flipped(Decoupled(new AxiStreamWord(pixelDataBits)))
     val trace = Decoupled(new AxiStreamWord(traceDataBits))
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
     val protocolError = Output(Bool())
   })
 
@@ -94,5 +96,7 @@ class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCore
     core.io.trace.bits.stage
   )
   io.trace.bits.last := core.io.trace.valid && core.io.traceLast
+  io.busy := core.io.busy
+  io.overflow := core.io.overflow
   io.protocolError := protocolError
 }

@@ -2,6 +2,8 @@
 
 package hjxl
 
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.file.Files
 import java.nio.file.Path
 import org.scalatest.freespec.AnyFreeSpec
@@ -51,6 +53,19 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
         path.toString
       )
     ).trim
+
+  private def writeRgbPfm(path: Path, width: Int, height: Int, topDownPixels: Seq[(Float, Float, Float)]): Unit = {
+    topDownPixels.length mustBe width * height
+    val header = s"PF\n$width $height\n-1.0\n".getBytes("US-ASCII")
+    val data = ByteBuffer.allocate(width * height * 3 * 4).order(ByteOrder.LITTLE_ENDIAN)
+    for (row <- (0 until height).reverse; x <- 0 until width) {
+      val (r, g, b) = topDownPixels(row * width + x)
+      data.putFloat(r)
+      data.putFloat(g)
+      data.putFloat(b)
+    }
+    Files.write(path, header ++ data.array())
+  }
 
   private def preparedBlockFixtureJson: String = {
     val coefficientsX = (0 until 64).mkString("[", ",", "]")
@@ -151,6 +166,117 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     rows(138) mustBe "4294967232,0"
     rows.last mustBe "4294967295,1"
     rows.drop(1).dropRight(1).count(_.endsWith(",1")) mustBe 0
+  }
+
+  "hjxl_rgb_stream.py emits packed raster RGB stream words from PFM" in {
+    val temp = Files.createTempDirectory("hjxl-rgb-stream-")
+    val pfm = temp.resolve("input.pfm")
+    val streamCsv = temp.resolve("rgb-stream.csv")
+    val controlCsv = temp.resolve("rgb-control.csv")
+    val manifestJson = temp.resolve("rgb-manifest.json")
+    writeRgbPfm(
+      pfm,
+      width = 2,
+      height = 2,
+      topDownPixels = Seq(
+        (0.0f, 0.5f, 1.0f),
+        (0.25f, 0.75f, -0.25f),
+        (1.25f, 0.0f, 0.125f),
+        (0.1f, 0.2f, 0.3f)
+      )
+    )
+
+    val output = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_rgb_stream.py",
+        "--pfm",
+        pfm.toString,
+        "--stream-csv",
+        streamCsv.toString,
+        "--axi-lite-csv",
+        controlCsv.toString,
+        "--manifest-json",
+        manifestJson.toString,
+        "--enable-xyb",
+        "--enable-dct",
+        "--enable-quant",
+        "--token-select",
+        "ac-tokens",
+        "--distance-q8",
+        "512",
+        "--fixed-point-scale",
+        "123",
+        "--fixed-inv-qac-q16",
+        "456",
+        "--fixed-raw-quant",
+        "7"
+      )
+    )
+    output must include("wrote 4 RGB stream words for 2x2")
+    output must include("wrote AXI-Lite config writes")
+    output must include("wrote manifest")
+
+    def pack(r: Int, g: Int, b: Int): BigInt =
+      BigInt(r & 0xffff) | (BigInt(g & 0xffff) << 16) | (BigInt(b & 0xffff) << 32)
+
+    val rows = Files.readString(streamCsv).replace("\r\n", "\n").trim.split("\n").toVector
+    rows.head mustBe "data,last"
+    rows.tail mustBe Seq(
+      s"${pack(0, 128, 256)},0",
+      s"${pack(64, 192, -64)},0",
+      s"${pack(320, 0, 32)},0",
+      s"${pack(26, 51, 77)},1"
+    )
+
+    val controlRows = Files.readString(controlCsv).replace("\r\n", "\n").trim.split("\n").toVector
+    controlRows mustBe Seq(
+      "address,data,strb",
+      "4,2,15",
+      "8,2,15",
+      "12,512,15",
+      "16,123,15",
+      "20,456,15",
+      "24,7,15",
+      "28,519,15"
+    )
+
+    val manifest = Files.readString(manifestJson).replace("\r\n", "\n")
+    manifest must include("\"format\": \"hjxl.rgb_stream_manifest.v1\"")
+    manifest must include("\"width\": 2")
+    manifest must include("\"height\": 2")
+    manifest must include("\"word_count\": 4")
+    manifest must include("\"pixel_bits\": 16")
+    manifest must include("\"fraction_bits\": 8")
+    manifest must include("\"xsize\": 4")
+    manifest must include("\"ysize\": 8")
+    manifest must include("\"status_control\": 0")
+    manifest must include("\"clear_protocol_error_write_bit\": 0")
+    manifest must include("\"flags\": 519")
+    manifest must include("\"token_select\": \"ac-tokens\"")
+
+    val validateOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_rgb_stream.py",
+        "--validate-manifest",
+        manifestJson.toString
+      )
+    )
+    validateOutput must include(s"validated $manifestJson")
+
+    val corruptedRows = Files.readString(streamCsv).replace("\r\n", "\n").trim.split("\n").toVector
+    Files.writeString(streamCsv, (corruptedRows.dropRight(1) :+ corruptedRows.last.replace(",1", ",0")).mkString("\n") + "\n")
+    val invalid = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_rgb_stream.py",
+        "--validate-manifest",
+        manifestJson.toString
+      )
+    )
+    invalid.exitCode mustBe 1
+    invalid.output must include("final stream row does not assert last")
   }
 
   "hjxl_stream_trace.py rejects early TLAST in single-frame mode" in {

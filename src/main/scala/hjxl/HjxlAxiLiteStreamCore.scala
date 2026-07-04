@@ -54,8 +54,8 @@ object HjxlAxiLiteRegister {
 /** AXI4-Lite control-plane wrapper around the AXI4-Stream `HjxlCore` shell.
   *
   * Register map, 32-bit little-endian words:
-  *   - 0x00 status/control: read bit 0 = stream protocol error;
-  *     write bit 0 = clear
+  *   - 0x00 status/control: read bit 0 = stream protocol error,
+  *     bit 1 = busy, bit 2 = overflow; write bit 0 = clear protocol error
   *   - 0x04 xsize
   *   - 0x08 ysize
   *   - 0x0c distanceQ8
@@ -83,6 +83,8 @@ class HjxlAxiLiteStreamCore(
     val control = new AxiLiteSlave(axiAddrBits, dataBits)
     val input = Flipped(Decoupled(new AxiStreamWord(pixelDataBits)))
     val trace = Decoupled(new AxiStreamWord(traceDataBits))
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
     val protocolError = Output(Bool())
   })
 
@@ -138,6 +140,8 @@ class HjxlAxiLiteStreamCore(
   io.trace.valid := stream.io.trace.valid
   stream.io.trace.ready := io.trace.ready
   io.trace.bits := stream.io.trace.bits
+  io.busy := stream.io.busy
+  io.overflow := stream.io.overflow
   io.protocolError := stream.io.protocolError
 
   val clearProtocolError = WireDefault(false.B)
@@ -250,7 +254,7 @@ class HjxlAxiLiteStreamCore(
   switch(readWord) {
     is(word(HjxlAxiLiteRegister.StatusControl)) {
       readOkay := true.B
-      readData := Cat(0.U(31.W), stream.io.protocolError)
+      readData := Cat(0.U(29.W), stream.io.overflow, stream.io.busy, stream.io.protocolError)
     }
     is(word(HjxlAxiLiteRegister.Xsize)) {
       readOkay := true.B
