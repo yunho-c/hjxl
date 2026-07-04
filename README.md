@@ -105,6 +105,12 @@ final frame trace beat. `HjxlAxiStreamCore` is the first hardware-facing shell:
 it accepts raster RGB pixels on an AXI4-Stream-shaped input, generates core
 `x/y` coordinates, packs `StageTrace` rows onto an output stream, and maps
 `traceLast` to output TLAST for single-frame capture.
+`HjxlAxiLiteStreamCore` wraps that stream shell with a minimal 32-bit AXI-Lite
+control/status register map for KV260-style integration while keeping the same
+AXI4-Stream data path.
+`HjxlPreparedDctAxiLiteStreamCore` applies the same control-plane shape to the
+prepared-DCT quantize-to-token stream path, which is currently the strongest
+RTL-to-codestream parity boundary.
 
 ## Requirements
 
@@ -161,11 +167,20 @@ sbt 'runMain hjxl.ElaborateAxiStream'
 sbt 'runMain hjxl.ElaborateAxiStreamCoreAcTokens'
 ```
 
+Generate AXI4-Lite-controlled AXI4-Stream shells:
+
+```sh
+sbt 'runMain hjxl.ElaborateAxiLiteStream'
+sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'
+```
+
 Generate the exact prepared-token trace top-levels:
 
 ```sh
 sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantize'
 sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'
+sbt 'runMain hjxl.ElaboratePreparedDctAxiStream'
+sbt 'runMain hjxl.ElaboratePreparedDctAxiLiteStream'
 sbt 'runMain hjxl.ElaboratePreparedDcTokens'
 sbt 'runMain hjxl.ElaboratePreparedAcMetadataTokens'
 sbt 'runMain hjxl.ElaboratePreparedAcTokens'
@@ -249,6 +264,23 @@ tokens, AC-metadata tokens, AC strategy, and the variable-length full AC-token
 route all expose a scheduler `traceLast` sideband that the stream wrapper
 carries to TLAST.
 
+`HjxlAxiLiteStreamCore` exposes the same input/output streams, but drives
+`FrameConfig` through 32-bit AXI-Lite registers:
+
+| Address | Register | Bits |
+| --- | --- | --- |
+| `0x00` | status/control | read bit 0 = sticky stream `protocolError`; write bit 0 = clear |
+| `0x04` | `xsize` | image width |
+| `0x08` | `ysize` | image height |
+| `0x0c` | `distanceQ8` | distance in Q8 |
+| `0x10` | `fixedPointScale` | explicit AC scale override, zero selects lookup |
+| `0x14` | `fixedInvQacQ16` | explicit reciprocal AC scale |
+| `0x18` | `fixedRawQuant` | raw-quant override, zero selects default |
+| `0x1c` | flags | bit 0 `enableXyb`, bit 1 `enableDct`, bit 2 `enableQuant`, bit 3 `enableTokenize`, bits 9:8 `tokenSelect` |
+
+The AXI-Lite wrapper returns OKAY for mapped registers and DECERR for unmapped
+word addresses. Byte strobes are honored for writable configuration registers.
+
 Convert packed AXI-stream trace captures back into the StageTrace CSV shape
 used by the host tools:
 
@@ -312,8 +344,33 @@ expected quantization trace CSVs:
 python3 tools/hjxl_prepared_blocks.py \
   --prepared-json build-codex/fixtures/gradient-17x9-dct-only-prepared-blocks.json \
   --input-csv build-codex/fixtures/gradient-17x9-prepared-blocks.csv \
+  --input-stream-csv build-codex/fixtures/gradient-17x9-prepared-blocks-stream.csv \
   --expected-trace-csv build-codex/fixtures/gradient-17x9-prepared-quantize-trace.csv
 ```
+
+`HjxlPreparedDctAxiStreamCore` is the stream-shaped form of the direct
+prepared-DCT quantize-to-token boundary. Each prepared raster block is supplied
+as 201 32-bit input stream words: `quant`, `scaleQ16`, `invQacQ16`,
+`invDcFactorQ16[0]`, `invDcFactorQ16[1]`, `invDcFactorQ16[2]`,
+`xQmMultiplierQ16`, signed `ytox`, signed `ytob`, then 64 X, 64 Y, and 64 B
+DCT coefficients. Signed fields are two's-complement encoded in the low bits of
+their word. Input TLAST must be asserted on the final word of the final raster
+block implied by `FrameConfig.xsize` and `ysize`; mismatches set sticky
+`protocolError`, cleared by `clearProtocolError`. Output uses the same packed
+trace stream format as `HjxlAxiStreamCore` and maps the direct wrapper's
+`traceLast` sideband to TLAST.
+`tools/hjxl_prepared_blocks.py --input-stream-csv ...` emits this `data,last`
+CSV directly from the prepared-block JSON oracle, which is the intended host
+fixture path for stream-shell simulation and DMA bring-up.
+`HjxlPreparedDctAxiStreamCoreSpec` drives that generated stream into RTL and
+checks that the resulting packed token trace stream assembles to the same frame
+and bare codestream bytes as libjxl-tiny's direct DCT-only path.
+`HjxlPreparedDctAxiLiteStreamCore` wraps this prepared-DCT stream shell with the
+same 32-bit AXI-Lite register map as `HjxlAxiLiteStreamCore`; `xsize`, `ysize`,
+and status/control are consumed directly, while the rest of `FrameConfig` is
+kept on the common control surface for future prepared-path experiments. Its
+spec programs `xsize`/`ysize` through AXI-Lite, drives the same prepared-block
+stream CSV, and checks assembled bytes against libjxl-tiny.
 
 Convert quantization `StageTrace` CSV dumps into the prepared-token simulator
 CSVs consumed by `FramePreparedTokenTraceStage`:

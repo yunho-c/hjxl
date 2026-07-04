@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert prepared DCT-only block JSON fixtures into simulator CSV inputs."""
+"""Convert prepared DCT-only block JSON fixtures into simulator and stream CSV inputs."""
 
 from __future__ import annotations
 
@@ -14,6 +14,12 @@ TRACE_STAGE_QUANT_DC = 7
 TRACE_STAGE_QUANTIZED_AC = 8
 TRACE_STAGE_NUM_NONZEROS = 9
 BLOCK_SIZE = 64
+PREPARED_DCT_SCALAR_WORDS = 9
+PREPARED_DCT_WORDS_PER_BLOCK = PREPARED_DCT_SCALAR_WORDS + 3 * BLOCK_SIZE
+
+
+def _u32(value: int) -> int:
+    return int(value) & 0xFFFFFFFF
 
 
 def _int_list(values: object, *, path: Path, label: str, length: int) -> list[int]:
@@ -182,6 +188,41 @@ def write_input_csv(path: Path, fixture: dict) -> None:
             )
 
 
+def write_input_stream_csv(path: Path, fixture: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    total_words = len(fixture["blocks"]) * PREPARED_DCT_WORDS_PER_BLOCK
+    word_index = 0
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["data", "last"])
+        for block in fixture["blocks"]:
+            inputs = block["inputs"]
+            _, coefficients = _coefficients(
+                inputs,
+                path=path,
+                block_index=int(block["block_index"]),
+            )
+            words = [
+                int(inputs["quant"]),
+                int(inputs["scale_q16"]),
+                int(inputs["inv_qac_q16"]),
+                int(inputs["inv_dc_factor_q16"][0]),
+                int(inputs["inv_dc_factor_q16"][1]),
+                int(inputs["inv_dc_factor_q16"][2]),
+                int(inputs["x_qm_multiplier_q16"]),
+                _u32(int(inputs["ytox"])),
+                _u32(int(inputs["ytob"])),
+            ]
+            words.extend(_u32(value) for channel in coefficients for value in channel)
+            if len(words) != PREPARED_DCT_WORDS_PER_BLOCK:
+                raise ValueError(
+                    f"{path}: internal error: prepared block stream has {len(words)} words"
+                )
+            for word in words:
+                word_index += 1
+                writer.writerow([_u32(word), int(word_index == total_words)])
+
+
 def write_expected_trace_csv(path: Path, fixture: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -210,6 +251,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepared-json", type=Path, required=True, help="prepared-block JSON fixture")
     parser.add_argument("--input-csv", type=Path, help="output prepared block input CSV")
+    parser.add_argument(
+        "--input-stream-csv",
+        type=Path,
+        help="output prepared block AXI-stream-style data,last CSV",
+    )
     parser.add_argument("--expected-trace-csv", type=Path, help="output expected quantization trace CSV")
     args = parser.parse_args()
 
@@ -219,10 +265,12 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if args.input_csv is None and args.expected_trace_csv is None:
+    if args.input_csv is None and args.input_stream_csv is None and args.expected_trace_csv is None:
         raise SystemExit("at least one output path is required")
     if args.input_csv is not None:
         write_input_csv(args.input_csv, fixture)
+    if args.input_stream_csv is not None:
+        write_input_stream_csv(args.input_stream_csv, fixture)
     if args.expected_trace_csv is not None:
         write_expected_trace_csv(args.expected_trace_csv, fixture)
     return 0

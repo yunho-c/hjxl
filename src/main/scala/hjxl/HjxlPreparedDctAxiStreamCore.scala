@@ -1,0 +1,190 @@
+// See README.md for license details.
+
+package hjxl
+
+import chisel3._
+import chisel3.util._
+
+object PreparedDctStreamLayout {
+  val ScalarWords = 9
+  val CoefficientWords = 3 * HjxlConstants.BlockDim * HjxlConstants.BlockDim
+  val WordsPerBlock = ScalarWords + CoefficientWords
+
+  val Quant = 0
+  val ScaleQ16 = 1
+  val InvQacQ16 = 2
+  val InvDcFactorQ16Base = 3
+  val XQmMultiplierQ16 = 6
+  val Ytox = 7
+  val Ytob = 8
+  val CoefficientBase = ScalarWords
+}
+
+/** AXI4-Stream-shaped prepared-DCT quantize-to-token shell.
+  *
+  * Input is one 32-bit stream word sequence per prepared all-DCT raster block:
+  * quant, scaleQ16, invQacQ16, invDcFactorQ16[0..2], xQmMultiplierQ16, ytox,
+  * ytob, then 64 X coefficients, 64 Y coefficients, and 64 B coefficients.
+  * Coefficients and signed 8-bit CFL values are two's-complement encoded in
+  * the low bits of each word. Output packs `StageTrace` rows as
+  * `{value,index,group,stage}`, matching `HjxlAxiStreamCore`.
+  */
+class HjxlPreparedDctAxiStreamCore(c: HjxlConfig = HjxlConfig()) extends Module {
+  require(c.traceValueBits <= 32, "prepared-DCT stream coefficients are 32-bit words")
+
+  private val blockDim = HjxlConstants.BlockDim
+  private val blockSize = blockDim * blockDim
+  private val maxXBlocks = c.maxFrameWidth / blockDim
+  private val maxYBlocks = c.maxFrameHeight / blockDim
+  private val maxBlocks = maxXBlocks * maxYBlocks
+  private val blockCountBits = log2Ceil(maxBlocks + 1)
+  private val blockIndexBits = math.max(1, log2Ceil(maxBlocks))
+  private val wordIndexBits = log2Ceil(PreparedDctStreamLayout.WordsPerBlock)
+  private val widthBits = log2Ceil(c.maxFrameWidth + 1)
+  private val heightBits = log2Ceil(c.maxFrameHeight + 1)
+
+  val inputDataBits = 32
+  val traceDataBits = 8 + c.groupBits + 32 + c.traceValueBits
+
+  val io = IO(new Bundle {
+    val config = Input(new FrameConfig(c))
+    val clearProtocolError = Input(Bool())
+    val input = Flipped(Decoupled(new AxiStreamWord(inputDataBits)))
+    val trace = Decoupled(new AxiStreamWord(traceDataBits))
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
+    val protocolError = Output(Bool())
+  })
+
+  private def ceilDivBlock(value: UInt): UInt =
+    (value + (blockDim - 1).U) >> log2Ceil(blockDim)
+
+  private def signWord(value: UInt): SInt =
+    value(c.traceValueBits - 1, 0).asSInt
+
+  val stage = Module(new FramePreparedDctOnlyQuantizeTokenTraceStage(c))
+
+  val latchedConfig = Reg(new FrameConfig(c))
+  val frameActive = RegInit(false.B)
+  val blockInput = Reg(new DctOnlyQuantizeBlockInput(c))
+  val blockValid = RegInit(false.B)
+  val wordIndex = RegInit(0.U(wordIndexBits.W))
+  val receivedBlocks = RegInit(0.U(blockCountBits.W))
+  val submittedBlocks = RegInit(0.U(blockCountBits.W))
+  val frameInputsComplete = RegInit(false.B)
+  val protocolError = RegInit(false.B)
+
+  val activeConfig = Wire(new FrameConfig(c))
+  activeConfig := Mux(frameActive, latchedConfig, io.config)
+  stage.io.config := activeConfig
+
+  val configWidth = activeConfig.xsize(widthBits - 1, 0)
+  val configHeight = activeConfig.ysize(heightBits - 1, 0)
+  val xBlocks = ceilDivBlock(configWidth)
+  val yBlocks = ceilDivBlock(configHeight)
+  val totalBlocks = xBlocks * yBlocks
+  val configOutOfRange =
+    activeConfig.xsize === 0.U || activeConfig.ysize === 0.U ||
+      activeConfig.xsize > c.maxFrameWidth.U || activeConfig.ysize > c.maxFrameHeight.U ||
+      xBlocks > maxXBlocks.U || yBlocks > maxYBlocks.U
+
+  stage.io.input.valid := blockValid
+  stage.io.input.bits := blockInput
+
+  when(stage.io.input.fire) {
+    blockValid := false.B
+    submittedBlocks := submittedBlocks + 1.U
+  }
+
+  val finalWordInBlock = wordIndex === (PreparedDctStreamLayout.WordsPerBlock - 1).U
+  val finalBlock = receivedBlocks === (totalBlocks - 1.U)
+  val expectedLast = finalWordInBlock && finalBlock
+  val canAcceptInput = !blockValid && !frameInputsComplete && !configOutOfRange
+
+  io.input.ready := canAcceptInput
+
+  when(io.clearProtocolError) {
+    protocolError := false.B
+  }
+
+  when(io.input.fire) {
+    when(!frameActive) {
+      frameActive := true.B
+      latchedConfig := io.config
+    }
+
+    when(io.input.bits.last =/= expectedLast) {
+      protocolError := true.B
+    }
+
+    switch(wordIndex) {
+      is(PreparedDctStreamLayout.Quant.U) {
+        blockInput.quant := io.input.bits.data(7, 0)
+      }
+      is(PreparedDctStreamLayout.ScaleQ16.U) {
+        blockInput.scaleQ16 := io.input.bits.data(15, 0)
+      }
+      is(PreparedDctStreamLayout.InvQacQ16.U) {
+        blockInput.invQacQ16 := io.input.bits.data
+      }
+      is(PreparedDctStreamLayout.InvDcFactorQ16Base.U) {
+        blockInput.invDcFactorQ16(0) := io.input.bits.data
+      }
+      is((PreparedDctStreamLayout.InvDcFactorQ16Base + 1).U) {
+        blockInput.invDcFactorQ16(1) := io.input.bits.data
+      }
+      is((PreparedDctStreamLayout.InvDcFactorQ16Base + 2).U) {
+        blockInput.invDcFactorQ16(2) := io.input.bits.data
+      }
+      is(PreparedDctStreamLayout.XQmMultiplierQ16.U) {
+        blockInput.xQmMultiplierQ16 := io.input.bits.data
+      }
+      is(PreparedDctStreamLayout.Ytox.U) {
+        blockInput.ytox := io.input.bits.data(7, 0).asSInt
+      }
+      is(PreparedDctStreamLayout.Ytob.U) {
+        blockInput.ytob := io.input.bits.data(7, 0).asSInt
+      }
+    }
+
+    when(wordIndex >= PreparedDctStreamLayout.CoefficientBase.U) {
+      val coefficientWord = wordIndex - PreparedDctStreamLayout.CoefficientBase.U
+      val channel = coefficientWord >> log2Ceil(blockSize)
+      val coefficient = coefficientWord(log2Ceil(blockSize) - 1, 0)
+      blockInput.coefficients(channel)(coefficient) := signWord(io.input.bits.data)
+    }
+
+    when(finalWordInBlock) {
+      blockValid := true.B
+      wordIndex := 0.U
+      receivedBlocks := receivedBlocks + 1.U
+      when(finalBlock) {
+        frameInputsComplete := true.B
+      }
+    }.otherwise {
+      wordIndex := wordIndex + 1.U
+    }
+  }
+
+  when(frameInputsComplete && !blockValid && !stage.io.busy && !stage.io.trace.valid) {
+    frameActive := false.B
+    frameInputsComplete := false.B
+    receivedBlocks := 0.U
+    submittedBlocks := 0.U
+    wordIndex := 0.U
+  }
+
+  io.trace.valid := stage.io.trace.valid
+  stage.io.trace.ready := io.trace.ready
+  io.trace.bits.data := Cat(
+    stage.io.trace.bits.value.asUInt,
+    stage.io.trace.bits.index,
+    stage.io.trace.bits.group,
+    stage.io.trace.bits.stage
+  )
+  io.trace.bits.last := stage.io.trace.valid && stage.io.traceLast
+
+  io.busy := frameActive || blockValid || stage.io.busy || stage.io.trace.valid
+  io.overflow := configOutOfRange || stage.io.overflow || submittedBlocks > totalBlocks
+  io.protocolError := protocolError
+}

@@ -52,6 +52,39 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
       )
     ).trim
 
+  private def preparedBlockFixtureJson: String = {
+    val coefficientsX = (0 until 64).mkString("[", ",", "]")
+    val coefficientsY = (100 until 164).mkString("[", ",", "]")
+    val coefficientsB = (-64 until 0).mkString("[", ",", "]")
+    val zeroCoefficients = Seq.fill(64)(0).mkString("[", ",", "]")
+    s"""{
+       |  "format": "hjxl.dct_only_prepared_blocks.v1",
+       |  "coefficient_fraction_bits": 16,
+       |  "image": {"x_blocks": 1, "y_blocks": 1},
+       |  "blocks": [
+       |    {
+       |      "block_index": 0,
+       |      "inputs": {
+       |        "coefficient_fraction_bits": 16,
+       |        "quant": 5,
+       |        "scale_q16": 1234,
+       |        "inv_qac_q16": 5678,
+       |        "inv_dc_factor_q16": [11, 22, 33],
+       |        "x_qm_multiplier_q16": 44,
+       |        "ytox": -2,
+       |        "ytob": 3,
+       |        "coefficients_q": [$coefficientsX, $coefficientsY, $coefficientsB]
+       |      },
+       |      "expected": {
+       |        "quantized_ac": [$zeroCoefficients, $zeroCoefficients, $zeroCoefficients],
+       |        "quantized_dc": [0, 0, 0],
+       |        "num_nonzeros": [0, 0, 0]
+       |      }
+       |    }
+       |  ]
+       |}""".stripMargin
+  }
+
   "hjxl_stream_trace.py decodes packed stream words into StageTrace CSV" in {
     val temp = Files.createTempDirectory("hjxl-stream-trace-")
     val streamCsv = temp.resolve("stream.csv")
@@ -79,6 +112,45 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     result.output must include("decoded 2 stream trace rows")
     Files.readString(traceCsv).replace("\r\n", "\n") mustBe
       "stage,group,index,value\n12,3,4,-7\n12,4,5,11\n"
+  }
+
+  "hjxl_prepared_blocks.py emits packed prepared-DCT stream words" in {
+    val temp = Files.createTempDirectory("hjxl-prepared-block-stream-")
+    val fixture = temp.resolve("prepared.json")
+    val streamCsv = temp.resolve("prepared-stream.csv")
+    Files.writeString(fixture, preparedBlockFixtureJson)
+
+    val output = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_prepared_blocks.py",
+        "--prepared-json",
+        fixture.toString,
+        "--input-stream-csv",
+        streamCsv.toString
+      )
+    )
+    output mustBe ""
+
+    val rows = Files.readString(streamCsv).replace("\r\n", "\n").trim.split("\n").toVector
+    rows.head mustBe "data,last"
+    rows.length mustBe 1 + 201
+    rows(1) mustBe "5,0"
+    rows(2) mustBe "1234,0"
+    rows(3) mustBe "5678,0"
+    rows(4) mustBe "11,0"
+    rows(5) mustBe "22,0"
+    rows(6) mustBe "33,0"
+    rows(7) mustBe "44,0"
+    rows(8) mustBe "4294967294,0"
+    rows(9) mustBe "3,0"
+    rows(10) mustBe "0,0"
+    rows(73) mustBe "63,0"
+    rows(74) mustBe "100,0"
+    rows(137) mustBe "163,0"
+    rows(138) mustBe "4294967232,0"
+    rows.last mustBe "4294967295,1"
+    rows.drop(1).dropRight(1).count(_.endsWith(",1")) mustBe 0
   }
 
   "hjxl_stream_trace.py rejects early TLAST in single-frame mode" in {

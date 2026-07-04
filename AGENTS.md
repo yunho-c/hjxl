@@ -48,6 +48,18 @@ Use a hardware/software split:
   bits. `protocolError` is sticky and cleared by `clearProtocolError`. Output
   `last` is valid for every current route and follows the selected scheduler's
   `traceLast` final-beat sideband.
+- `HjxlAxiLiteStreamCore` is the current KV260-facing controlled shell. It
+  wraps `HjxlAxiStreamCore` with a minimal 32-bit AXI-Lite register map for
+  `FrameConfig` and status/control while preserving the same AXI4-Stream input
+  and trace output.
+- `HjxlPreparedDctAxiStreamCore` is the stream-shaped shell for the current
+  closest-to-parity prepared-DCT quantize-to-token path. Use it when the host
+  can supply prepared DCT-only block records and should receive packed token
+  traces without the wide structured Chisel IO.
+- `HjxlPreparedDctAxiLiteStreamCore` wraps that prepared-DCT stream shell with
+  the same AXI-Lite register map used by `HjxlAxiLiteStreamCore`. Prefer it for
+  KV260-style integration experiments when the host can already supply prepared
+  DCT blocks.
 - Keep stage outputs traceable against libjxl-tiny names and array shapes.
 
 Use stage-tolerant accuracy:
@@ -263,6 +275,20 @@ Read these libjxl-tiny files before making architectural changes:
   emitted stream-shell port surface and focused-route module inclusion.
   `HjxlAxiStreamCoreSpec` includes a host-decoder regression that captures real
   packed RTL output and feeds it to `tools/hjxl_stream_trace.py`.
+- Use `sbt 'runMain hjxl.ElaborateAxiLiteStream'` for the default AXI-Lite
+  controlled stream wrapper and
+  `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
+  full-AC-token controlled wrapper. These write `generated-axi-lite-stream/`
+  and `generated-axi-lite-stream-core-ac-tokens/`; keep both generated
+  directories out of git. The register map is: `0x00` status/control
+  (`protocolError` read bit 0, clear on write bit 0), `0x04` `xsize`, `0x08`
+  `ysize`, `0x0c` `distanceQ8`, `0x10` `fixedPointScale`, `0x14`
+  `fixedInvQacQ16`, `0x18` `fixedRawQuant`, and `0x1c` flags
+  (`enableXyb`, `enableDct`, `enableQuant`, `enableTokenize`, `tokenSelect` in
+  bits 9:8). `HjxlAxiLiteStreamCoreSpec` covers register reads/writes, byte
+  strobes, decode errors, and protocol-error clearing;
+  `HjxlAxiLiteStreamElaborationSpec` guards the generated controlled-shell
+  port surface and focused-route module inclusion.
 - Use `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantize'` to generate the
   standalone prepared-DCT quantization scheduler. It writes
   `generated-prepared-dct-only-quantize/`; keep the generated directory out of
@@ -273,6 +299,32 @@ Read these libjxl-tiny files before making architectural changes:
   `generated-prepared-dct-only-quantize-tokens/`; keep the generated directory
   out of git. The generated top exposes `traceLast` for frame-level capture
   boundaries.
+- Use `sbt 'runMain hjxl.ElaboratePreparedDctAxiStream'` to generate the
+  stream-shaped direct prepared-DCT quantize-to-token shell. It writes
+  `generated-prepared-dct-axi-stream/`; keep the generated directory out of
+  git. Each prepared raster block is encoded as 201 32-bit stream words:
+  `quant`, `scaleQ16`, `invQacQ16`, three `invDcFactorQ16` words,
+  `xQmMultiplierQ16`, signed `ytox`, signed `ytob`, then 64 X, 64 Y, and 64 B
+  DCT coefficients. Signed values are two's-complement encoded in the low bits.
+  Input TLAST must mark the final word of the final raster block implied by
+  `xsize` and `ysize`; mismatches set sticky `protocolError`, cleared by
+  `clearProtocolError`. `HjxlPreparedDctAxiStreamCoreSpec` compares this packed
+  shell against the structured direct wrapper and checks generated ports.
+  Use `tools/hjxl_prepared_blocks.py --input-stream-csv ...` to generate the
+  matching `data,last` stream CSV from prepared-block JSON fixtures; keep that
+  tool's layout in lockstep with `HjxlPreparedDctAxiStreamCore`. The same spec
+  also proves the stream path through `tools/hjxl_trace_to_codestream.py` by
+  comparing assembled frame/codestream bytes against libjxl-tiny's direct
+  DCT-only output.
+- Use `sbt 'runMain hjxl.ElaboratePreparedDctAxiLiteStream'` to generate the
+  AXI-Lite controlled version of that prepared-DCT stream shell. It writes
+  `generated-prepared-dct-axi-lite-stream/`; keep it out of git. This top uses
+  the same register map as `HjxlAxiLiteStreamCore`; `xsize`, `ysize`, and
+  status/control are active today, while the remaining `FrameConfig` registers
+  preserve a common host control surface. `HjxlPreparedDctAxiLiteStreamCoreSpec`
+  covers register access, AXI-Lite programmed frame sizing, protocol-error
+  clearing, generated ports, and a libjxl-tiny prepared-block stream to
+  codestream byte comparison through the host assembler.
 - `PreparedDctElaborationSpec` is the focused FIRTool/SystemVerilog emission
   regression for the prepared-DCT quantization and direct quantize-to-token
   standalone tops. It also checks the structured prepared-block input and trace

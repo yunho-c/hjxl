@@ -64,6 +64,30 @@ object ElaborateAxiStreamCoreAcTokens extends App {
   )
 }
 
+object ElaborateAxiLiteStream extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlAxiLiteStreamCore(),
+    args = Array("--target-dir", "generated-axi-lite-stream"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAxiLiteStreamCoreAcTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlAxiLiteStreamCore(traceRoute = TraceStage.AcTokens),
+    args = Array("--target-dir", "generated-axi-lite-stream-core-ac-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaboratePreparedDcTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedDcTokenTraceStage(),
@@ -92,6 +116,30 @@ object ElaboratePreparedDctOnlyQuantizeTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedDctOnlyQuantizeTokenTraceStage(),
     args = Array("--target-dir", "generated-prepared-dct-only-quantize-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaboratePreparedDctAxiStream extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlPreparedDctAxiStreamCore(),
+    args = Array("--target-dir", "generated-prepared-dct-axi-stream"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaboratePreparedDctAxiLiteStream extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlPreparedDctAxiLiteStreamCore(),
+    args = Array("--target-dir", "generated-prepared-dct-axi-lite-stream"),
     firtoolOpts = Array(
       "-disable-all-randomization",
       "-strip-debug-info",
