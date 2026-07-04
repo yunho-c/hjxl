@@ -33,7 +33,7 @@ class FramePreparedAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matche
   private def runTool(command: Seq[String], extraEnv: (String, String)*): Unit = {
     val output = scala.collection.mutable.ArrayBuffer.empty[String]
     val logger = ProcessLogger(line => output += line, line => output += line)
-    val exitCode = Process(command, Path.of(".").toFile, extraEnv: _*).!(logger)
+    val exitCode = Process(command, TestPaths.repoRoot.toFile, extraEnv: _*).!(logger)
     withClue(output.mkString("\n")) {
       exitCode mustBe 0
     }

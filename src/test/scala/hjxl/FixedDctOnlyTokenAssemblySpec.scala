@@ -142,7 +142,7 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
     val logger = ProcessLogger(line => output += line, line => output += line)
     val exitCode = Process(
       Seq("python3", "tools/hjxl_reference.py") ++ args,
-      Path.of(".").toFile,
+      TestPaths.repoRoot.toFile,
       "LIBJXL_TINY" -> libjxlTinyRoot.toString
     ).!(logger)
     withClue(output.mkString("\n")) {
@@ -155,7 +155,7 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
     val logger = ProcessLogger(line => output += line, line => output += line)
     val exitCode = Process(
       Seq("python3", "tools/hjxl_trace_tokens.py") ++ args,
-      Path.of(".").toFile
+      TestPaths.repoRoot.toFile
     ).!(logger)
     withClue(output.mkString("\n")) {
       exitCode mustBe 0
@@ -167,7 +167,7 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
     val logger = ProcessLogger(line => output += line, line => output += line)
     val exitCode = Process(
       Seq("python3", "tools/hjxl_prepared_token_inputs.py") ++ args,
-      Path.of(".").toFile
+      TestPaths.repoRoot.toFile
     ).!(logger)
     withClue(output.mkString("\n")) {
       exitCode mustBe 0

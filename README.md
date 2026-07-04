@@ -103,6 +103,15 @@ Or with Mill:
 ./mill hjxl.test
 ```
 
+CI sets `HJXL_REPO_ROOT`, installs Verilator and `python3-numpy`, checks out
+the libjxl-tiny Python-port commit
+`07f2dfe11a1a9f621052e75db5feffb0f58f44bd` from
+`https://github.com/yunho-c/libjxl-tiny.git` into `$LIBJXL_TINY`, checks Python
+helper syntax with `py_compile`, then runs both `sbt test` and `./mill _.test`.
+Keep NumPy/libjxl-tiny-backed oracle/tool tests written so they run under that
+environment rather than silently depending on a local-only Python setup. Use
+`HJXL_REPO_ROOT=$PWD` for local Mill runs that invoke Python helper scripts.
+
 Generate the current top-level SystemVerilog:
 
 ```sh
@@ -144,7 +153,11 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --dct-only-num-nonzeros-npy build-codex/fixtures/gradient-17x9-dct-only-nnz.npy \
   --dct-only-quant-dc-npy build-codex/fixtures/gradient-17x9-dct-only-qdc.npy \
   --dct-only-ac-metadata-tokens-npy build-codex/fixtures/gradient-17x9-dct-only-acmeta-tokens.npy \
+  --dct-only-dc-tokens-npy build-codex/fixtures/gradient-17x9-dct-only-dc-tokens.npy \
+  --dct-only-ac-tokens-npy build-codex/fixtures/gradient-17x9-dct-only-ac-tokens.npy \
   --dct-only-prepared-blocks-json build-codex/fixtures/gradient-17x9-dct-only-prepared-blocks.json \
+  --dct-only-frame-bin build-codex/fixtures/gradient-17x9-dct-only-frame.bin \
+  --dct-only-codestream-bin build-codex/fixtures/gradient-17x9-dct-only.jxl \
   --distance-params-json build-codex/fixtures/distance-1-params.json \
   --fixed-dct-only-dc-tokens-npy build-codex/fixtures/gradient-17x9-fixed-dc-tokens.npy \
   --fixed-dct-only-ac-metadata-tokens-npy build-codex/fixtures/gradient-17x9-fixed-acmeta-tokens.npy \
@@ -187,6 +200,22 @@ the token ordinal and are written as `(context, value)` NumPy arrays. AC
 strategy rows use `index` as the raster block ordinal and are reshaped using
 `--width` and `--height`.
 
+Compare converted token arrays against oracle arrays:
+
+```sh
+python3 tools/hjxl_compare_tokens.py \
+  --expected-ac-metadata-tokens-npy build-codex/fixtures/gradient-17x9-dct-only-acmeta-tokens.npy \
+  --actual-ac-metadata-tokens-npy build-codex/traces/gradient-17x9-rtl-acmeta-tokens.npy \
+  --expected-ac-strategy-npy build-codex/fixtures/gradient-17x9-ac-strategy.npy \
+  --actual-ac-strategy-npy build-codex/traces/gradient-17x9-rtl-ac-strategy.npy
+```
+
+The comparator is exact by default: token stream lengths, contexts, values, and
+AC-strategy grid entries must match. `--max-value-delta` only relaxes token
+values, not contexts or stream shape, and should be used for diagnostics rather
+than parity claims. `TokenCompareToolSpec` covers exact matches, mismatch
+diagnostics, and malformed token-array rejection for this helper.
+
 Convert prepared DCT-only block JSON fixtures into simulator input CSVs and
 expected quantization trace CSVs:
 
@@ -228,10 +257,20 @@ against that staged handoff at the DC/AC token trace streams while checking its
 prepared raw-quant/CFL metadata tokens against libjxl-tiny's
 `ac_metadata_tokens` oracle. It also converts the direct wrapper's token
 `StageTrace` output into token arrays and verifies the host assembler can
-produce nonempty frame bytes and a bare JPEG XL codestream.
+produce nonempty frame bytes and a bare JPEG XL codestream. The spec also
+exercises the adaptive all-DCT oracle exports by checking that
+`--dct-only-dc-tokens-npy`, `--dct-only-ac-metadata-tokens-npy`,
+`--dct-only-ac-tokens-npy`, and `--default-ac-strategy-npy` assemble back into
+the same bytes as `--dct-only-frame-bin` and `--dct-only-codestream-bin`, and
+uses `tools/hjxl_compare_tokens.py` for exact metadata/strategy token-array
+comparison on the direct wrapper trace.
 `FramePreparedAcMetadataTokenTraceStageSpec` separately covers two-tile
 prepared metadata fixtures for CFL residual prediction and raw-quant residual
 contexts, including a libjxl-tiny oracle-backed 72x8 all-DCT case.
+`PreparedDctElaborationSpec` is the focused FIRTool/SystemVerilog emission gate
+for the prepared-DCT quantization and direct quantize-to-token standalone tops;
+it emits into a temporary directory, checks the structured prepared-block input
+and trace output port surface, and does not leave generated RTL in the checkout.
 `FixedDctOnlyTokenAssemblySpec` is the current regression for that
 hardware/software boundary. It generates a prepared-token JSON fixture with
 `tools/hjxl_reference.py`, converts it to simulator CSVs with

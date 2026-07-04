@@ -238,6 +238,10 @@ Read these libjxl-tiny files before making architectural changes:
   the direct prepared-DCT quantize-to-token wrapper. It writes
   `generated-prepared-dct-only-quantize-tokens/`; keep the generated directory
   out of git.
+- `PreparedDctElaborationSpec` is the focused FIRTool/SystemVerilog emission
+  regression for the prepared-DCT quantization and direct quantize-to-token
+  standalone tops. It also checks the structured prepared-block input and trace
+  output port surface. Run it after touching those modules or their IO bundles.
 - Use `sbt 'runMain hjxl.ElaboratePreparedAcMetadataTokens'` to generate the
   standalone prepared AC-metadata token scheduler. It writes
   `generated-prepared-ac-metadata-tokens/`; keep the generated directory out of
@@ -269,6 +273,10 @@ Read these libjxl-tiny files before making architectural changes:
   for the default all-DCT strategy using prepared raw-quant and CFL maps. Use
   this oracle for `FramePreparedAcMetadataTokenTraceStage` instead of comparing
   against fixed raw-quant/zero-CFL metadata.
+- `--dct-only-dc-tokens-npy` and `--dct-only-ac-tokens-npy` export the matching
+  adaptive all-DCT logical token streams. Pair them with
+  `--dct-only-ac-metadata-tokens-npy` and `--default-ac-strategy-npy` when
+  comparing future RTL token traces against libjxl-tiny's all-8x8-DCT path.
 - `--dct-only-prepared-blocks-json` exports the prepared-block interface for
   `DctOnlyQuantizeBlock`: Q12 coefficients, quant/scaling/CFL inputs, and
   libjxl-tiny expected quantized AC/DC/nonzero results. Treat the expected
@@ -314,6 +322,10 @@ Read these libjxl-tiny files before making architectural changes:
   the fixed logical tokens through libjxl-tiny's entropy optimizer and bitstream
   writer. Treat these as host-side oracle artifacts for the near-term
   hardware/software split, not as evidence that RTL emits final `.jxl` bytes.
+- `--dct-only-frame-bin` and `--dct-only-codestream-bin` serialize the adaptive
+  all-DCT token oracle using real raw-quant and CFL maps. Use these only after
+  checking token-array parity; the current prepared-DCT RTL quantizer still uses
+  rounded fixed-point inputs and may not be byte-exact on nontrivial images.
 - `--token-input-dc-tokens-npy`, `--token-input-ac-metadata-tokens-npy`,
   `--token-input-ac-tokens-npy`, and `--token-input-ac-strategy-npy` let the
   helper assemble frame/codestream bytes from precomputed logical tokens. Use
@@ -322,6 +334,12 @@ Read these libjxl-tiny files before making architectural changes:
   `stage,group,index,value` columns into those token-input NumPy arrays. Token
   stages require contiguous `group` ordinals; AC strategy traces use `index` as
   the raster block ordinal and require image width/height for reshaping.
+- `tools/hjxl_compare_tokens.py` compares token-input arrays against oracle
+  arrays. It is exact by default for token stream length, contexts, values, and
+  AC strategy grid entries. Use `--max-value-delta` only for diagnostics while
+  narrowing fixed-point differences, not for final parity claims.
+  `TokenCompareToolSpec` covers this helper; update it when changing comparator
+  behavior.
 - `FixedDctOnlyTokenAssemblySpec` is the current host-boundary regression. It
   runs the full prepared-token boundary chain: libjxl-tiny prepared-token JSON,
   simulator input CSVs, `FramePreparedTokenTraceStage`, StageTrace-to-token
@@ -378,6 +396,15 @@ When oracle tooling exists in this repo, run it with:
 ```sh
 LIBJXL_TINY=/Users/yunhocho/GitHub/libjxl-tiny sbt test
 ```
+
+CI sets `HJXL_REPO_ROOT`, installs Verilator and `python3-numpy`, checks out the
+libjxl-tiny Python-port commit `07f2dfe11a1a9f621052e75db5feffb0f58f44bd` from
+`https://github.com/yunho-c/libjxl-tiny.git` into `$LIBJXL_TINY`, runs Python
+helper `py_compile`, then runs `sbt test` and `./mill _.test`. Use
+`HJXL_REPO_ROOT=$PWD` for local Mill runs that invoke Python helper scripts.
+Do not add Python oracle/tool tests that only pass under an undeclared local
+package or local checkout; either keep them within those dependencies or update
+the CI setup step with the required package/source.
 
 For libjxl-tiny reference exploration, use disposable output under
 `build-codex/` in the libjxl-tiny checkout.

@@ -49,7 +49,7 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
   private def runTool(command: Seq[String], extraEnv: (String, String)*): Unit = {
     val output = scala.collection.mutable.ArrayBuffer.empty[String]
     val logger = ProcessLogger(line => output += line, line => output += line)
-    val exitCode = Process(command, Path.of(".").toFile, extraEnv: _*).!(logger)
+    val exitCode = Process(command, TestPaths.repoRoot.toFile, extraEnv: _*).!(logger)
     withClue(output.mkString("\n")) {
       exitCode mustBe 0
     }
@@ -411,6 +411,83 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     dut.io.input.valid.poke(false.B)
   }
 
+  private def zeroPreparedBlock(quant: Int = 1): PreparedBlock =
+    PreparedBlock(
+      quant = quant,
+      scaleQ16 = QuantizeDct8x8Block.DefaultScaleQ16,
+      invQacQ16 = QuantizeDct8x8Block.DefaultInvQacQ16,
+      invDcFactorQ16 = QuantizeDct8x8Block.DefaultInvDcFactorQ16,
+      xQmMultiplierQ16 = QuantizeDct8x8Block.DefaultQmMultiplierQ16,
+      ytox = 0,
+      ytob = 0,
+      coefficients = Seq.fill(3)(Seq.fill(blockSize)(0))
+    )
+
+  private def pokeCombinedInputBits(
+      dut: FramePreparedDctOnlyQuantizeTokenTraceStage,
+      block: PreparedBlock
+  ): Unit = {
+    dut.io.input.bits.quant.poke(block.quant.U)
+    dut.io.input.bits.scaleQ16.poke(block.scaleQ16.U)
+    dut.io.input.bits.invQacQ16.poke(block.invQacQ16.U)
+    dut.io.input.bits.xQmMultiplierQ16.poke(block.xQmMultiplierQ16.U)
+    dut.io.input.bits.ytox.poke(block.ytox.S)
+    dut.io.input.bits.ytob.poke(block.ytob.S)
+    for (channel <- 0 until 3) {
+      dut.io.input.bits.invDcFactorQ16(channel).poke(block.invDcFactorQ16(channel).U)
+      for (i <- 0 until blockSize) {
+        dut.io.input.bits.coefficients(channel)(i).poke(block.coefficients(channel)(i).S)
+      }
+    }
+  }
+
+  private def peekCombinedTrace(dut: FramePreparedDctOnlyQuantizeTokenTraceStage): ExpectedTrace =
+    ExpectedTrace(
+      stage = dut.io.trace.bits.stage.peekValue().asBigInt.toInt,
+      group = dut.io.trace.bits.group.peekValue().asBigInt.toInt,
+      index = dut.io.trace.bits.index.peekValue().asBigInt.toInt,
+      value = dut.io.trace.bits.value.peekValue().asBigInt.toInt
+    )
+
+  private def waitForCombinedTrace(
+      dut: FramePreparedDctOnlyQuantizeTokenTraceStage,
+      clue: String,
+      maxCycles: Int = 512
+  ): Unit = {
+    var cycles = 0
+    while (dut.io.trace.valid.peekValue().asBigInt == 0 && cycles < maxCycles) {
+      dut.clock.step()
+      cycles += 1
+    }
+    withClue(clue) {
+      cycles must be < maxCycles
+    }
+  }
+
+  private def zeroCombinedTraceCount(blockCount: Int): Int =
+    blockCount * 3 + blockCount + metadataTokenCount + blockCount * 3
+
+  private def expectCombinedIdle(
+      dut: FramePreparedDctOnlyQuantizeTokenTraceStage,
+      clue: String
+  ): Unit = {
+    var cycles = 0
+    while (dut.io.input.ready.peekValue().asBigInt == 0 && cycles < 32) {
+      withClue(s"$clue idle wait cycle $cycles") {
+        dut.io.trace.valid.expect(false.B)
+      }
+      dut.clock.step()
+      cycles += 1
+    }
+    withClue(clue) {
+      cycles must be < 32
+    }
+    dut.io.trace.valid.expect(false.B)
+    dut.io.input.ready.expect(true.B)
+    dut.io.busy.expect(false.B)
+    dut.io.overflow.expect(false.B)
+  }
+
   private def collectCombinedTokenTraces(
       blocks: Seq[PreparedBlock],
       expectedTraceCount: Int
@@ -428,20 +505,8 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
       dut.io.trace.ready.poke(true.B)
 
       for (ordinal <- 0 until expectedTraceCount) {
-        var cycles = 0
-        while (dut.io.trace.valid.peekValue().asBigInt == 0 && cycles < 512) {
-          dut.clock.step()
-          cycles += 1
-        }
-        withClue(s"combined token trace ordinal $ordinal") {
-          cycles must be < 512
-        }
-        traces += ExpectedTrace(
-          stage = dut.io.trace.bits.stage.peekValue().asBigInt.toInt,
-          group = dut.io.trace.bits.group.peekValue().asBigInt.toInt,
-          index = dut.io.trace.bits.index.peekValue().asBigInt.toInt,
-          value = dut.io.trace.bits.value.peekValue().asBigInt.toInt
-        )
+        waitForCombinedTrace(dut, s"combined token trace ordinal $ordinal")
+        traces += peekCombinedTrace(dut)
         dut.clock.step()
       }
       dut.io.trace.valid.expect(false.B)
@@ -459,6 +524,13 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     val expectedCsv = temp.resolve("expected-trace.csv")
     val acMetadataNpy = temp.resolve("ac-metadata.npy")
     val acMetadataCsv = temp.resolve("ac-metadata.csv")
+    val oracleDcTokens = temp.resolve("oracle-dc.npy")
+    val oracleAcTokens = temp.resolve("oracle-ac.npy")
+    val oracleAcStrategy = temp.resolve("oracle-ac-strategy.npy")
+    val directDctOnlyFrame = temp.resolve("direct-dct-only-frame.bin")
+    val directDctOnlyCodestream = temp.resolve("direct-dct-only.jxl")
+    val oracleTokenFrame = temp.resolve("oracle-token-frame.bin")
+    val oracleTokenCodestream = temp.resolve("oracle-token.jxl")
     val observedTraceCsv = temp.resolve("observed-quant-trace.csv")
     val preparedDcCsv = temp.resolve("prepared-dc.csv")
     val preparedAcCsv = temp.resolve("prepared-ac.csv")
@@ -483,10 +555,34 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
         "--dct-only-prepared-blocks-json",
         preparedJson.toString,
         "--dct-only-ac-metadata-tokens-npy",
-        acMetadataNpy.toString
+        acMetadataNpy.toString,
+        "--dct-only-dc-tokens-npy",
+        oracleDcTokens.toString,
+        "--dct-only-ac-tokens-npy",
+        oracleAcTokens.toString,
+        "--default-ac-strategy-npy",
+        oracleAcStrategy.toString,
+        "--dct-only-frame-bin",
+        directDctOnlyFrame.toString,
+        "--dct-only-codestream-bin",
+        directDctOnlyCodestream.toString,
+        "--token-input-dc-tokens-npy",
+        oracleDcTokens.toString,
+        "--token-input-ac-metadata-tokens-npy",
+        acMetadataNpy.toString,
+        "--token-input-ac-tokens-npy",
+        oracleAcTokens.toString,
+        "--token-input-ac-strategy-npy",
+        oracleAcStrategy.toString,
+        "--token-input-frame-bin",
+        oracleTokenFrame.toString,
+        "--token-input-codestream-bin",
+        oracleTokenCodestream.toString
       ),
       "LIBJXL_TINY" -> libjxlTinyRoot.toString
     )
+    Files.readAllBytes(oracleTokenFrame).toSeq mustBe Files.readAllBytes(directDctOnlyFrame).toSeq
+    Files.readAllBytes(oracleTokenCodestream).toSeq mustBe Files.readAllBytes(directDctOnlyCodestream).toSeq
     convertTokenNpyToCsv(acMetadataNpy, acMetadataCsv)
     runTool(
       Seq(
@@ -610,6 +706,20 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     runTool(
       Seq(
         "python3",
+        "tools/hjxl_compare_tokens.py",
+        "--expected-ac-metadata-tokens-npy",
+        acMetadataNpy.toString,
+        "--actual-ac-metadata-tokens-npy",
+        acMetadataTokens.toString,
+        "--expected-ac-strategy-npy",
+        oracleAcStrategy.toString,
+        "--actual-ac-strategy-npy",
+        acStrategy.toString
+      )
+    )
+    runTool(
+      Seq(
+        "python3",
         "tools/hjxl_reference.py",
         "--width",
         width.toString,
@@ -637,5 +747,75 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     frameBytes.length must be > 0
     codestreamBytes.length must be > frameBytes.length
     codestreamBytes.take(2) mustBe Seq(0xff.toByte, 0x0a.toByte)
+  }
+
+  "FramePreparedDctOnlyQuantizeTokenTraceStage holds trace bits under output backpressure" in {
+    val blocks = Seq(zeroPreparedBlock(), zeroPreparedBlock())
+    val expectedTraceCount = zeroCombinedTraceCount(blocks.length)
+
+    simulate(new FramePreparedDctOnlyQuantizeTokenTraceStage(config)) { dut =>
+      pokeCombinedConfig(dut)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      blocks.foreach(driveCombinedInput(dut, _))
+      dut.io.input.ready.expect(false.B)
+
+      waitForCombinedTrace(dut, "first combined token trace under backpressure")
+      val firstTrace = peekCombinedTrace(dut)
+      for (cycle <- 0 until 5) {
+        withClue(s"backpressured cycle $cycle") {
+          dut.io.trace.valid.expect(true.B)
+          peekCombinedTrace(dut) mustBe firstTrace
+        }
+        dut.clock.step()
+      }
+
+      dut.io.trace.ready.poke(true.B)
+      for (ordinal <- 0 until expectedTraceCount) {
+        waitForCombinedTrace(dut, s"combined token trace drain ordinal $ordinal")
+        dut.clock.step()
+      }
+
+      expectCombinedIdle(dut, "backpressured combined token wrapper")
+    }
+  }
+
+  "FramePreparedDctOnlyQuantizeTokenTraceStage rejects a new frame until buffered token emission drains" in {
+    val blocks = Seq(zeroPreparedBlock(), zeroPreparedBlock())
+    val pendingBlock = zeroPreparedBlock(quant = 2)
+    val expectedTraceCount = zeroCombinedTraceCount(blocks.length)
+
+    simulate(new FramePreparedDctOnlyQuantizeTokenTraceStage(config)) { dut =>
+      pokeCombinedConfig(dut)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      driveCombinedInput(dut, blocks.head)
+      dut.io.input.ready.expect(true.B)
+      driveCombinedInput(dut, blocks(1))
+      dut.io.input.ready.expect(false.B)
+      dut.io.busy.expect(true.B)
+
+      dut.io.input.valid.poke(true.B)
+      pokeCombinedInputBits(dut, pendingBlock)
+      for (cycle <- 0 until 4) {
+        withClue(s"extra input cycle $cycle") {
+          dut.io.input.ready.expect(false.B)
+        }
+        dut.clock.step()
+      }
+      dut.io.input.valid.poke(false.B)
+
+      dut.io.trace.ready.poke(true.B)
+      for (ordinal <- 0 until expectedTraceCount) {
+        waitForCombinedTrace(dut, s"combined token trace lifecycle ordinal $ordinal")
+        dut.clock.step()
+      }
+
+      expectCombinedIdle(dut, "combined token wrapper after rejected extra input")
+    }
   }
 }

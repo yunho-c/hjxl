@@ -241,6 +241,103 @@ def dct_only_ac_metadata_tokens_from_python_port(image, distance: float):
     return ac_metadata_tokens(ytox_map, ytob_map, ac_strategy, raw_quant_field)
 
 
+def dct_only_token_outputs_from_python_port(image, distance: float):
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.ac_strategy import DCT, adjust_quant_field  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.adaptive_quantization import compute_adaptive_quantization  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.chroma_from_luma import compute_chroma_from_luma  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.encoder import (  # pylint: disable=import-outside-toplevel
+        BLOCK_DIM,
+        TILE_DIM,
+        TILE_DIM_IN_BLOCKS,
+        _ceil_div,
+        _effective_distance,
+    )
+    from jxl_tiny.quantization import quantize_ac_group  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.tokenization import (  # pylint: disable=import-outside-toplevel
+        ac_metadata_tokens,
+        ac_tokens_from_quantized_blocks,
+        dc_tokens,
+    )
+
+    xyb = xyb_from_python_port(image)
+    _, ysize, xsize = image.shape
+    distance = _effective_distance(distance)
+    x_blocks = _ceil_div(xsize, BLOCK_DIM)
+    y_blocks = _ceil_div(ysize, BLOCK_DIM)
+    x_tiles = _ceil_div(xsize, TILE_DIM)
+    y_tiles = _ceil_div(ysize, TILE_DIM)
+
+    raw_quant_field = np.empty((y_blocks, x_blocks), dtype=np.uint8)
+    ac_strategy = np.full((y_blocks, x_blocks), np.uint8((DCT << 1) | 1))
+    ytox_map = np.zeros((y_tiles, x_tiles), dtype=np.int8)
+    ytob_map = np.zeros((y_tiles, x_tiles), dtype=np.int8)
+
+    for tile_y in range(y_tiles):
+        by0 = tile_y * TILE_DIM_IN_BLOCKS
+        tile_blocks_y = min(TILE_DIM_IN_BLOCKS, y_blocks - by0)
+        py0 = by0 * BLOCK_DIM
+        py1 = py0 + tile_blocks_y * BLOCK_DIM
+        for tile_x in range(x_tiles):
+            bx0 = tile_x * TILE_DIM_IN_BLOCKS
+            tile_blocks_x = min(TILE_DIM_IN_BLOCKS, x_blocks - bx0)
+            px0 = bx0 * BLOCK_DIM
+            px1 = px0 + tile_blocks_x * BLOCK_DIM
+            aq = compute_adaptive_quantization(
+                xyb,
+                distance,
+                block_x0=bx0,
+                block_y0=by0,
+                block_width=tile_blocks_x,
+                block_height=tile_blocks_y,
+            )
+            raw_quant_field[by0 : by0 + tile_blocks_y, bx0 : bx0 + tile_blocks_x] = (
+                aq.raw_quant_field
+            )
+            cfl = compute_chroma_from_luma(xyb[:, py0:py1, px0:px1])
+            ytox_map[tile_y, tile_x] = cfl.ytox
+            ytob_map[tile_y, tile_x] = cfl.ytob
+
+    raw_quant_field = adjust_quant_field(raw_quant_field, ac_strategy)
+    quantized_blocks = quantize_ac_group(
+        xyb, raw_quant_field, ac_strategy, ytox_map, ytob_map, distance
+    )
+
+    quant_dc = np.zeros((3, y_blocks, x_blocks), dtype=np.int16)
+    nzeros_map = np.zeros((3, y_blocks, x_blocks), dtype=np.uint8)
+    for by in range(y_blocks):
+        for bx in range(x_blocks):
+            block = quantized_blocks[(by, bx)]
+            quant_dc[:, by : by + 1, bx : bx + 1] = block.block_quant_dc
+            nzeros_map[:, by : by + 1, bx : bx + 1] = block.num_nonzeros_map
+
+    return (
+        dc_tokens(quant_dc),
+        ac_metadata_tokens(ytox_map, ytob_map, ac_strategy, raw_quant_field),
+        ac_tokens_from_quantized_blocks(ac_strategy, quantized_blocks, nzeros_map),
+        ac_strategy,
+    )
+
+
+def dct_only_bitstream_outputs_from_python_port(image, distance: float):
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.bitstream import (  # pylint: disable=import-outside-toplevel
+        codestream_bytes,
+        frame_bytes,
+    )
+
+    dc, ac_metadata, ac, ac_strategy = dct_only_token_outputs_from_python_port(
+        image, distance
+    )
+    _, ysize, xsize = image.shape
+    frame = frame_bytes(dc, ac_metadata, ac, ac_strategy, distance)
+    codestream = codestream_bytes(xsize, ysize, dc, ac_metadata, ac, ac_strategy, distance)
+    return frame, codestream
+
+
 def distance_params_from_python_port(distance: float, fixed_raw_quant: int = 5):
     root = _libjxl_tiny_root()
     _add_libjxl_tiny(root)
@@ -654,9 +751,29 @@ def main() -> int:
         help="optional AC-metadata token oracle for the default all-DCT strategy",
     )
     parser.add_argument(
+        "--dct-only-dc-tokens-npy",
+        type=Path,
+        help="optional DC token oracle for the adaptive default all-DCT strategy",
+    )
+    parser.add_argument(
+        "--dct-only-ac-tokens-npy",
+        type=Path,
+        help="optional AC token oracle for the adaptive default all-DCT strategy",
+    )
+    parser.add_argument(
         "--dct-only-prepared-blocks-json",
         type=Path,
         help="optional prepared-block JSON oracle for the default all-DCT strategy",
+    )
+    parser.add_argument(
+        "--dct-only-frame-bin",
+        type=Path,
+        help="optional adaptive all-DCT frame bytes serialized from logical tokens",
+    )
+    parser.add_argument(
+        "--dct-only-codestream-bin",
+        type=Path,
+        help="optional adaptive all-DCT bare codestream bytes serialized from logical tokens",
     )
     parser.add_argument(
         "--distance-params-json",
@@ -730,6 +847,8 @@ def main() -> int:
     image = generate_fixture(args.width, args.height, args.pattern)
     quant_metadata = None
     dct_only_quant_outputs = None
+    dct_only_token_outputs = None
+    dct_only_bitstream_outputs = None
     fixed_dct_only_token_outputs = None
     fixed_dct_only_prepared_token_inputs = None
     fixed_dct_only_bitstream_outputs = None
@@ -746,6 +865,22 @@ def main() -> int:
         if dct_only_quant_outputs is None:
             dct_only_quant_outputs = dct_only_quant_outputs_from_python_port(image, args.distance)
         return dct_only_quant_outputs
+
+    def get_dct_only_token_outputs():
+        nonlocal dct_only_token_outputs
+        if dct_only_token_outputs is None:
+            dct_only_token_outputs = dct_only_token_outputs_from_python_port(
+                image, args.distance
+            )
+        return dct_only_token_outputs
+
+    def get_dct_only_bitstream_outputs():
+        nonlocal dct_only_bitstream_outputs
+        if dct_only_bitstream_outputs is None:
+            dct_only_bitstream_outputs = dct_only_bitstream_outputs_from_python_port(
+                image, args.distance
+            )
+        return dct_only_bitstream_outputs
 
     def get_fixed_dct_only_token_outputs():
         nonlocal fixed_dct_only_token_outputs
@@ -878,16 +1013,32 @@ def main() -> int:
     if args.dct_only_ac_metadata_tokens_npy is not None:
         np = _load_numpy()
         args.dct_only_ac_metadata_tokens_npy.parent.mkdir(parents=True, exist_ok=True)
-        np.save(
-            args.dct_only_ac_metadata_tokens_npy,
-            dct_only_ac_metadata_tokens_from_python_port(image, args.distance),
-        )
+        _, ac_metadata, _, _ = get_dct_only_token_outputs()
+        np.save(args.dct_only_ac_metadata_tokens_npy, ac_metadata)
+    if args.dct_only_dc_tokens_npy is not None:
+        np = _load_numpy()
+        args.dct_only_dc_tokens_npy.parent.mkdir(parents=True, exist_ok=True)
+        dc, _, _, _ = get_dct_only_token_outputs()
+        np.save(args.dct_only_dc_tokens_npy, dc)
+    if args.dct_only_ac_tokens_npy is not None:
+        np = _load_numpy()
+        args.dct_only_ac_tokens_npy.parent.mkdir(parents=True, exist_ok=True)
+        _, _, ac, _ = get_dct_only_token_outputs()
+        np.save(args.dct_only_ac_tokens_npy, ac)
     if args.dct_only_prepared_blocks_json is not None:
         args.dct_only_prepared_blocks_json.parent.mkdir(parents=True, exist_ok=True)
         args.dct_only_prepared_blocks_json.write_text(
             json.dumps(dct_only_prepared_blocks_from_python_port(image, args.distance), indent=2),
             encoding="utf-8",
         )
+    if args.dct_only_frame_bin is not None:
+        args.dct_only_frame_bin.parent.mkdir(parents=True, exist_ok=True)
+        frame, _ = get_dct_only_bitstream_outputs()
+        args.dct_only_frame_bin.write_bytes(frame)
+    if args.dct_only_codestream_bin is not None:
+        args.dct_only_codestream_bin.parent.mkdir(parents=True, exist_ok=True)
+        _, codestream = get_dct_only_bitstream_outputs()
+        args.dct_only_codestream_bin.write_bytes(codestream)
     if args.distance_params_json is not None:
         args.distance_params_json.parent.mkdir(parents=True, exist_ok=True)
         args.distance_params_json.write_text(
@@ -950,7 +1101,11 @@ def main() -> int:
         and args.dct_only_num_nonzeros_map_npy is None
         and args.dct_only_quant_dc_npy is None
         and args.dct_only_ac_metadata_tokens_npy is None
+        and args.dct_only_dc_tokens_npy is None
+        and args.dct_only_ac_tokens_npy is None
         and args.dct_only_prepared_blocks_json is None
+        and args.dct_only_frame_bin is None
+        and args.dct_only_codestream_bin is None
         and args.distance_params_json is None
         and args.fixed_dct_only_dc_tokens_npy is None
         and args.fixed_dct_only_ac_metadata_tokens_npy is None

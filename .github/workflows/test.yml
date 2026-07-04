@@ -11,6 +11,11 @@ jobs:
   ci:
     name: ci
     runs-on: ubuntu-latest
+    env:
+      HJXL_REPO_ROOT: ${{ github.workspace }}
+      LIBJXL_TINY: ${{ runner.temp }}/libjxl-tiny
+      LIBJXL_TINY_REPO: https://github.com/yunho-c/libjxl-tiny.git
+      LIBJXL_TINY_REF: 07f2dfe11a1a9f621052e75db5feffb0f58f44bd
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,8 +28,26 @@ jobs:
           apps: sbt
       - name: Setup Dependencies
         run: |
-          sudo apt-get install verilator
+          sudo apt-get update
+          sudo apt-get install -y python3-numpy verilator
+          python3 -c 'import numpy'
           verilator --version
+      - name: Checkout libjxl-tiny
+        run: |
+          mkdir -p "$LIBJXL_TINY"
+          git -C "$LIBJXL_TINY" init
+          git -C "$LIBJXL_TINY" fetch --depth 1 "$LIBJXL_TINY_REPO" "$LIBJXL_TINY_REF"
+          git -C "$LIBJXL_TINY" checkout --detach FETCH_HEAD
+          test -d "$LIBJXL_TINY/python"
+      - name: Python Tool Syntax
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
+            tools/hjxl_reference.py \
+            tools/hjxl_trace_tokens.py \
+            tools/hjxl_compare_tokens.py \
+            tools/hjxl_prepared_token_inputs.py \
+            tools/hjxl_prepared_blocks.py \
+            tools/hjxl_quant_trace_to_prepared_tokens.py
       - name: SBT Test
         run: sbt test
       - name: mill Test
