@@ -6,6 +6,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
 import scala.sys.process.Process
@@ -41,6 +42,51 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
       result.exitCode mustBe 0
     }
     result.output
+  }
+
+  private def commandAvailable(command: String): Boolean =
+    Process(Seq("/bin/sh", "-c", s"command -v $command >/dev/null 2>&1")).! == 0
+
+  private def cIncludePath(path: Path): String =
+    path.toRealPath().toString.replace("\\", "\\\\").replace("\"", "\\\"")
+
+  private def compileGeneratedHeaderSmoke(header: Path, symbolPrefix: String): Unit = {
+    val sourceStem = symbolPrefix.toLowerCase.replaceAll("[^a-z0-9_]+", "_")
+    val cSource = header.getParent.resolve(s"$sourceStem-header-smoke.c")
+    val cxxSource = header.getParent.resolve(s"$sourceStem-header-smoke.cc")
+    val sourceText =
+      s"""#include "${cIncludePath(header)}"
+         |
+         |int main(void) {
+         |  return (int)${symbolPrefix}_AXI_LITE_WRITES[0].strb != 0x0f;
+         |}
+         |""".stripMargin
+    Files.writeString(cSource, sourceText)
+    Files.writeString(cxxSource, sourceText)
+
+    if (commandAvailable("cc")) {
+      expectSuccess(Seq("cc", "-std=c11", "-fsyntax-only", cSource.toString))
+    }
+    if (commandAvailable("c++")) {
+      expectSuccess(Seq("c++", "-std=c++11", "-fsyntax-only", cxxSource.toString))
+    }
+  }
+
+  private def copyDirectory(source: Path, target: Path): Unit = {
+    val paths = Files.walk(source)
+    try {
+      paths.forEach { path =>
+        val destination = target.resolve(source.relativize(path))
+        if (Files.isDirectory(path)) {
+          Files.createDirectories(destination)
+        } else {
+          Files.createDirectories(destination.getParent)
+          Files.copy(path, destination, StandardCopyOption.REPLACE_EXISTING)
+        }
+      }
+    } finally {
+      paths.close()
+    }
   }
 
   private def readNpyAsJson(path: Path): String =
@@ -307,6 +353,14 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     headerText must include("#define HJXL_PREPARED_REG_XSIZE 0x00000004u")
     headerText must include("#define HJXL_PREPARED_STATUS_BUSY_BIT 1u")
     headerText must include("{ 0x0000001cu, 0x0000020eu, 0x0000000fu }, /* flags */")
+    headerText must include(
+      "HJXL_PREPARED_STREAM_BYTE_COUNT == HJXL_PREPARED_STREAM_WORD_COUNT * HJXL_PREPARED_STREAM_WORD_BYTES"
+    )
+    headerText must include(
+      "sizeof(HJXL_PREPARED_AXI_LITE_WRITES) / sizeof(HJXL_PREPARED_AXI_LITE_WRITES[0]) == " +
+        "HJXL_PREPARED_AXI_LITE_WRITE_COUNT"
+    )
+    compileGeneratedHeaderSmoke(header, "HJXL_PREPARED")
 
     val bufferOutput = expectSuccess(
       Seq(
@@ -332,6 +386,7 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     preparedLastBytes.dropRight(1).sum mustBe 0
     preparedLastBytes.last mustBe 1
 
+    val preparedGeneratedReplayPlanJson = temp.resolve("prepared-generated-replay-plan.json")
     val hostBundleOutput = expectSuccess(
       Seq(
         "python3",
@@ -343,21 +398,274 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
         "--name",
         "prepared",
         "--symbol-prefix",
-        "HJXL_PREPARED_BUNDLE"
+        "HJXL_PREPARED_BUNDLE",
+        "--replay-plan-json",
+        preparedGeneratedReplayPlanJson.toString
       )
     )
     hostBundleOutput must include(s"wrote host bundle prepared with 201 stream words to $hostBundleDir")
+    hostBundleOutput must include(s"wrote host replay plan to $preparedGeneratedReplayPlanJson")
+    Files.readString(preparedGeneratedReplayPlanJson).replace("\r\n", "\n") must include(
+      "\"format\": \"hjxl.host_replay_plan.v1\""
+    )
+    Files.readString(preparedGeneratedReplayPlanJson).replace("\r\n", "\n") must include("\"byte_count\": 804")
     Files.exists(hostBundleDir.resolve("prepared.h")) mustBe true
     Files.exists(hostBundleDir.resolve("prepared-stream.bin")) mustBe true
     Files.exists(hostBundleDir.resolve("prepared-last.bin")) mustBe true
+    Files.exists(hostBundleDir.resolve("prepared-manifest.json")) mustBe true
+    Files.exists(hostBundleDir.resolve("prepared-stream.csv")) mustBe true
+    Files.exists(hostBundleDir.resolve("prepared-control.csv")) mustBe true
+    compileGeneratedHeaderSmoke(hostBundleDir.resolve("prepared.h"), "HJXL_PREPARED_BUNDLE")
     val preparedIndex = Files.readString(hostBundleDir.resolve("prepared-bundle.json")).replace("\r\n", "\n")
     preparedIndex must include("\"format\": \"hjxl.host_bundle.v1\"")
+    preparedIndex must include("\"checksums\"")
+    preparedIndex must include("\"source_manifest\": \"prepared-manifest.json\"")
+    preparedIndex must include("\"header\": \"prepared.h\"")
+    preparedIndex must include("\"stream_bin\": \"prepared-stream.bin\"")
     preparedIndex must include("\"manifest_format\": \"hjxl.prepared_dct_stream_manifest.v1\"")
+    preparedIndex must include("\"byte_count\": 804")
     preparedIndex must include("\"input_data_bytes\": 4")
     preparedIndex must include("\"word_count\": 201")
+    preparedIndex must include("\"axi_lite_write_count\": 7")
+
+    val preparedBundleValidateOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        hostBundleDir.resolve("prepared-bundle.json").toString
+      )
+    )
+    preparedBundleValidateOutput must include("validated host bundle prepared with 201 stream words")
+    val invalidValidateBundleReplayPlanOutput = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        hostBundleDir.resolve("prepared-bundle.json").toString,
+        "--replay-plan-json",
+        temp.resolve("invalid-validate-bundle-plan.json").toString
+      )
+    )
+    invalidValidateBundleReplayPlanOutput.exitCode mustBe 1
+    invalidValidateBundleReplayPlanOutput.output must include(
+      "--replay-plan-json cannot be used with --validate-bundle"
+    )
+
+    val preparedReplayPlan = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--describe-bundle",
+        hostBundleDir.resolve("prepared-bundle.json").toString
+      )
+    )
+    preparedReplayPlan must include("\"format\": \"hjxl.host_replay_plan.v1\"")
+    preparedReplayPlan must include("\"checksums\"")
+    preparedReplayPlan must include("\"sha256\"")
+    preparedReplayPlan must include(s""""bundle_dir": "${cIncludePath(hostBundleDir)}"""")
+    preparedReplayPlan must include("\"header\": \"prepared.h\"")
+    preparedReplayPlan must include(s""""header_resolved": "${cIncludePath(hostBundleDir.resolve("prepared.h"))}"""")
+    preparedReplayPlan must include("\"stream_bin\": \"prepared-stream.bin\"")
+    preparedReplayPlan must include(
+      s""""stream_bin_resolved": "${cIncludePath(hostBundleDir.resolve("prepared-stream.bin"))}""""
+    )
+    preparedReplayPlan must include("\"source_manifest\": \"prepared-manifest.json\"")
+    preparedReplayPlan must include(
+      s""""source_manifest_resolved": "${cIncludePath(hostBundleDir.resolve("prepared-manifest.json"))}""""
+    )
+    preparedReplayPlan must include("\"stream_csv\": \"prepared-stream.csv\"")
+    preparedReplayPlan must include(
+      s""""stream_csv_resolved": "${cIncludePath(hostBundleDir.resolve("prepared-stream.csv"))}""""
+    )
+    preparedReplayPlan must include("\"axi_lite_csv\": \"prepared-control.csv\"")
+    preparedReplayPlan must include(
+      s""""axi_lite_csv_resolved": "${cIncludePath(hostBundleDir.resolve("prepared-control.csv"))}""""
+    )
+    preparedReplayPlan must include("\"byte_count\": 804")
+    preparedReplayPlan must include("\"write_count\": 7")
+    preparedReplayPlan must include("\"register\": \"flags\"")
+    preparedReplayPlan must include("\"data\": 526")
+    val preparedReplayPlanJson = temp.resolve("prepared-replay-plan.json")
+    val preparedReplayPlanFileOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--describe-bundle",
+        hostBundleDir.resolve("prepared-bundle.json").toString,
+        "--replay-plan-json",
+        preparedReplayPlanJson.toString
+      )
+    )
+    preparedReplayPlanFileOutput must include(s"wrote host replay plan to $preparedReplayPlanJson")
+    Files.readString(preparedReplayPlanJson).replace("\r\n", "\n") must include(
+      "\"format\": \"hjxl.host_replay_plan.v1\""
+    )
+    Files.readString(preparedReplayPlanJson).replace("\r\n", "\n") must include("\"byte_count\": 804")
+    val preparedReplayPlanValidateOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-replay-plan",
+        preparedReplayPlanJson.toString
+      )
+    )
+    preparedReplayPlanValidateOutput must include("validated host replay plan prepared with 201 stream words")
+    val invalidValidateReplayPlanOutput = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-replay-plan",
+        preparedReplayPlanJson.toString,
+        "--replay-plan-json",
+        temp.resolve("invalid-validate-replay-plan.json").toString
+      )
+    )
+    invalidValidateReplayPlanOutput.exitCode mustBe 1
+    invalidValidateReplayPlanOutput.output must include(
+      "--replay-plan-json cannot be used with --validate-replay-plan"
+    )
+    val originalPreparedReplayPlan = Files.readString(preparedReplayPlanJson)
+    Files.writeString(preparedReplayPlanJson, originalPreparedReplayPlan.replace("\"byte_count\": 804", "\"byte_count\": 803"))
+    val invalidPreparedReplayPlan = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-replay-plan",
+        preparedReplayPlanJson.toString
+      )
+    )
+    invalidPreparedReplayPlan.exitCode mustBe 1
+    invalidPreparedReplayPlan.output must include("replay plan does not match described bundle")
+    Files.writeString(preparedReplayPlanJson, originalPreparedReplayPlan)
+    val relativePreparedBundleIndex = TestPaths.repoRoot.relativize(hostBundleDir.resolve("prepared-bundle.json"))
+    val preparedReplayPlanFromRelativeIndex = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--describe-bundle",
+        relativePreparedBundleIndex.toString
+      )
+    )
+    preparedReplayPlanFromRelativeIndex must include(s""""bundle_dir": "${cIncludePath(hostBundleDir)}"""")
+    preparedReplayPlanFromRelativeIndex must include(s""""bundle_index": "$relativePreparedBundleIndex"""")
+    preparedReplayPlanFromRelativeIndex must include(
+      s""""bundle_index_resolved": "${cIncludePath(hostBundleDir.resolve("prepared-bundle.json"))}""""
+    )
+    preparedReplayPlanFromRelativeIndex must include(
+      s""""stream_bin_resolved": "${cIncludePath(hostBundleDir.resolve("prepared-stream.bin"))}""""
+    )
+    val movedReplayPlanJson = temp.resolve("moved-replay-plans").resolve("prepared-replay-plan.json")
+    val movedReplayPlanOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--describe-bundle",
+        relativePreparedBundleIndex.toString,
+        "--replay-plan-json",
+        movedReplayPlanJson.toString
+      )
+    )
+    movedReplayPlanOutput must include(s"wrote host replay plan to $movedReplayPlanJson")
+    Files.readString(movedReplayPlanJson).replace("\r\n", "\n") must include(
+      s""""bundle_index": "$relativePreparedBundleIndex""""
+    )
+    val movedReplayPlanValidateOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-replay-plan",
+        movedReplayPlanJson.toString
+      )
+    )
+    movedReplayPlanValidateOutput must include("validated host replay plan prepared with 201 stream words")
+    val legacyReplayPlanJson = hostBundleDir.resolve("prepared-legacy-replay-plan.json")
+    val legacyReplayPlan = preparedReplayPlanFromRelativeIndex
+      .replace(s""""bundle_index": "$relativePreparedBundleIndex"""", """"bundle_index": "prepared-bundle.json"""")
+      .replaceFirst("""(?m)^  "bundle_index_resolved": "[^"]+",\n""", "")
+    Files.writeString(legacyReplayPlanJson, legacyReplayPlan)
+    val legacyReplayPlanValidateOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-replay-plan",
+        legacyReplayPlanJson.toString
+      )
+    )
+    legacyReplayPlanValidateOutput must include("validated host replay plan prepared with 201 stream words")
+
+    val relocatedPreparedBundleDir = temp.resolve("relocated-prepared-host-bundle")
+    copyDirectory(hostBundleDir, relocatedPreparedBundleDir)
+    val relocatedPreparedBundleOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        relocatedPreparedBundleDir.resolve("prepared-bundle.json").toString
+      )
+    )
+    relocatedPreparedBundleOutput must include("validated host bundle prepared with 201 stream words")
+
+    val preparedBundleControl = hostBundleDir.resolve("prepared-control.csv")
+    val originalPreparedBundleControl = Files.readString(preparedBundleControl)
+    Files.writeString(preparedBundleControl, originalPreparedBundleControl.replace("28,526,15", "28,525,15"))
+    val invalidPreparedBundleControl = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        hostBundleDir.resolve("prepared-bundle.json").toString
+      )
+    )
+    invalidPreparedBundleControl.exitCode mustBe 1
+    invalidPreparedBundleControl.output must include("AXI-Lite control rows do not match source manifest")
+    Files.writeString(preparedBundleControl, originalPreparedBundleControl)
+
+    val preparedBundleIndex = hostBundleDir.resolve("prepared-bundle.json")
+    val originalPreparedIndex = Files.readString(preparedBundleIndex)
+    Files.writeString(preparedBundleIndex, originalPreparedIndex.replace("\"byte_count\": 804", "\"byte_count\": 803"))
+    val invalidPreparedByteCount = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        preparedBundleIndex.toString
+      )
+    )
+    invalidPreparedByteCount.exitCode mustBe 1
+    invalidPreparedByteCount.output must include("stream.byte_count does not match source manifest")
+    Files.writeString(preparedBundleIndex, originalPreparedIndex)
+
+    Files.writeString(
+      preparedBundleIndex,
+      originalPreparedIndex.replaceFirst(
+        "\"stream_bin\"\\s*:\\s*\"[0-9a-f]{64}\"",
+        "\"stream_bin\": \"0000000000000000000000000000000000000000000000000000000000000000\""
+      )
+    )
+    val invalidPreparedChecksum = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        preparedBundleIndex.toString
+      )
+    )
+    invalidPreparedChecksum.exitCode mustBe 1
+    invalidPreparedChecksum.output must include("checksum mismatch for stream_bin")
+    Files.writeString(preparedBundleIndex, originalPreparedIndex)
 
     val corruptedRows = Files.readString(streamCsv).replace("\r\n", "\n").trim.split("\n").toVector
     Files.writeString(streamCsv, (corruptedRows.dropRight(1) :+ corruptedRows.last.replace(",1", ",0")).mkString("\n") + "\n")
+    val bundleAfterSourceCorruption = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        hostBundleDir.resolve("prepared-bundle.json").toString
+      )
+    )
+    bundleAfterSourceCorruption must include("validated host bundle prepared with 201 stream words")
     val invalid = runCommand(
       Seq(
         "python3",
@@ -380,6 +688,7 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     val streamBin = temp.resolve("rgb-stream.bin")
     val lastBin = temp.resolve("rgb-last.bin")
     val hostBundleDir = temp.resolve("rgb-host-bundle")
+    val hostBundleNoLastDir = temp.resolve("rgb-host-bundle-no-last")
     writeRgbPfm(
       pfm,
       width = 2,
@@ -492,6 +801,13 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     headerText must include("#define HJXL_RGB_REG_FLAGS 0x0000001cu")
     headerText must include("{ 0x00000004u, 0x00000002u, 0x0000000fu }, /* xsize */")
     headerText must include("{ 0x0000001cu, 0x00000207u, 0x0000000fu }, /* flags */")
+    headerText must include(
+      "HJXL_RGB_STREAM_BYTE_COUNT == HJXL_RGB_STREAM_WORD_COUNT * HJXL_RGB_STREAM_WORD_BYTES"
+    )
+    headerText must include(
+      "sizeof(HJXL_RGB_AXI_LITE_WRITES) / sizeof(HJXL_RGB_AXI_LITE_WRITES[0]) == HJXL_RGB_AXI_LITE_WRITE_COUNT"
+    )
+    compileGeneratedHeaderSmoke(header, "HJXL_RGB")
 
     expectSuccess(
       Seq(
@@ -532,8 +848,116 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     Files.readString(hostBundleDir.resolve("rgb.h")).replace("\r\n", "\n") must include(
       "#define HJXL_RGB_BUNDLE_STREAM_BYTE_COUNT 24u"
     )
+    Files.exists(hostBundleDir.resolve("rgb-manifest.json")) mustBe true
+    Files.exists(hostBundleDir.resolve("rgb-stream.csv")) mustBe true
+    Files.exists(hostBundleDir.resolve("rgb-control.csv")) mustBe true
     Files.readAllBytes(hostBundleDir.resolve("rgb-stream.bin")).length mustBe 24
     Files.readAllBytes(hostBundleDir.resolve("rgb-last.bin")).map(_ & 0xff).toSeq mustBe Seq(0, 0, 0, 1)
+    compileGeneratedHeaderSmoke(hostBundleDir.resolve("rgb.h"), "HJXL_RGB_BUNDLE")
+    Files.readString(hostBundleDir.resolve("rgb-bundle.json")).replace("\r\n", "\n") must include(
+      "\"axi_lite_write_count\": 7"
+    )
+    Files.readString(hostBundleDir.resolve("rgb-bundle.json")).replace("\r\n", "\n") must include(
+      "\"checksums\""
+    )
+    Files.readString(hostBundleDir.resolve("rgb-bundle.json")).replace("\r\n", "\n") must include(
+      "\"byte_count\": 24"
+    )
+    Files.readString(hostBundleDir.resolve("rgb-bundle.json")).replace("\r\n", "\n") must include(
+      "\"source_manifest\": \"rgb-manifest.json\""
+    )
+
+    val rgbBundleValidateOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        hostBundleDir.resolve("rgb-bundle.json").toString
+      )
+    )
+    rgbBundleValidateOutput must include("validated host bundle rgb with 4 stream words")
+
+    val relocatedRgbBundleDir = temp.resolve("relocated-rgb-host-bundle")
+    copyDirectory(hostBundleDir, relocatedRgbBundleDir)
+    val relocatedRgbBundleOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        relocatedRgbBundleDir.resolve("rgb-bundle.json").toString
+      )
+    )
+    relocatedRgbBundleOutput must include("validated host bundle rgb with 4 stream words")
+
+    val rgbBundleControl = hostBundleDir.resolve("rgb-control.csv")
+    val originalRgbBundleControl = Files.readString(rgbBundleControl)
+    Files.writeString(rgbBundleControl, originalRgbBundleControl.replace("28,519,15", "28,518,15"))
+    val invalidRgbBundleControl = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        hostBundleDir.resolve("rgb-bundle.json").toString
+      )
+    )
+    invalidRgbBundleControl.exitCode mustBe 1
+    invalidRgbBundleControl.output must include("AXI-Lite control rows do not match source manifest")
+    Files.writeString(rgbBundleControl, originalRgbBundleControl)
+
+    Files.write(hostBundleDir.resolve("rgb-last.bin"), Array[Byte](0, 0, 1, 1))
+    val invalidBundle = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        hostBundleDir.resolve("rgb-bundle.json").toString
+      )
+    )
+    invalidBundle.exitCode mustBe 1
+    invalidBundle.output must include("TLAST sidecar does not match source manifest")
+
+    val noLastBundleOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--manifest-json",
+        manifestJson.toString,
+        "--output-dir",
+        hostBundleNoLastDir.toString,
+        "--name",
+        "rgb-no-last",
+        "--symbol-prefix",
+        "HJXL_RGB_NO_LAST",
+        "--no-last-bin"
+      )
+    )
+    noLastBundleOutput must include(s"wrote host bundle rgb-no-last with 4 stream words to $hostBundleNoLastDir")
+    Files.exists(hostBundleNoLastDir.resolve("rgb-no-last-last.bin")) mustBe false
+    compileGeneratedHeaderSmoke(hostBundleNoLastDir.resolve("rgb-no-last.h"), "HJXL_RGB_NO_LAST")
+    val noLastIndex = Files.readString(hostBundleNoLastDir.resolve("rgb-no-last-bundle.json")).replace("\r\n", "\n")
+    noLastIndex must include("\"last_bin\": null")
+    noLastIndex must not include "\"last_bin\": \""
+    val noLastValidateOutput = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--validate-bundle",
+        hostBundleNoLastDir.resolve("rgb-no-last-bundle.json").toString
+      )
+    )
+    noLastValidateOutput must include("validated host bundle rgb-no-last with 4 stream words")
+    val noLastReplayPlan = expectSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_host_bundle.py",
+        "--describe-bundle",
+        hostBundleNoLastDir.resolve("rgb-no-last-bundle.json").toString
+      )
+    )
+    noLastReplayPlan must include("\"stream_bin\": \"rgb-no-last-stream.bin\"")
+    noLastReplayPlan must include("\"last_bin\": null")
+    noLastReplayPlan must include("\"last_bin_resolved\": null")
+    noLastReplayPlan must include("\"byte_count\": 24")
 
     val corruptedRows = Files.readString(streamCsv).replace("\r\n", "\n").trim.split("\n").toVector
     Files.writeString(streamCsv, (corruptedRows.dropRight(1) :+ corruptedRows.last.replace(",1", ",0")).mkString("\n") + "\n")

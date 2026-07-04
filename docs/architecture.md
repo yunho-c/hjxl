@@ -515,12 +515,36 @@ KV260 prepared-DCT top as the current Vivado-facing top-level shape.
   stream-shell simulation before DMA buffers or KV260 drivers exist.
   `tools/hjxl_manifest_header.py --manifest-json ... --header ...` turns the
   generated manifest into C constants, stream byte-count macros, and an ordered
-  AXI-Lite write table for host-driver stubs.
+  AXI-Lite write table for host-driver stubs. The generated header includes
+  C11/C++ static assertions for stream byte-count and write-table-length
+  consistency so stale host handoff artifacts fail early.
   `tools/hjxl_stream_buffer.py --manifest-json ... --stream-bin ...` turns it
   into little-endian stream payload bytes for deterministic replay.
   `tools/hjxl_host_bundle.py --manifest-json ...
   --output-dir ... --name ...` is the one-shot command that writes both
-  artifacts plus a bundle index.
+  artifacts plus a bundle index. The bundle includes a local manifest copy and
+  replay stream/control CSV copies, with bundle-relative artifact paths in the
+  index so the directory can be moved as a unit. The index's
+  `stream.byte_count` is the intended host/DMA transfer byte count for the input
+  payload, and SHA-256 checksums cover the bundle-local artifacts. Its
+  `--validate-bundle` mode re-reads the source manifest and checks the generated
+  header, stream payload, optional TLAST sidecar, copied AXI-Lite control CSV,
+  stream metadata, AXI-Lite write count, and artifact checksums before host
+  replay. `--no-last-bin` is valid for host paths that derive TLAST from
+  transfer length; final-TLAST semantics are still validated through the
+  bundle-local stream CSV. `--describe-bundle` validates the bundle and emits
+  `hjxl.host_replay_plan.v1` JSON with bundle-relative and absolute resolved
+  stream payload paths, diagnostic stream/control CSV paths, DMA byte count,
+  optional TLAST sidecar paths, ordered AXI-Lite writes, status bits, and
+  artifact checksums for early host bring-up scripts. `bundle_index_resolved`
+  records the canonical source bundle-index path. `--replay-plan-json ...`
+  writes the same validated plan to a file during bundle generation or
+  `--describe-bundle` for scripts that should not parse stdout.
+  `--validate-replay-plan ...` regenerates the plan from the referenced bundle
+  index and fails if the saved file is stale. When present,
+  `bundle_index_resolved` is used for validation so saved plans can live outside
+  the bundle directory; older plans without it resolve `bundle_index` relative
+  to the saved plan file.
   `HjxlAxiStreamCoreSpec` drives that generated stream into RTL and decodes the
   resulting packed trace stream, and `HjxlAxiLiteStreamCoreSpec` repeats the
   flow using the generated AXI-Lite CSV to program the controlled shell, so both

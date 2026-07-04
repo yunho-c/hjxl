@@ -417,6 +417,9 @@ Read these libjxl-tiny files before making architectural changes:
   stream word count, input data width, stream byte counts, AXI-Lite register
   offsets, status bits, and the ordered config-write table. Keep it
   manifest-driven so host code does not duplicate register constants by hand.
+  The generated header includes C11/C++ static assertions for stream byte count
+  and AXI-Lite write-table length; preserve those checks when changing the host
+  handoff format.
 - `tools/hjxl_stream_buffer.py --manifest-json ... --stream-bin ...
   --last-bin ...` consumes RGB or prepared-DCT manifests and writes
   little-endian stream payload bytes plus an optional one-byte-per-word TLAST
@@ -425,8 +428,32 @@ Read these libjxl-tiny files before making architectural changes:
 - `tools/hjxl_host_bundle.py --manifest-json ... --output-dir ... --name ...`
   is the preferred one-shot handoff command. It writes the C header, stream
   payload, optional TLAST sidecar, and a `*-bundle.json` artifact index from the
-  same manifest. Use the lower-level header/buffer tools only when tests need
-  to check one artifact in isolation.
+  same manifest. It also copies a bundle-local manifest plus replay
+  stream/control CSVs and records relative artifact paths so the bundle
+  directory can move as a unit. The index's `stream.byte_count` is the intended
+  host/DMA transfer byte count for the input payload, and its SHA-256 checksums
+  cover the bundle-local artifacts. `--no-last-bin` is valid only when the host
+  path derives TLAST from transfer length; bundle validation still checks
+  final-TLAST semantics through the stream CSV. Use the lower-level
+  header/buffer tools only when tests need to check one artifact in isolation. Run
+  `tools/hjxl_host_bundle.py --validate-bundle ...` before host replay; it
+  checks the bundle index, generated header, stream payload, optional TLAST
+  sidecar, copied AXI-Lite control CSV, stream metadata, and AXI-Lite write
+  count against the source manifest, then verifies artifact checksums.
+  `tools/hjxl_host_bundle.py --describe-bundle ...` validates the bundle and
+  prints `hjxl.host_replay_plan.v1` JSON with bundle-relative and absolute resolved
+  stream payload paths, diagnostic stream/control CSV paths, DMA byte count,
+  optional TLAST sidecar paths, ordered AXI-Lite writes, status bits, and
+  artifact checksums. `bundle_index_resolved` is the canonical bundle-index
+  path for host scripts. Use that shape for host bring-up scripts before
+  writing platform-specific drivers. Add `--replay-plan-json ...` during bundle
+  generation or `--describe-bundle` when a host script needs a stable
+  replay-plan file instead of stdout. Run
+  `tools/hjxl_host_bundle.py --validate-replay-plan ...` before consuming a
+  saved plan; it regenerates the plan from the referenced bundle index and
+  fails if the saved file is stale. When present, `bundle_index_resolved` is
+  used for validation so saved plans can live outside the bundle directory;
+  older plans without it resolve `bundle_index` relative to the saved plan file.
 - `tools/hjxl_quant_trace_to_prepared_tokens.py --trace-csv ... --width ...
   --height ... --dc-csv ... --ac-csv ...` converts quantization traces into the
   prepared-token simulator CSVs. It requires complete `QuantDc`,
@@ -484,7 +511,9 @@ Read these libjxl-tiny files before making architectural changes:
   including focused full AC-token captures.
   `StreamTraceToolSpec` covers this helper, its handoff into
   `tools/hjxl_trace_tokens.py`, direct `--stream-csv` and `--stream-bin` token
-  extraction, and the `tools/hjxl_trace_to_codestream.py` packed-stream paths.
+  extraction, generated host-header compile smokes when `cc` or `c++` is
+  available, portable host bundle relocation validation, and the
+  `tools/hjxl_trace_to_codestream.py` packed-stream paths.
 - `tools/hjxl_rgb_stream.py --pfm ... --stream-csv ...` converts RGB PFM files
   into the raster `data,last` input stream expected by `HjxlAxiStreamCore` and
   `HjxlAxiLiteStreamCore`. It restores top-to-bottom PFM row order, quantizes

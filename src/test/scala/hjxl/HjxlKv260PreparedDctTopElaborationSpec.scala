@@ -85,6 +85,8 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers {
     }
     text must include("output [127:0] m_axis_trace_tdata")
     text must include("output [15:0]")
+    text must include("assign m_axis_trace_tdata = {40'h0, _core_io_trace_bits_data};")
+    text must include("assign m_axis_trace_tkeep = 16'h7FF;")
     text must include("module HjxlPreparedDctAxiLiteStreamCore")
   }
 }

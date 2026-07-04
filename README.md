@@ -322,7 +322,8 @@ python3 tools/hjxl_manifest_header.py \
 The header contains the manifest format, stream word count, input data width,
 stream word/byte counts, register offsets, status/control bit positions, and an
 ordered `address,data,strb` write table derived from the manifest's AXI-Lite
-config.
+config. C11/C++ consumers also get compile-time assertions tying stream byte
+count and AXI-Lite write-table length back to the generated macros.
 Generate replayable stream payload bytes from the same manifest:
 
 ```sh
@@ -344,12 +345,57 @@ python3 tools/hjxl_host_bundle.py \
   --manifest-json build-codex/fixtures/gradient-17x9-rgb-manifest.json \
   --output-dir build-codex/fixtures/gradient-17x9-rgb-host \
   --name gradient-17x9-rgb \
-  --symbol-prefix HJXL_RGB_BUNDLE
+  --symbol-prefix HJXL_RGB_BUNDLE \
+  --replay-plan-json build-codex/fixtures/gradient-17x9-rgb-host/replay-plan.json
 ```
 
 The resulting `*-bundle.json` records the manifest format, generated file
-paths, stream word count, input stream byte width, and symbol prefix so host
-scripts do not need to rediscover the bundle layout.
+paths, stream word count, input stream byte width, total stream byte count for
+DMA transfers, and symbol prefix so host scripts do not need to rediscover the
+bundle layout. It also records SHA-256 checksums for the bundle-local artifacts.
+The bundle contains a local manifest copy plus replay stream/control CSV copies,
+and the index uses bundle-relative artifact paths so the directory can be moved
+as a unit. Use `--no-last-bin` only for host paths that derive TLAST from the
+DMA transfer length; validation still checks final-TLAST semantics through the
+bundle-local stream CSV.
+Validate the handoff bundle before using it from host code:
+
+```sh
+python3 tools/hjxl_host_bundle.py \
+  --validate-bundle build-codex/fixtures/gradient-17x9-rgb-host/gradient-17x9-rgb-bundle.json
+```
+
+Bundle validation re-reads the source manifest, checks the generated header,
+stream payload, optional TLAST sidecar, copied AXI-Lite control CSV, stream
+metadata, AXI-Lite write count, and SHA-256 checksums against the manifest, and
+fails on stale or hand-edited artifacts.
+To inspect the host replay sequence without writing a driver yet, emit a
+machine-readable replay plan:
+
+```sh
+python3 tools/hjxl_host_bundle.py \
+  --describe-bundle build-codex/fixtures/gradient-17x9-rgb-host/gradient-17x9-rgb-bundle.json
+```
+
+The replay plan validates the bundle first, then prints bundle-relative and
+absolute resolved stream payload paths, diagnostic stream/control CSV paths, DMA
+byte count, optional TLAST sidecar paths, ordered AXI-Lite writes, status bit
+positions, the canonical `bundle_index_resolved` path, and artifact checksums
+as `hjxl.host_replay_plan.v1` JSON.
+Add `--replay-plan-json path/to/plan.json` to write the same validated replay
+plan to a file for host scripts; it can be used with either bundle generation
+or `--describe-bundle`. Validate a saved plan before replay:
+
+```sh
+python3 tools/hjxl_host_bundle.py \
+  --validate-replay-plan build-codex/fixtures/gradient-17x9-rgb-host/replay-plan.json
+```
+
+Replay-plan validation regenerates the plan from the referenced bundle index
+and fails if the saved file is stale. When `bundle_index_resolved` is present,
+validation uses that canonical path so saved plans can live outside the bundle
+directory; older plans without it fall back to resolving `bundle_index` relative
+to the saved plan file.
 
 `HjxlAxiLiteStreamCore` exposes the same input/output streams, but drives
 `FrameConfig` through 32-bit AXI-Lite registers:
@@ -487,7 +533,8 @@ Use `tools/hjxl_manifest_header.py` on the same prepared-DCT manifest to emit
 host constants and the ordered control-write table for the current
 `HjxlKv260PreparedDctTop` control plane. Use `tools/hjxl_stream_buffer.py` on
 that manifest to emit the 32-bit little-endian prepared-block stream payload
-and optional TLAST sidecar.
+and optional TLAST sidecar, or prefer `tools/hjxl_host_bundle.py` to generate
+and `--validate-bundle` to verify the complete prepared-DCT host handoff.
 `HjxlPreparedDctAxiStreamCoreSpec` drives that generated stream into RTL and
 checks that the resulting packed token trace stream assembles to the same frame
 and bare codestream bytes as libjxl-tiny's direct DCT-only path.

@@ -90,12 +90,7 @@ def _validate_rows(
             raise ValueError(f"{source}: last asserted before final row at index {index}")
 
 
-def write_stream_buffers(
-    *,
-    manifest_path: Path,
-    stream_bin: Path,
-    last_bin: Path | None,
-) -> tuple[int, int]:
+def stream_rows_from_manifest(manifest_path: Path) -> tuple[list[tuple[int, bool]], int, int]:
     with manifest_path.open("r", encoding="utf-8") as handle:
         manifest = json.load(handle)
     manifest_format = str(manifest.get("format", ""))
@@ -116,6 +111,16 @@ def write_stream_buffers(
         expected_word_count=expected_word_count,
         input_data_bits=input_data_bits,
     )
+    return rows, input_data_bits, input_data_bytes
+
+
+def write_stream_buffers(
+    *,
+    manifest_path: Path,
+    stream_bin: Path,
+    last_bin: Path | None,
+) -> tuple[int, int]:
+    rows, _, input_data_bytes = stream_rows_from_manifest(manifest_path)
 
     stream_bin.parent.mkdir(parents=True, exist_ok=True)
     with stream_bin.open("wb") as handle:
