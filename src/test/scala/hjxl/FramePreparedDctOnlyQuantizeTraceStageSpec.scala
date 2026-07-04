@@ -159,6 +159,7 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
       dut: FramePreparedDctOnlyQuantizeTraceStage,
       rows: Seq[ExpectedTrace],
       baseOrdinal: Int,
+      finalOrdinal: Int,
       observedRows: scala.collection.mutable.ArrayBuffer[ExpectedTrace]
   ): Unit = {
     for ((trace, localOrdinal) <- rows.zipWithIndex) {
@@ -180,6 +181,7 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
         withClue(s" value observed=$observedValue expected=${trace.value}") {
           observedValue mustBe trace.value
         }
+        dut.io.traceLast.expect((baseOrdinal + localOrdinal == finalOrdinal).B)
       }
       dut.clock.step()
     }
@@ -615,7 +617,7 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
 
       for (((block, rows), blockIndex) <- blocks.zip(expected.grouped(recordsPerBlock)).zipWithIndex) {
         driveInput(dut, block)
-        expectTraceRows(dut, rows, blockIndex * recordsPerBlock, observed)
+        expectTraceRows(dut, rows, blockIndex * recordsPerBlock, blocks.length * recordsPerBlock - 1, observed)
       }
       dut.io.trace.valid.expect(false.B)
       dut.io.input.ready.expect(true.B)

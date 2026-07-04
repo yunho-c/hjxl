@@ -43,6 +43,25 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     dut.io.input.valid.poke(false.B)
   }
 
+  private def expectTraceLastOnlyOnFinalBeat(
+      dut: HjxlCore,
+      totalBeats: Int,
+      finalStage: Int,
+      finalGroup: Int,
+      finalIndex: Int
+  ): Unit = {
+    for (ordinal <- 0 until totalBeats) {
+      if (ordinal > 0) {
+        dut.clock.step()
+      }
+      dut.io.trace.valid.expect(true.B)
+      dut.io.traceLast.expect((ordinal == totalBeats - 1).B)
+    }
+    dut.io.trace.bits.stage.expect(finalStage.U)
+    dut.io.trace.bits.group.expect(finalGroup.U)
+    dut.io.trace.bits.index.expect(finalIndex.U)
+  }
+
   "HjxlCore routes to padded trace when XYB is disabled" in {
     simulate(new HjxlCore(config, traceRoute = TraceStage.InputPadded)) { dut =>
       pokeConfig(dut, enableXyb = false)
@@ -56,6 +75,16 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.trace.bits.stage.expect(TraceStage.InputPadded.U)
       dut.io.trace.bits.index.expect(0.U)
       dut.io.trace.bits.value.expect(64.S)
+      dut.io.traceLast.expect(false.B)
+      for (_ <- 1 until 191) {
+        dut.clock.step()
+        dut.io.traceLast.expect(false.B)
+      }
+      dut.clock.step()
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.stage.expect(TraceStage.InputPadded.U)
+      dut.io.trace.bits.index.expect(191.U)
+      dut.io.traceLast.expect(true.B)
     }
   }
 
@@ -71,6 +100,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.trace.valid.expect(true.B)
       dut.io.trace.bits.stage.expect(TraceStage.Xyb.U)
       dut.io.trace.bits.index.expect(0.U)
+      expectTraceLastOnlyOnFinalBeat(dut, totalBeats = 192, finalStage = TraceStage.Xyb, finalGroup = 0, finalIndex = 191)
     }
   }
 
@@ -86,6 +116,13 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.trace.valid.expect(true.B)
       dut.io.trace.bits.stage.expect(TraceStage.RawDct8x8.U)
       dut.io.trace.bits.index.expect(0.U)
+      expectTraceLastOnlyOnFinalBeat(
+        dut,
+        totalBeats = 192,
+        finalStage = TraceStage.RawDct8x8,
+        finalGroup = 0,
+        finalIndex = 191
+      )
     }
   }
 
@@ -102,6 +139,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.trace.bits.stage.expect(TraceStage.AcStrategy.U)
       dut.io.trace.bits.index.expect(0.U)
       dut.io.trace.bits.value.expect(AcStrategyCode.encoded(AcStrategyCode.Dct, isFirstBlock = true).S)
+      dut.io.traceLast.expect(true.B)
     }
   }
 
@@ -117,6 +155,13 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.trace.valid.expect(true.B)
       dut.io.trace.bits.stage.expect(TraceStage.QuantizedAc.U)
       dut.io.trace.bits.index.expect(0.U)
+      expectTraceLastOnlyOnFinalBeat(
+        dut,
+        totalBeats = 198,
+        finalStage = TraceStage.NumNonzeros,
+        finalGroup = 0,
+        finalIndex = 2
+      )
     }
   }
 

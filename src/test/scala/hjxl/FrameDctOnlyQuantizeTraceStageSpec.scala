@@ -150,6 +150,8 @@ class FrameDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers with 
 
       val expectedDc = expectedQuantizedDc(gray)
       dut.io.trace.ready.poke(true.B)
+      var ordinal = 0
+      val expectedRecords = 2 * recordsPerBlock
       for (block <- 0 until 2) {
         for (index <- 0 until 3 * blockSize) {
           dut.io.trace.valid.expect(true.B)
@@ -157,6 +159,8 @@ class FrameDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers with 
           dut.io.trace.bits.group.expect(block.U)
           dut.io.trace.bits.index.expect(index.U)
           dut.io.trace.bits.value.expect(0.S)
+          dut.io.traceLast.expect((ordinal == expectedRecords - 1).B)
+          ordinal += 1
           dut.clock.step()
         }
         for (channel <- 0 until 3) {
@@ -165,6 +169,8 @@ class FrameDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers with 
           dut.io.trace.bits.group.expect(block.U)
           dut.io.trace.bits.index.expect(channel.U)
           dut.io.trace.bits.value.expect(expectedDc(channel).S)
+          dut.io.traceLast.expect((ordinal == expectedRecords - 1).B)
+          ordinal += 1
           dut.clock.step()
         }
         for (channel <- 0 until 3) {
@@ -173,10 +179,13 @@ class FrameDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers with 
           dut.io.trace.bits.group.expect(block.U)
           dut.io.trace.bits.index.expect(channel.U)
           dut.io.trace.bits.value.expect(0.S)
+          dut.io.traceLast.expect((ordinal == expectedRecords - 1).B)
+          ordinal += 1
           dut.clock.step()
         }
       }
 
+      ordinal must be(expectedRecords)
       dut.io.trace.valid.expect(false.B)
       dut.io.input.ready.expect(true.B)
       dut.io.overflow.expect(false.B)

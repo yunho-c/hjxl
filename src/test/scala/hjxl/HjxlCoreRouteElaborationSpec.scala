@@ -52,12 +52,14 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must include("io_config_tokenSelect")
     text must include("io_trace_bits_stage")
     text must include("io_trace_bits_value")
+    text must include("io_traceLast")
   }
 
   "HjxlCore default all-route elaboration keeps the full AC-token scheduler out" in {
     val files = emittedSystemVerilog(HjxlCoreTraceRoute.All)
     val text = combinedText(files)
     text must include("module HjxlCore")
+    text must include("io_traceLast")
     text must not include "module FrameDctOnlyAcTokenTraceStage"
   }
 }

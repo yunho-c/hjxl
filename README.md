@@ -43,7 +43,8 @@ block and emits quantized AC, quantized DC, and nonzero counts for all channels.
 `DctOnlyQuantizeTraceStage` exposes the same prepared-block result as trace
 records for simulation. `FramePreparedDctOnlyQuantizeTraceStage` schedules
 complete prepared DCT-only blocks in raster order through that quantizer and
-emits frame-shaped `QuantizedAc`, `QuantDc`, and `NumNonzeros` traces. The
+emits frame-shaped `QuantizedAc`, `QuantDc`, and `NumNonzeros` traces with
+`traceLast` on the final prepared quantization record. The
 prepared-DCT frame boundary uses Q16 DCT coefficients by default so its CFL and
 quantization path can match libjxl-tiny's float reference on the oracle fixture;
 the RGB-input DCT path still emits Q12 coefficients.
@@ -99,9 +100,11 @@ simulation tests to instantiate only the selected route.
 the heavy scheduler while the default all-route shell omits it. The direct
 AC-token scheduler behavior is covered by `FrameDctOnlyAcTokenTraceStageSpec`.
 The default still builds the all-route integration shell.
-`HjxlAxiStreamCore` is the first hardware-facing shell: it accepts raster RGB
-pixels on an AXI4-Stream-shaped input, generates core `x/y` coordinates, and
-packs `StageTrace` rows onto an output stream.
+Every current frame trace scheduler/top exposes a `traceLast` sideband on its
+final frame trace beat. `HjxlAxiStreamCore` is the first hardware-facing shell:
+it accepts raster RGB pixels on an AXI4-Stream-shaped input, generates core
+`x/y` coordinates, packs `StageTrace` rows onto an output stream, and maps
+`traceLast` to output TLAST for single-frame capture.
 
 ## Requirements
 
@@ -241,10 +244,10 @@ For generated AXI-stream shells, input pixels are raster ordered. Pack
 `protocolError`; pulse `clearProtocolError` to clear it without resetting the
 core. Output trace words are packed as `{value,index,group,stage}`, with
 `stage` in the low eight bits. Output `last` is asserted on the final trace
-word for each current route: fixed-size padded input, XYB, raw DCT, quantized
-traces, DC tokens, AC-metadata tokens, and AC strategy use lengths derived from
-`FrameConfig`, while the variable-length full AC-token route uses the AC-token
-scheduler's explicit final-token sideband.
+word for each current route: padded input, XYB, raw DCT, quantized traces, DC
+tokens, AC-metadata tokens, AC strategy, and the variable-length full AC-token
+route all expose a scheduler `traceLast` sideband that the stream wrapper
+carries to TLAST.
 
 Convert packed AXI-stream trace captures back into the StageTrace CSV shape
 used by the host tools:

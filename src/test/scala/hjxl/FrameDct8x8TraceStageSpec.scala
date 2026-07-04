@@ -148,13 +148,16 @@ class FrameDct8x8TraceStageSpec extends AnyFreeSpec with Matchers with ChiselSim
 
   private def expectBlocks(dut: FrameDct8x8TraceStage, blocks: Seq[Seq[Int]]): Unit = {
     dut.io.trace.ready.poke(true.B)
+    val lastBlock = blocks.length - 1
     for ((coefficients, blockIndex) <- blocks.zipWithIndex) {
+      val lastCoefficient = coefficients.length - 1
       for ((value, index) <- coefficients.zipWithIndex) {
         dut.io.trace.valid.expect(true.B)
         dut.io.trace.bits.stage.expect(TraceStage.RawDct8x8.U)
         dut.io.trace.bits.group.expect(blockIndex.U)
         dut.io.trace.bits.index.expect(index.U)
         math.abs(dut.io.trace.bits.value.peekValue().asBigInt.toInt - value) must be <= 80
+        dut.io.traceLast.expect((blockIndex == lastBlock && index == lastCoefficient).B)
         dut.clock.step()
       }
     }

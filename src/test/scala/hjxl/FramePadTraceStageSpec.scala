@@ -77,6 +77,7 @@ class FramePadTraceStageSpec extends AnyFreeSpec with Matchers with ChiselSim {
         dut.io.trace.bits.stage.expect(TraceStage.InputPadded.U)
         dut.io.trace.bits.index.expect(index.U)
         dut.io.trace.bits.value.expect(value.S)
+        dut.io.traceLast.expect((index == expected.length - 1).B)
         dut.clock.step()
       }
       dut.io.trace.valid.expect(false.B)

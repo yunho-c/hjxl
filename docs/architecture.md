@@ -20,9 +20,11 @@ pipeline in a form suitable for RTL partitioning:
 7. Optimize entropy tables and serialize frame sections into a bare JXL
    codestream.
 
-Early RTL work should stop at traceable stage outputs and tokens. Software can
-consume those tokens to produce final codestream bytes until entropy coding and
-bit assembly are worth moving into hardware.
+Early RTL work should stop at traceable stage outputs and tokens. Every current
+trace scheduler also emits a `traceLast` sideband on its final frame record,
+and the AXI-stream shell maps that sideband to output TLAST for capture.
+Software can consume those tokens to produce final codestream bytes until
+entropy coding and bit assembly are worth moving into hardware.
 
 ## Hardware Contracts
 
@@ -148,7 +150,8 @@ stream shell as the current KV260/Vivado-facing top-level shape.
   so prepared CFL residual subtraction and quantization can match libjxl-tiny's
   floating reference fixture exactly. Its output boundary is frame-shaped
   `QuantizedAc`, `QuantDc`, and `NumNonzeros` trace records with `trace.group`
-  equal to the raster block ordinal.
+  equal to the raster block ordinal, and `traceLast` marks the final
+  `NumNonzeros` record of the final prepared raster block.
 - `FramePreparedDctOnlyQuantizeTokenTraceStage` is the first direct RTL bridge
   from prepared DCT-only block inputs to fixed all-DCT logical token traces. It
   runs `DctOnlyQuantizeBlock`, buffers quantized DC/AC/nonzero frame state, and
@@ -250,9 +253,9 @@ stream shell as the current KV260/Vivado-facing top-level shape.
   when SystemVerilog for the full AC-token path is needed as a dedicated top;
   use `new HjxlCore(traceRoute = TraceStage.AcTokens)` or
   `sbt 'runMain hjxl.ElaborateCoreAcTokens'` when the public core IO shell is
-  useful for focused simulation or integration. Token schedulers expose
-  `traceLast`; `HjxlCore` carries it for DC, AC-metadata, and focused AC-token
-  routes, and the dedicated AC top exposes it alongside the trace stream.
+  useful for focused simulation or integration. Every current frame trace
+  scheduler/top exposes `traceLast`; `HjxlCore` carries it for the selected
+  route, and the dedicated AC top exposes it alongside the trace stream.
   `HjxlCoreRouteElaborationSpec` guards that split so the default all-route
   shell stays smaller.
 - `HjxlAxiStreamCore` wraps `HjxlCore` in an AXI4-Stream-shaped raster input
@@ -261,16 +264,15 @@ stream shell as the current KV260/Vivado-facing top-level shape.
   frame length, and exposes sticky `protocolError` plus a `clearProtocolError`
   input for host recovery. Output data packs `{value,index,group,stage}` with
   `stage` in the low eight bits. Output `last` is asserted on each route's
-  final frame trace word: fixed-size padded input, XYB, raw DCT, quantized
-  traces, DC tokens, AC-metadata tokens, and AC strategy use lengths derived
-  from `FrameConfig`, while the variable-length full AC-token route uses the
-  scheduler's explicit final-token sideband. Use
+  final frame trace word by carrying the selected scheduler's `traceLast`
+  sideband to TLAST. Use
   `sbt 'runMain hjxl.ElaborateAxiStream'` for the default shell or
   `sbt 'runMain hjxl.ElaborateAxiStreamCoreAcTokens'` for the focused
   full-AC-token shell.
 - `ElaboratePreparedDctOnlyQuantize` generates standalone SystemVerilog for the
   prepared-DCT quantization scheduler. Use it when the integration boundary is
   after DCT/AQ/CFL scalar generation but before quantized DC/AC tokenization.
+  The generated top exposes `traceLast` for capture boundaries.
 - `ElaboratePreparedDctOnlyQuantizeTokens` generates standalone SystemVerilog
   for the direct prepared-DCT quantize-to-token wrapper. This is the closest
   current RTL artifact to a prepared-transform encoder core, and it exposes

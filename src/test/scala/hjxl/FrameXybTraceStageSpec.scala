@@ -103,6 +103,7 @@ class FrameXybTraceStageSpec extends AnyFreeSpec with Matchers with ChiselSim {
         dut.io.trace.bits.stage.expect(TraceStage.Xyb.U)
         dut.io.trace.bits.index.expect(index.U)
         math.abs(dut.io.trace.bits.value.peekValue().asBigInt.toInt - value) must be <= 6
+        dut.io.traceLast.expect((index == expected.length - 1).B)
         dut.clock.step()
       }
       dut.io.trace.valid.expect(false.B)

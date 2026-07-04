@@ -59,6 +59,7 @@ class FrameAcStrategyTraceStageSpec extends AnyFreeSpec with Matchers with Chise
         dut.io.trace.bits.group.expect(0.U)
         dut.io.trace.bits.index.expect(index.U)
         dut.io.trace.bits.value.expect(expectedStrategy.S)
+        dut.io.traceLast.expect((index == expectedBlocks - 1).B)
         dut.clock.step()
       }
       dut.io.trace.valid.expect(false.B)

@@ -185,9 +185,14 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   io.traceLast := MuxCase(
     false.B,
     Seq(
+      useInputTrace -> inputTrace.map(_.io.traceLast).getOrElse(false.B),
+      useXybTrace -> xybTrace.map(_.io.traceLast).getOrElse(false.B),
+      useDctTrace -> dctTrace.map(_.io.traceLast).getOrElse(false.B),
+      useQuantTrace -> quantTrace.map(_.io.traceLast).getOrElse(false.B),
       useDcTokenTrace -> dcTokenTrace.map(_.io.traceLast).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.traceLast).getOrElse(false.B),
-      useAcTokenTrace -> acTokenTrace.map(_.io.traceLast).getOrElse(false.B)
+      useAcTokenTrace -> acTokenTrace.map(_.io.traceLast).getOrElse(false.B),
+      useAcStrategyTrace -> acStrategyTrace.map(_.io.traceLast).getOrElse(false.B)
     )
   )
 }

@@ -21,6 +21,7 @@ class FrameAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
@@ -55,6 +56,7 @@ class FrameAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   io.trace.bits.group := 0.U
   io.trace.bits.index := emitIndex
   io.trace.bits.value := AcStrategyCode.encoded(AcStrategyCode.Dct, isFirstBlock = true).S
+  io.traceLast := io.trace.valid && totalBlocks =/= 0.U && emitIndex === totalBlocks - 1.U
 
   when(configOutOfRange) {
     received := 0.U

@@ -42,8 +42,6 @@ class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCore
   val inputFrameActive = RegInit(false.B)
   val inputWidth = RegInit(0.U(c.coordBits.W))
   val inputHeight = RegInit(0.U(c.coordBits.W))
-  val traceWidth = RegInit(0.U(c.coordBits.W))
-  val traceHeight = RegInit(0.U(c.coordBits.W))
   val protocolError = RegInit(false.B)
 
   val configWidth = io.config.xsize
@@ -79,8 +77,6 @@ class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCore
       x := 0.U
       y := 0.U
       inputFrameActive := false.B
-      traceWidth := activeInputWidth
-      traceHeight := activeInputHeight
     }.elsewhen(x === lastX) {
       x := 0.U
       y := y + 1.U
@@ -97,49 +93,6 @@ class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCore
     core.io.trace.bits.group,
     core.io.trace.bits.stage
   )
-
-  private def ceilToBlock(value: UInt): UInt = {
-    val block = HjxlConstants.BlockDim.U
-    ((value + (block - 1.U)) / block) * block
-  }
-
-  private def lastIndex(index: UInt, count: UInt): Bool =
-    count =/= 0.U && index === count - 1.U
-
-  val tracePaddedWidth = ceilToBlock(traceWidth)
-  val tracePaddedHeight = ceilToBlock(traceHeight)
-  val tracePaddedPixels = tracePaddedWidth * tracePaddedHeight
-  val traceBlocks = (tracePaddedWidth >> log2Ceil(HjxlConstants.BlockDim)) *
-    (tracePaddedHeight >> log2Ceil(HjxlConstants.BlockDim))
-  val traceTilesRawX = (traceWidth + (HjxlConstants.TileDim - 1).U) / HjxlConstants.TileDim.U
-  val traceTilesRawY = (traceHeight + (HjxlConstants.TileDim - 1).U) / HjxlConstants.TileDim.U
-  val traceTilesX = Mux(traceTilesRawX === 0.U, 1.U, traceTilesRawX)
-  val traceTilesY = Mux(traceTilesRawY === 0.U, 1.U, traceTilesRawY)
-  val traceTiles = traceTilesX * traceTilesY
-  val trace = core.io.trace.bits
-
-  val paddedTraceLast =
-    (trace.stage === TraceStage.InputPadded.U || trace.stage === TraceStage.Xyb.U) &&
-      lastIndex(trace.index, tracePaddedPixels * 3.U)
-  val rawDctTraceLast =
-    trace.stage === TraceStage.RawDct8x8.U &&
-      lastIndex(trace.group, traceBlocks) && lastIndex(trace.index, (HjxlConstants.BlockDim * HjxlConstants.BlockDim * 3).U)
-  val quantizedTraceLast =
-    trace.stage === TraceStage.NumNonzeros.U && lastIndex(trace.group, traceBlocks) && trace.index === 2.U
-  val dcTokenTraceLast =
-    trace.stage === TraceStage.DcTokens.U && (lastIndex(trace.group, traceBlocks * 3.U) || core.io.traceLast)
-  val acMetadataTraceLast =
-    trace.stage === TraceStage.AcMetadataTokens.U &&
-      (lastIndex(trace.group, traceTiles * 2.U + traceBlocks * 3.U) || core.io.traceLast)
-  val acStrategyTraceLast =
-    trace.stage === TraceStage.AcStrategy.U && lastIndex(trace.index, traceBlocks)
-  val acTokenTraceLast =
-    trace.stage === TraceStage.AcTokens.U && core.io.traceLast
-
-  io.trace.bits.last := core.io.trace.valid && (
-    paddedTraceLast || rawDctTraceLast || quantizedTraceLast ||
-      dcTokenTraceLast || acMetadataTraceLast || acStrategyTraceLast ||
-      acTokenTraceLast
-  )
+  io.trace.bits.last := core.io.trace.valid && core.io.traceLast
   io.protocolError := protocolError
 }

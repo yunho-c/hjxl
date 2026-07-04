@@ -25,6 +25,7 @@ class FramePreparedDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) exten
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new DctOnlyQuantizeBlockInput(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
@@ -62,6 +63,12 @@ class FramePreparedDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) exten
   io.input.ready := accepting
   io.trace.valid := child.io.trace.valid
   io.trace.bits := child.io.trace.bits
+  io.traceLast :=
+    child.io.trace.valid &&
+      totalBlocks =/= 0.U &&
+      currentBlock === totalBlocks - 1.U &&
+      child.io.trace.bits.stage === TraceStage.NumNonzeros.U &&
+      child.io.trace.bits.index === 2.U
   io.busy := state === active || child.io.busy
   io.overflow := overflow || configOutOfRange
 

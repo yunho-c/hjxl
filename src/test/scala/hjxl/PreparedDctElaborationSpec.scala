@@ -94,7 +94,7 @@ class PreparedDctElaborationSpec extends AnyFreeSpec with Matchers {
       "FramePreparedDctOnlyQuantizeTraceStage",
       new FramePreparedDctOnlyQuantizeTraceStage(config)
     )
-    expectPreparedDctPorts(quantize, expectTraceLast = false)
+    expectPreparedDctPorts(quantize, expectTraceLast = true)
 
     val quantizeTokens = elaborateAndRead(
       "FramePreparedDctOnlyQuantizeTokenTraceStage",

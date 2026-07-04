@@ -27,6 +27,7 @@ class FrameDct8x8TraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
@@ -123,6 +124,7 @@ class FrameDct8x8TraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   io.trace.bits.group := emitBlock(c.groupBits - 1, 0)
   io.trace.bits.index := withinBlockIndex
   io.trace.bits.value := sample.asSInt.pad(c.traceValueBits)
+  io.traceLast := io.trace.valid && totalBlocks =/= 0.U && emitIndex === totalBlocks * coefficientsPerBlock.U - 1.U
 
   when(configOutOfRange) {
     received := 0.U

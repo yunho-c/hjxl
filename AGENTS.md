@@ -46,9 +46,8 @@ Use a hardware/software split:
   words as `{value,index,group,stage}` with `stage` in the low eight bits.
   Input data packs R/G/B in consecutive `pixelBits` fields with R in the low
   bits. `protocolError` is sticky and cleared by `clearProtocolError`. Output
-  `last` is valid for every current route: fixed-size routes derive their frame
-  length from `FrameConfig`, and the variable-length full AC-token route uses
-  the scheduler's explicit final-token sideband.
+  `last` is valid for every current route and follows the selected scheduler's
+  `traceLast` final-beat sideband.
 - Keep stage outputs traceable against libjxl-tiny names and array shapes.
 
 Use stage-tolerant accuracy:
@@ -89,13 +88,15 @@ Read these libjxl-tiny files before making architectural changes:
 
 - `FramePadTraceStage` is the first real libjxl-tiny stage. It emits
   `input_padded` samples in channel-first order and implements right/bottom edge
-  replication to the next 8x8 block boundary.
+  replication to the next 8x8 block boundary. Its `traceLast` output marks the
+  final padded B-channel sample.
 - `RgbToXybApprox` is a standalone Q8 linear-RGB to Q12 XYB approximation. It
   computes mixed absorbance at Q10 precision, linearly interpolates a Q8
   cube-root lookup table, then emits Q12 XYB. Treat it as an accuracy-tunable
   first pass, not final bit-exact libjxl-tiny parity.
 - `FrameXybTraceStage` buffers and pads the frame, reuses `RgbToXybApprox`, and
-  emits channel-first XYB trace samples. `HjxlCore` selects this stage when
+  emits channel-first XYB trace samples. Its `traceLast` output marks the final
+  padded B-channel sample. `HjxlCore` selects this stage when
   `FrameConfig.enableXyb` is true.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive. It should be reused for
   the future 8x8 transform stage instead of writing a separate transform shape
@@ -114,7 +115,8 @@ Read these libjxl-tiny files before making architectural changes:
 - `FrameDct8x8TraceStage` buffers the RGB frame, converts each padded 8x8 block
   to approximate XYB, runs `Dct8x8Approx` for all three channels, and emits
   `RawDct8x8` trace samples. `trace.group` is the raster block index and
-  `trace.index` is `channel * 64 + coefficient`.
+  `trace.index` is `channel * 64 + coefficient`; `traceLast` marks the final
+  coefficient of the final padded raster block.
 - `QuantizeDct8x8Block` is a standalone DCT-only AC quantization primitive. It
   takes one channel's Q12 DCT coefficients plus raw quant, AC scale Q16, and QM
   multiplier Q16 inputs, then emits quantized coefficients and a DC-excluding
@@ -158,8 +160,10 @@ Read these libjxl-tiny files before making architectural changes:
   fractional bits (Q16 by default) plus raw quant, AC scale, reciprocal AC
   scale, inverse DC factors, X quant-matrix multiplier, and CFL multipliers. It
   emits frame-shaped `QuantizedAc`, `QuantDc`, and `NumNonzeros` traces with
-  `trace.group = raster block ordinal`. Prefer this boundary when moving
-  upstream from prepared quantized-token inputs toward DCT/AQ/CFL integration.
+  `trace.group = raster block ordinal`; `traceLast` marks the final
+  `NumNonzeros` record of the final prepared raster block. Prefer this boundary
+  when moving upstream from prepared quantized-token inputs toward DCT/AQ/CFL
+  integration.
 - `FramePreparedDctOnlyQuantizeTokenTraceStage` is the direct prepared-DCT
   quantize-to-token RTL wrapper. Feed it the same prepared DCT-only raster block
   inputs; it runs `DctOnlyQuantizeBlock`, buffers quantized frame state, then
@@ -178,7 +182,8 @@ Read these libjxl-tiny files before making architectural changes:
   plus `fixedInvQacQ16` overrides only the AC scale path; zero scale uses the
   distance lookup scale and reciprocal. `FrameConfig.fixedRawQuant` can override
   the default raw quant 5 globally for trace experiments. Do not
-  describe it as adaptive-quantization parity.
+  describe it as adaptive-quantization parity. `traceLast` marks the final
+  `NumNonzeros` record of the final padded raster block.
 - `DcTokenize` provides libjxl-tiny DC token helpers: signed-token packing,
   clamped-gradient prediction, and the compressed gradient-context LUT.
 - `DcTokenTraceStage` is the prepared quantized-DC token primitive. Feed it a
@@ -247,9 +252,9 @@ Read these libjxl-tiny files before making architectural changes:
   `sbt 'runMain hjxl.ElaborateCoreAcTokens'` when generated SystemVerilog should
   keep the public core IO shell while instantiating only that route. The default
   all-route shell intentionally does not instantiate this heavy scheduler.
-  Token schedulers export `traceLast`; `HjxlCore` carries it for DC,
-  AC-metadata, and focused AC-token routes, while `HjxlAxiStreamCore` maps it
-  to stream TLAST for capture.
+  Every current frame trace scheduler/top exports `traceLast`; `HjxlCore`
+  carries it for the selected route, while `HjxlAxiStreamCore` maps it to
+  stream TLAST for capture.
 - Use `sbt 'runMain hjxl.ElaborateAxiStream'` for the default AXI-stream-shaped
   wrapper and `sbt 'runMain hjxl.ElaborateAxiStreamCoreAcTokens'` for the same
   stream wrapper focused on the full AC-token route. These write
@@ -261,7 +266,8 @@ Read these libjxl-tiny files before making architectural changes:
 - Use `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantize'` to generate the
   standalone prepared-DCT quantization scheduler. It writes
   `generated-prepared-dct-only-quantize/`; keep the generated directory out of
-  git.
+  git. The generated top exposes `traceLast` for frame-level capture
+  boundaries.
 - Use `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'` to generate
   the direct prepared-DCT quantize-to-token wrapper. It writes
   `generated-prepared-dct-only-quantize-tokens/`; keep the generated directory
@@ -289,7 +295,8 @@ Read these libjxl-tiny files before making architectural changes:
   future work.
 - `FrameAcStrategyTraceStage` emits one default DCT-first AC strategy value per
   padded block. This matches the current all-8x8-DCT transform path but not
-  libjxl-tiny's adaptive 16x8/8x16 strategy search.
+  libjxl-tiny's adaptive 16x8/8x16 strategy search. Its `traceLast` output
+  marks the final padded raster block's strategy record.
 - `tools/hjxl_reference.py` can export real libjxl-tiny quant metadata with
   `--raw-quant-field-npy`, `--libjxl-ac-strategy-npy`, `--ytox-map-npy`, and
   `--ytob-map-npy`. Use those artifacts as the oracle before implementing AQ,

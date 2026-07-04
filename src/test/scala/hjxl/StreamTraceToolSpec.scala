@@ -105,6 +105,30 @@ class StreamTraceToolSpec extends AnyFreeSpec with Matchers {
     result.output must include("TLAST asserted before final row")
   }
 
+  "hjxl_stream_trace.py rejects missing final TLAST in single-frame mode" in {
+    val temp = Files.createTempDirectory("hjxl-stream-trace-missing-last-")
+    val streamCsv = temp.resolve("stream.csv")
+    Files.writeString(
+      streamCsv,
+      "data,last\n" +
+        s"${pack(TraceStage.InputPadded, 0, 0, 10)},0\n" +
+        s"${pack(TraceStage.InputPadded, 0, 1, 20)},0\n"
+    )
+
+    val result = runCommand(
+      Seq(
+        "python3",
+        "tools/hjxl_stream_trace.py",
+        "--stream-csv",
+        streamCsv.toString,
+        "--require-final-last"
+      )
+    )
+
+    result.exitCode mustBe 1
+    result.output must include("final stream row does not assert TLAST")
+  }
+
   "decoded stream traces feed hjxl_trace_tokens.py" in {
     requireNumpy()
 

@@ -33,6 +33,7 @@ class FrameDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
@@ -170,6 +171,7 @@ class FrameDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
       quantizer.io.output.bits.numNonzeros(nnzChannelSafe).asSInt.pad(c.traceValueBits)
     )
   )
+  io.traceLast := io.trace.valid && totalBlocks =/= 0.U && emitIndex === totalBlocks * recordsPerBlock.U - 1.U
 
   when(configOutOfRange) {
     received := 0.U
