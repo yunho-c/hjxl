@@ -20,7 +20,9 @@ class AxiStreamWord(dataBits: Int) extends Bundle {
   * The trace output packs one `StageTrace` row as `{value, index, group, stage}`,
   * with `stage` in the low eight bits. `trace.bits.last` is asserted for each
   * route's final frame trace word, including the variable-length full AC-token
-  * route.
+  * route. The complete `FrameConfig` is snapshotted with the first accepted
+  * input beat and held through acceptance of the final trace beat, so live
+  * control changes cannot split a frame across routes or parameter sets.
   */
 class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRoute.All) extends Module {
   val pixelDataBits = c.pixelBits * 3
@@ -37,8 +39,8 @@ class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCore
   })
 
   val core = Module(new HjxlCore(c, traceRoute))
-  core.io.config := io.config
-
+  val latchedConfig = Reg(new FrameConfig(c))
+  val configFrameActive = RegInit(false.B)
   val x = RegInit(0.U(c.coordBits.W))
   val y = RegInit(0.U(c.coordBits.W))
   val inputFrameActive = RegInit(false.B)
@@ -46,8 +48,12 @@ class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCore
   val inputHeight = RegInit(0.U(c.coordBits.W))
   val protocolError = RegInit(false.B)
 
-  val configWidth = io.config.xsize
-  val configHeight = io.config.ysize
+  val activeConfig = Wire(new FrameConfig(c))
+  activeConfig := Mux(configFrameActive, latchedConfig, io.config)
+  core.io.config := activeConfig
+
+  val configWidth = activeConfig.xsize
+  val configHeight = activeConfig.ysize
   val activeInputWidth = Mux(inputFrameActive, inputWidth, configWidth)
   val activeInputHeight = Mux(inputFrameActive, inputHeight, configHeight)
   val lastX = Mux(activeInputWidth === 0.U, 0.U, activeInputWidth - 1.U)
@@ -67,6 +73,10 @@ class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCore
   }
 
   when(io.input.fire) {
+    when(!configFrameActive) {
+      configFrameActive := true.B
+      latchedConfig := io.config
+    }
     when(!inputFrameActive) {
       inputFrameActive := true.B
       inputWidth := configWidth
@@ -87,6 +97,13 @@ class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCore
     }
   }
 
+  val frameTraceDone = core.io.trace.fire && core.io.traceLast
+  val retireWithoutTrace =
+    configFrameActive && !inputFrameActive && !core.io.busy && !core.io.trace.valid
+  when(frameTraceDone || retireWithoutTrace) {
+    configFrameActive := false.B
+  }
+
   io.trace.valid := core.io.trace.valid
   core.io.trace.ready := io.trace.ready
   io.trace.bits.data := Cat(
@@ -96,7 +113,7 @@ class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCore
     core.io.trace.bits.stage
   )
   io.trace.bits.last := core.io.trace.valid && core.io.traceLast
-  io.busy := core.io.busy
+  io.busy := configFrameActive || core.io.busy
   io.overflow := core.io.overflow
   io.protocolError := protocolError
 }

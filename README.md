@@ -160,7 +160,10 @@ it accepts raster RGB pixels on an AXI4-Stream-shaped input, generates core
 `traceLast` to output TLAST for single-frame capture.
 `HjxlAxiLiteStreamCore` wraps that stream shell with a minimal 32-bit AXI-Lite
 control/status register map for KV260-style integration while keeping the same
-AXI4-Stream data path.
+AXI4-Stream data path. The stream shell snapshots the complete configuration on
+the first accepted frame beat and retains it through the accepted final trace
+beat. AXI-Lite writes during `busy` therefore update readable shadow registers
+for the next frame without changing the active route, geometry, or parameters.
 `HjxlPreparedDctAxiLiteStreamCore` applies the same control-plane shape to the
 prepared-DCT quantize-to-token stream path, which is currently the strongest
 RTL-to-codestream parity boundary. It also validates full-word input keep masks

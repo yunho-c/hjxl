@@ -440,6 +440,11 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
    reject writes while busy, or introduce shadow registers plus an explicit
    start/commit command. Add ABI version, build ID, capabilities, maximum frame
    dimensions, and active route registers.
+   **Partially completed 2026-07-12:** both RGB and prepared stream shells now
+   snapshot the complete configuration from the first accepted input through
+   the accepted final trace. AXI-Lite writes during `busy` are documented and
+   tested as readable next-frame shadow updates. Explicit commit/start,
+   discovery/version registers, and active-route visibility remain open.
 8. **Generate cross-language contracts from one source.** Register offsets,
    status bits, trace stages, packing, target variants, and the prepared stream
    layout should originate in one checked schema and emit Scala/Python/C

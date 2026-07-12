@@ -77,6 +77,11 @@ object HjxlStatusControlBit {
   *     bit 3 enableTokenize, bits 9:8 tokenSelect
   *   - 0x20 fixedYtox, low byte interpreted as signed two's-complement CFL
   *   - 0x24 fixedYtob, low byte interpreted as signed two's-complement CFL
+  *
+  * AXI-Lite writes remain accepted while busy. The stream shell snapshots the
+  * complete register-derived `FrameConfig` on the first accepted input beat,
+  * so such writes update readable shadow state for the next frame and cannot
+  * alter the active frame.
   */
 class HjxlAxiLiteStreamCore(
     c: HjxlConfig = HjxlConfig(),

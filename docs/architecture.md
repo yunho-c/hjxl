@@ -338,7 +338,10 @@ wrappers.
   `protocolError` and a `clearProtocolError` input for host recovery. Output
   data packs `{value,index,group,stage}` with `stage` in the low eight bits.
   Output `last` is asserted on each route's final frame trace word by carrying
-  the selected scheduler's `traceLast` sideband to TLAST. Use
+  the selected scheduler's `traceLast` sideband to TLAST. The complete
+  `FrameConfig` is snapshotted on the first accepted input beat and held
+  through acceptance of that final trace beat, preventing live control changes
+  from moving an active frame between schedulers or parameter sets. Use
   `sbt 'runMain hjxl.ElaborateAxiStream'` for the default shell or
   `sbt 'runMain hjxl.ElaborateAxiStreamCoreAcTokens'` for the focused
   full-AC-token shell.
@@ -353,7 +356,9 @@ wrappers.
   `0x20` signed-low-byte `fixedYtox`, and `0x24` signed-low-byte `fixedYtob`
   (`enableXyb`, `enableDct`, `enableQuant`, `enableTokenize`, and
   `tokenSelect` at bits 9:8). Writes honor byte strobes; unmapped word
-  addresses return AXI-Lite DECERR. Use
+  addresses return AXI-Lite DECERR. Writes remain legal while `busy`: reads
+  immediately expose the updated shadow register bank, while the active stream
+  uses its snapshot and the new values apply to the next frame. Use
   `sbt 'runMain hjxl.ElaborateAxiLiteStream'` for the default controlled shell
   or `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
   full-AC-token controlled shell.

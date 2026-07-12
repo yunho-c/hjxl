@@ -178,6 +178,75 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
+  "HjxlAxiStreamCore snapshots the complete configuration through the final frame trace" in {
+    simulate(new HjxlAxiStreamCore(config, traceRoute = TraceStage.RawQuantField)) { dut =>
+      pokeConfig(dut, width = 2, height = 1)
+      dut.io.config.enableQuant.poke(true.B)
+      dut.io.config.fixedRawQuant.poke(7.U)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      drivePixel(dut, rgb(10, 20, 30), last = false)
+      dut.io.busy.expect(true.B)
+
+      // These live inputs are the next-frame configuration. Changing route,
+      // dimensions, and quantization fields must not split the active frame
+      // across schedulers or alter its buffered/emitted trace.
+      dut.io.config.xsize.poke(1.U)
+      dut.io.config.ysize.poke(1.U)
+      dut.io.config.distanceQ8.poke(512.U)
+      dut.io.config.fixedPointScale.poke(123.U)
+      dut.io.config.fixedInvQacQ16.poke(456.U)
+      dut.io.config.fixedRawQuant.poke(7.U)
+      dut.io.config.fixedYtox.poke((-4).S)
+      dut.io.config.fixedYtob.poke(5.S)
+      dut.io.config.enableXyb.poke(true.B)
+      dut.io.config.enableDct.poke(false.B)
+      dut.io.config.enableQuant.poke(false.B)
+      dut.io.config.enableTokenize.poke(false.B)
+      dut.io.config.tokenSelect.poke(TokenTraceSelect.AcMetadata.U)
+
+      drivePixel(dut, rgb(40, 50, 60), last = true)
+      dut.io.input.valid.poke(false.B)
+      dut.io.protocolError.expect(false.B)
+
+      // Restore a valid focused-route selection, but with different metadata,
+      // before draining the first frame. These are still next-frame values.
+      dut.io.config.enableXyb.poke(false.B)
+      dut.io.config.enableQuant.poke(true.B)
+      dut.io.config.fixedRawQuant.poke(9.U)
+      dut.io.trace.ready.poke(true.B)
+
+      dut.io.trace.valid.expect(true.B)
+      val (firstStage, firstGroup, firstIndex, firstValue) =
+        unpackTraceData(dut.io.trace.bits.data.peekValue().asBigInt)
+      firstStage must be(TraceStage.RawQuantField)
+      firstGroup must be(0)
+      firstIndex must be(0)
+      firstValue must be(7)
+      dut.io.trace.bits.last.expect(true.B)
+      dut.clock.step()
+      dut.io.trace.valid.expect(false.B)
+      dut.io.busy.expect(false.B)
+
+      // The updated live configuration becomes active at the next accepted
+      // frame boundary.
+      drivePixel(dut, rgb(70, 80, 90), last = true)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.valid.expect(true.B)
+      val (stage, group, index, value) = unpackTraceData(dut.io.trace.bits.data.peekValue().asBigInt)
+      stage must be(TraceStage.RawQuantField)
+      group must be(0)
+      index must be(0)
+      value must be(9)
+      dut.io.trace.bits.last.expect(true.B)
+      dut.clock.step()
+      dut.io.trace.valid.expect(false.B)
+      dut.io.busy.expect(false.B)
+    }
+  }
+
   "HjxlAxiStreamCore packed output is decoded by the host stream tool" in {
     val captured = scala.collection.mutable.ArrayBuffer.empty[(BigInt, Boolean)]
 

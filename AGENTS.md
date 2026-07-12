@@ -57,6 +57,11 @@ Use a hardware/software split:
   bundle metadata treats this control plane as 8-bit addresses, 32-bit data,
   and 4-bit strobes; keep generated headers, replay plans, and capture
   preflight checks in lockstep with that geometry.
+  `HjxlAxiStreamCore` snapshots the complete `FrameConfig` on the first
+  accepted input beat and holds it through the accepted final trace beat.
+  AXI-Lite writes during `busy` update readable next-frame shadow state; they
+  must not affect the active frame. Preserve the focused mid-frame regression
+  when changing stream or control behavior.
 - `HjxlPreparedDctAxiStreamCore` is the stream-shaped shell for the current
   closest-to-parity prepared-DCT quantize-to-token path. Use it when the host
   can supply prepared DCT-only block records and should receive packed token

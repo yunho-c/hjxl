@@ -197,6 +197,44 @@ class HjxlAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim
     }
   }
 
+  "HjxlAxiLiteStreamCore treats writes during busy as next-frame shadow configuration" in {
+    simulate(new HjxlAxiLiteStreamCore(config, traceRoute = TraceStage.RawQuantField)) { dut =>
+      init(dut)
+
+      axiWrite(dut, HjxlAxiLiteRegister.Xsize, 2) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.Ysize, 1) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.FixedRawQuant, 7) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.Flags, 1 << 2) must be(AxiLiteResponse.Okay)
+
+      drivePixel(dut, rgb(10, 20, 30), last = false)
+      dut.io.busy.expect(true.B)
+
+      axiWrite(dut, HjxlAxiLiteRegister.Xsize, 1) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.Ysize, 1) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.FixedRawQuant, 9) must be(AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.Xsize) must be(BigInt(1) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedRawQuant) must be(BigInt(9) -> AxiLiteResponse.Okay)
+
+      drivePixel(dut, rgb(40, 50, 60), last = true)
+      dut.io.protocolError.expect(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.io.trace.valid.expect(true.B)
+      ((dut.io.trace.bits.data.peekValue().asBigInt >> 56) & 0xffffffffL) mustBe BigInt(7)
+      dut.io.trace.bits.last.expect(true.B)
+      dut.clock.step()
+      dut.io.trace.valid.expect(false.B)
+      dut.io.busy.expect(false.B)
+
+      drivePixel(dut, rgb(70, 80, 90), last = true)
+      dut.io.trace.valid.expect(true.B)
+      ((dut.io.trace.bits.data.peekValue().asBigInt >> 56) & 0xffffffffL) mustBe BigInt(9)
+      dut.io.trace.bits.last.expect(true.B)
+      dut.clock.step()
+      dut.io.trace.valid.expect(false.B)
+      dut.io.busy.expect(false.B)
+    }
+  }
+
   "HjxlAxiLiteStreamCore reports unsupported distance fallback in status bit 3" in {
     simulate(new HjxlAxiLiteStreamCore(config, traceRoute = TraceStage.InputPadded)) { dut =>
       init(dut)

@@ -16,6 +16,9 @@ import chisel3.util._
   * experiments. The input stream is a full-word 32-bit payload stream; a beat
   * with an input keep mask other than 0xF is consumed by this wrapper and
   * reported as a protocol error without advancing the prepared-word parser.
+  * Writes while busy update the readable register bank for the next frame;
+  * `HjxlPreparedDctAxiStreamCore` snapshots the complete configuration on its
+  * first accepted word and holds it until the active trace stream completes.
   */
 class HjxlPreparedDctAxiLiteStreamCore(
     c: HjxlConfig = HjxlConfig(),
