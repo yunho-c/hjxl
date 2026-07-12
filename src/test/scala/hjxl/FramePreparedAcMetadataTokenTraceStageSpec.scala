@@ -46,6 +46,8 @@ class FramePreparedAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matche
     dut.io.config.fixedPointScale.poke(0.U)
     dut.io.config.fixedInvQacQ16.poke(0.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(true.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -128,10 +130,11 @@ class FramePreparedAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matche
   private def collectMetadataTokens(
       width: Int,
       height: Int,
-      blocks: Seq[MetadataBlock]
+      blocks: Seq[MetadataBlock],
+      stageConfig: HjxlConfig = config
   ): Seq[(Int, Int)] = {
     val tokens = scala.collection.mutable.ArrayBuffer.empty[(Int, Int)]
-    simulate(new FramePreparedAcMetadataTokenTraceStage(config)) { dut =>
+    simulate(new FramePreparedAcMetadataTokenTraceStage(stageConfig)) { dut =>
       pokeConfig(dut, width, height)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
@@ -173,10 +176,8 @@ class FramePreparedAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matche
     tokens.toSeq
   }
 
-  "FramePreparedAcMetadataTokenTraceStage emits prepared multi-tile metadata tokens" in {
-    val width = 72
-    val height = 8
-    val blocks = Seq(
+  private def horizontalTwoTileBlocks: Seq[MetadataBlock] =
+    Seq(
       MetadataBlock(4, -3, 5),
       MetadataBlock(6, -3, 5),
       MetadataBlock(5, -3, 5),
@@ -187,6 +188,11 @@ class FramePreparedAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matche
       MetadataBlock(7, -3, 5),
       MetadataBlock(2, 4, -6),
     )
+
+  "FramePreparedAcMetadataTokenTraceStage emits prepared multi-tile metadata tokens" in {
+    val width = 72
+    val height = 8
+    val blocks = horizontalTwoTileBlocks
     val expected = expectedTokens(blocks)
 
     simulate(new FramePreparedAcMetadataTokenTraceStage(config)) { dut =>
@@ -222,6 +228,15 @@ class FramePreparedAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matche
       dut.io.input.ready.expect(true.B)
       dut.io.overflow.expect(false.B)
     }
+  }
+
+  "FramePreparedAcMetadataTokenTraceStage preserves tile counts for exact 72px capacity" in {
+    val width = 72
+    val height = 8
+    val blocks = horizontalTwoTileBlocks
+    val exactCapacity = HjxlConfig(maxFrameWidth = 72, maxFrameHeight = 8)
+
+    collectMetadataTokens(width, height, blocks, stageConfig = exactCapacity) mustBe expectedTokens(blocks)
   }
 
   "FramePreparedAcMetadataTokenTraceStage matches libjxl-tiny all-DCT metadata tokens for a multi-tile fixture" in {

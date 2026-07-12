@@ -5,13 +5,18 @@ package hjxl
 import chisel3._
 import chisel3.util._
 
-/** Emits the current DCT-only AC strategy map for a padded frame.
+/** Emits one fixed CFL map for each 64x64 tile in a padded frame.
   *
-  * This is a metadata trace for the current transform path. Every padded 8x8
-  * block is marked as an ordinary DCT first block, using libjxl-tiny's
-  * `(raw_strategy << 1) | is_first_block` encoding.
+  * This stage provides the current trace shape for libjxl-tiny's per-tile
+  * Y-to-X and Y-to-B chroma-from-luma maps. Real CFL estimation will replace
+  * the scalar fixed-map values later.
   */
-class FrameAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FrameCflMapTraceStage(c: HjxlConfig = HjxlConfig(), traceStage: Int) extends Module {
+  require(
+    traceStage == TraceStage.YtoxMap || traceStage == TraceStage.YtobMap,
+    "FrameCflMapTraceStage only supports YtoxMap or YtobMap"
+  )
+
   private val numPixels = c.maxFrameWidth * c.maxFrameHeight
   private val frameCountBits = log2Ceil(numPixels + 1)
   private val widthBits = log2Ceil(c.maxFrameWidth + 1)
@@ -30,8 +35,11 @@ class FrameAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   val state = RegInit(receiving)
   val received = RegInit(0.U(frameCountBits.W))
   val emitIndex = RegInit(0.U(32.W))
-  val totalBlocks = RegInit(0.U(32.W))
+  val totalTiles = RegInit(0.U(32.W))
   val overflow = RegInit(false.B)
+
+  private def ceilDiv(value: UInt, divisor: Int): UInt =
+    (value +& (divisor - 1).U) / divisor.U
 
   private def ceilToBlock(value: UInt): UInt = {
     val block = HjxlConstants.BlockDim.U
@@ -43,6 +51,10 @@ class FrameAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   val expectedPixels = configWidth * configHeight
   val nextPaddedWidth = ceilToBlock(configWidth)(widthBits - 1, 0)
   val nextPaddedHeight = ceilToBlock(configHeight)(heightBits - 1, 0)
+  val nextXTilesRaw = ceilDiv(configWidth, HjxlConstants.TileDim)
+  val nextYTilesRaw = ceilDiv(configHeight, HjxlConstants.TileDim)
+  val nextXTiles = Mux(nextXTilesRaw === 0.U, 1.U, nextXTilesRaw)
+  val nextYTiles = Mux(nextYTilesRaw === 0.U, 1.U, nextYTilesRaw)
   val configOutOfRange =
     io.config.xsize === 0.U || io.config.ysize === 0.U ||
       io.config.xsize > c.maxFrameWidth.U || io.config.ysize > c.maxFrameHeight.U ||
@@ -52,11 +64,13 @@ class FrameAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   io.trace.valid := state === emitting
   io.busy := state === emitting || received =/= 0.U
   io.overflow := overflow || configOutOfRange
-  io.trace.bits.stage := TraceStage.AcStrategy.U
+  io.trace.bits.stage := traceStage.U
   io.trace.bits.group := 0.U
   io.trace.bits.index := emitIndex
-  io.trace.bits.value := AcStrategyCode.encoded(AcStrategyCode.Dct, isFirstBlock = true).S
-  io.traceLast := io.trace.valid && totalBlocks =/= 0.U && emitIndex === totalBlocks - 1.U
+  io.trace.bits.value :=
+    (if (traceStage == TraceStage.YtoxMap) io.config.fixedYtox else io.config.fixedYtob)
+      .pad(c.traceValueBits)
+  io.traceLast := io.trace.valid && totalTiles =/= 0.U && emitIndex === totalTiles - 1.U
 
   when(configOutOfRange) {
     received := 0.U
@@ -67,19 +81,18 @@ class FrameAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
     when(nextReceived === expectedPixels) {
       state := emitting
       emitIndex := 0.U
-      totalBlocks := (nextPaddedWidth >> log2Ceil(HjxlConstants.BlockDim)) *
-        (nextPaddedHeight >> log2Ceil(HjxlConstants.BlockDim))
+      totalTiles := nextXTiles * nextYTiles
     }
   }
 
   when(io.trace.fire) {
     val nextEmit = emitIndex + 1.U
     emitIndex := nextEmit
-    when(nextEmit === totalBlocks) {
+    when(nextEmit === totalTiles) {
       state := receiving
       received := 0.U
       emitIndex := 0.U
-      totalBlocks := 0.U
+      totalTiles := 0.U
     }
   }
 

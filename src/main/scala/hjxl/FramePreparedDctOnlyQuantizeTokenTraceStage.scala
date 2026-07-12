@@ -53,7 +53,7 @@ class FramePreparedDctOnlyQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig()) 
   val overflow = RegInit(false.B)
 
   private def ceilDivBlock(value: UInt): UInt =
-    (value + (blockDim - 1).U) >> log2Ceil(blockDim)
+    (value +& (blockDim - 1).U) >> log2Ceil(blockDim)
 
   private def blockIndex(value: UInt): UInt =
     value(blockIndexBits - 1, 0)
@@ -69,8 +69,8 @@ class FramePreparedDctOnlyQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig()) 
   val nextTotalBlocks = nextXBlocks * nextYBlocks
   val activeTotalBlocks = Mux(receivedBlocks === 0.U && state === receiving, nextTotalBlocks, totalBlocks)
   val totalDcSamples = activeTotalBlocks * 3.U
-  val xTilesRaw = (configWidth + (HjxlConstants.TileDim - 1).U) / HjxlConstants.TileDim.U
-  val yTilesRaw = (configHeight + (HjxlConstants.TileDim - 1).U) / HjxlConstants.TileDim.U
+  val xTilesRaw = (configWidth +& (HjxlConstants.TileDim - 1).U) / HjxlConstants.TileDim.U
+  val yTilesRaw = (configHeight +& (HjxlConstants.TileDim - 1).U) / HjxlConstants.TileDim.U
   val xTiles = Mux(xTilesRaw === 0.U, 1.U, xTilesRaw)
   val yTiles = Mux(yTilesRaw === 0.U, 1.U, yTilesRaw)
   val metadataTokenCount = xTiles * yTiles * 2.U + activeTotalBlocks * 3.U

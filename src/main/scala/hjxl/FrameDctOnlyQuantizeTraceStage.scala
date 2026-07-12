@@ -11,7 +11,7 @@ import chisel3.util._
   * the current approximate RGB->XYB and 8x8 DCT path, then feeds each raster
   * block through `DctOnlyQuantizeBlock`. Adaptive quantization and CFL maps are
   * not implemented here yet: every block uses one fixed adjusted quant value
-  * and zero tile CFL multipliers. `FrameConfig.distanceQ8` selects the
+  * and scalar fixed CFL multipliers from `FrameConfig`. `FrameConfig.distanceQ8` selects the
   * distance-derived AC/DC scalar parameters from `DistanceParamsLookup`;
   * `FrameConfig.fixedPointScale` and `fixedInvQacQ16` can still override only
   * the AC scale path.
@@ -57,7 +57,7 @@ class FrameDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
 
   private def ceilToBlock(value: UInt): UInt = {
     val block = blockDim.U
-    ((value + (block - 1.U)) / block) * block
+    ((value +& (block - 1.U)) / block) * block
   }
 
   val configWidth = io.config.xsize(widthBits - 1, 0)
@@ -125,8 +125,8 @@ class FrameDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
   quantizer.io.input.bits.scaleQ16 := acScale.io.params.scaleQ16
   quantizer.io.input.bits.invQacQ16 := acScale.io.params.invQacQ16
   quantizer.io.input.bits.xQmMultiplierQ16 := distanceParams.io.params.xQmMultiplierQ16
-  quantizer.io.input.bits.ytox := 0.S
-  quantizer.io.input.bits.ytob := 0.S
+  quantizer.io.input.bits.ytox := io.config.fixedYtox
+  quantizer.io.input.bits.ytob := io.config.fixedYtob
   for (channel <- 0 until 3) {
     quantizer.io.input.bits.invDcFactorQ16(channel) := distanceParams.io.params.invDcFactorQ16(channel)
   }

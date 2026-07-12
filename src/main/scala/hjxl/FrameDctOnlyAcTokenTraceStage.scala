@@ -11,8 +11,8 @@ import chisel3.util._
   * quantized X/Y/B raster block into `DctOnlyAcBlockTokenTraceStage`, so each
   * block emits the nonzero-count prefixes and the coefficient scan/value tokens.
   * It intentionally keeps the same fixed quantization defaults as
-  * `FrameDctOnlyQuantizeTraceStage`: fixed adjusted raw quant, zero CFL, and
-  * distance-derived scalar parameters from `DistanceParamsLookup`, with
+  * `FrameDctOnlyQuantizeTraceStage`: fixed adjusted raw quant, scalar fixed
+  * CFL values from `FrameConfig`, and distance-derived scalar parameters from `DistanceParamsLookup`, with
   * `fixedPointScale` plus `fixedInvQacQ16` still able to override only the AC
   * scale path.
   */
@@ -54,7 +54,7 @@ class FrameDctOnlyAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
 
   private def ceilToBlock(value: UInt): UInt = {
     val block = blockDim.U
-    ((value + (block - 1.U)) / block) * block
+    ((value +& (block - 1.U)) / block) * block
   }
 
   private def quantizedBlockFor(blockX: UInt, blockY: UInt): (Vec[Vec[SInt]], Vec[UInt], Bool) = {
@@ -105,8 +105,8 @@ class FrameDctOnlyAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
     quantizer.io.input.bits.scaleQ16 := acScale.io.params.scaleQ16
     quantizer.io.input.bits.invQacQ16 := acScale.io.params.invQacQ16
     quantizer.io.input.bits.xQmMultiplierQ16 := distanceParams.io.params.xQmMultiplierQ16
-    quantizer.io.input.bits.ytox := 0.S
-    quantizer.io.input.bits.ytob := 0.S
+    quantizer.io.input.bits.ytox := io.config.fixedYtox
+    quantizer.io.input.bits.ytob := io.config.fixedYtob
     for (channel <- 0 until 3) {
       quantizer.io.input.bits.invDcFactorQ16(channel) := distanceParams.io.params.invDcFactorQ16(channel)
     }

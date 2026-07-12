@@ -27,6 +27,8 @@ class FrameDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers with 
       if (fixedPointScale == 0) 0 else QuantizeDct8x8Block.invQacQ16For(fixedPointScale)
     dut.io.config.fixedInvQacQ16.poke(fixedInvQacQ16.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
     dut.io.config.enableXyb.poke(true.B)
     dut.io.config.enableDct.poke(true.B)
     dut.io.config.enableQuant.poke(true.B)

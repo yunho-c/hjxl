@@ -49,7 +49,7 @@ class FrameDctOnlyAcNonzeroTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends
 
   private def ceilToBlock(value: UInt): UInt = {
     val block = blockDim.U
-    ((value + (block - 1.U)) / block) * block
+    ((value +& (block - 1.U)) / block) * block
   }
 
   private def quantizedCountsForBlock(blockX: UInt, blockY: UInt): (Seq[UInt], Bool) = {
@@ -100,8 +100,8 @@ class FrameDctOnlyAcNonzeroTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends
     quantizer.io.input.bits.scaleQ16 := acScale.io.params.scaleQ16
     quantizer.io.input.bits.invQacQ16 := acScale.io.params.invQacQ16
     quantizer.io.input.bits.xQmMultiplierQ16 := distanceParams.io.params.xQmMultiplierQ16
-    quantizer.io.input.bits.ytox := 0.S
-    quantizer.io.input.bits.ytob := 0.S
+    quantizer.io.input.bits.ytox := io.config.fixedYtox
+    quantizer.io.input.bits.ytob := io.config.fixedYtob
     for (channel <- 0 until 3) {
       quantizer.io.input.bits.invDcFactorQ16(channel) := distanceParams.io.params.invDcFactorQ16(channel)
     }

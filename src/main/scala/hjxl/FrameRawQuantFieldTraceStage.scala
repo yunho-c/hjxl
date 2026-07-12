@@ -5,13 +5,14 @@ package hjxl
 import chisel3._
 import chisel3.util._
 
-/** Emits the current DCT-only AC strategy map for a padded frame.
+/** Emits the current fixed raw-quant field for a padded frame.
   *
-  * This is a metadata trace for the current transform path. Every padded 8x8
-  * block is marked as an ordinary DCT first block, using libjxl-tiny's
-  * `(raw_strategy << 1) | is_first_block` encoding.
+  * This is the scalar metadata trace that the future adaptive-quantization
+  * scheduler will replace. For now every padded 8x8 block receives the same
+  * adjusted raw quant value selected from `FrameConfig.fixedRawQuant`, with zero
+  * meaning the current DCT-only default.
   */
-class FrameAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FrameRawQuantFieldTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   private val numPixels = c.maxFrameWidth * c.maxFrameHeight
   private val frameCountBits = log2Ceil(numPixels + 1)
   private val widthBits = log2Ceil(c.maxFrameWidth + 1)
@@ -48,14 +49,20 @@ class FrameAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
       io.config.xsize > c.maxFrameWidth.U || io.config.ysize > c.maxFrameHeight.U ||
       nextPaddedWidth > c.maxFrameWidth.U || nextPaddedHeight > c.maxFrameHeight.U
 
+  val selectedRawQuant = Mux(
+    io.config.fixedRawQuant === 0.U,
+    QuantizeDct8x8Block.DefaultRawQuant.U,
+    io.config.fixedRawQuant
+  )
+
   io.input.ready := state === receiving && !configOutOfRange
   io.trace.valid := state === emitting
   io.busy := state === emitting || received =/= 0.U
   io.overflow := overflow || configOutOfRange
-  io.trace.bits.stage := TraceStage.AcStrategy.U
+  io.trace.bits.stage := TraceStage.RawQuantField.U
   io.trace.bits.group := 0.U
   io.trace.bits.index := emitIndex
-  io.trace.bits.value := AcStrategyCode.encoded(AcStrategyCode.Dct, isFirstBlock = true).S
+  io.trace.bits.value := Cat(0.U(1.W), selectedRawQuant).asSInt.pad(c.traceValueBits)
   io.traceLast := io.trace.valid && totalBlocks =/= 0.U && emitIndex === totalBlocks - 1.U
 
   when(configOutOfRange) {

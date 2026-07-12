@@ -44,7 +44,7 @@ class FramePreparedDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
   val overflow = RegInit(false.B)
 
   private def ceilDiv(value: UInt, divisor: Int): UInt =
-    (value + (divisor - 1).U) / divisor.U
+    (value +& (divisor - 1).U) / divisor.U
 
   val configWidth = io.config.xsize(widthBits - 1, 0)
   val configHeight = io.config.ysize(heightBits - 1, 0)

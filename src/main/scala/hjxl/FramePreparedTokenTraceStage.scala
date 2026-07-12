@@ -11,7 +11,8 @@ import chisel3.util._
   * order, then prepared quantized AC blocks in raster order. After both inputs
   * are buffered by the exact prepared DC/AC schedulers, this module emits the
   * trace streams consumed by the host assembly boundary: DC tokens, AC strategy
-  * grid, AC metadata tokens, and AC coefficient tokens.
+  * grid, fixed all-DCT AC metadata tokens from `FrameConfig`, and AC
+  * coefficient tokens.
   */
 class FramePreparedTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   private val blockDim = HjxlConstants.BlockDim
@@ -45,7 +46,7 @@ class FramePreparedTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module 
   activeConfig := Mux(transactionActive, latchedConfig, io.config)
 
   private def ceilDiv(value: UInt, divisor: Int): UInt =
-    (value + (divisor - 1).U) / divisor.U
+    (value +& (divisor - 1).U) / divisor.U
 
   private def ceilToBlock(value: UInt): UInt =
     ceilDiv(value, blockDim) * blockDim.U
@@ -95,6 +96,15 @@ class FramePreparedTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module 
   val isStrategy = emitIndex >= strategyStart && emitIndex < quantStart
   val isQuant = emitIndex >= quantStart && emitIndex < blockMetadataStart
   val cflMap = emitIndex / Mux(totalTiles === 0.U, 1.U, totalTiles)
+  val cflOrdinal = emitIndex - cflMap * Mux(totalTiles === 0.U, 1.U, totalTiles)
+  val xTilesSafe = Mux(xTiles === 0.U, 1.U, xTiles)
+  val tileX = cflOrdinal - (cflOrdinal / xTilesSafe) * xTilesSafe
+  val tileY = cflOrdinal / xTilesSafe
+  val fixedCfl = Mux(cflMap === 0.U, activeConfig.fixedYtox, activeConfig.fixedYtob)
+  val westCfl = Mux(tileX === 0.U && tileY === 0.U, 0.S, fixedCfl)
+  val northCfl = Mux(tileY === 0.U, westCfl, fixedCfl)
+  val northwestCfl = Mux(tileX === 0.U || tileY === 0.U, westCfl, fixedCfl)
+  val cflResidual = fixedCfl - DcTokenize.clampedGradient(northCfl, westCfl, northwestCfl)
   val quantOrdinal = emitIndex - quantStart
   val selectedRawQuant = Mux(
     activeConfig.fixedRawQuant === 0.U,
@@ -118,14 +128,15 @@ class FramePreparedTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module 
       Mux(isQuant, Tokenize.quantFieldContext(quantLeft), 0.U)
     )
   )
-  val cflOrStrategyValue = 0.S(c.traceValueBits.W)
+  val cflValue = Tokenize.packSigned(cflResidual, c.traceValueBits)
+  val strategyValue = Tokenize.packSigned(0.S, c.traceValueBits)
   val quantValue = Tokenize.packSigned(quantResidual, c.traceValueBits)
   val blockMetadataValue = Tokenize.packSigned(Tokenize.DefaultBlockMetadata.S, c.traceValueBits)
   metadataTrace.value := MuxCase(
     blockMetadataValue,
     Seq(
-      isCfl -> cflOrStrategyValue,
-      isStrategy -> cflOrStrategyValue,
+      isCfl -> cflValue,
+      isStrategy -> strategyValue,
       isQuant -> quantValue
     )
   )

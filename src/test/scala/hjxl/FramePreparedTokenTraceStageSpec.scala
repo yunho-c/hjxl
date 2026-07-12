@@ -14,13 +14,21 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
   private case class PreparedBlock(quantized: Vector[Vector[Int]], numNonzeros: Vector[Int])
   private case class ExpectedTrace(stage: Int, group: Int, index: Int, value: Int)
 
-  private def pokeConfig(dut: FramePreparedTokenTraceStage, width: Int, height: Int): Unit = {
+  private def pokeConfig(
+      dut: FramePreparedTokenTraceStage,
+      width: Int,
+      height: Int,
+      fixedYtox: Int = 0,
+      fixedYtob: Int = 0
+  ): Unit = {
     dut.io.config.xsize.poke(width.U)
     dut.io.config.ysize.poke(height.U)
     dut.io.config.distanceQ8.poke(256.U)
     dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
     dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(fixedYtox.S)
+    dut.io.config.fixedYtob.poke(fixedYtob.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(false.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -66,6 +74,12 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
       coefficients.updated(index, value)
     }
 
+  private def zeroBlock: PreparedBlock =
+    PreparedBlock(
+      quantized = Vector(quantized(), quantized(), quantized()),
+      numNonzeros = Vector(0, 0, 0)
+    )
+
   private def acCoefficientTokenCount(quantized: Seq[Int], numNonzeros: Int): Int = {
     var remaining = numNonzeros
     var scanIndex = 1
@@ -106,8 +120,8 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
           ExpectedTrace(TraceStage.DcTokens, 5, 21, 0),
           ExpectedTrace(TraceStage.AcStrategy, 0, 0, 1),
           ExpectedTrace(TraceStage.AcStrategy, 0, 1, 1),
-          ExpectedTrace(TraceStage.AcMetadataTokens, 0, 2, 0),
-          ExpectedTrace(TraceStage.AcMetadataTokens, 1, 1, 0),
+          ExpectedTrace(TraceStage.AcMetadataTokens, 0, 2, 13),
+          ExpectedTrace(TraceStage.AcMetadataTokens, 1, 1, 22),
           ExpectedTrace(TraceStage.AcMetadataTokens, 2, 10, 0),
           ExpectedTrace(TraceStage.AcMetadataTokens, 3, 10, 0),
           ExpectedTrace(TraceStage.AcMetadataTokens, 4, 6, 8),
@@ -122,7 +136,7 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
           ExpectedTrace(TraceStage.AcTokens, 5, 2, 0)
         )
 
-      pokeConfig(dut, width, height)
+      pokeConfig(dut, width, height, fixedYtox = -7, fixedYtob = 11)
       dut.io.dcInput.valid.poke(false.B)
       dut.io.acInput.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
@@ -391,6 +405,92 @@ class FramePreparedTokenTraceStageSpec extends AnyFreeSpec with Matchers with Ch
       acTraces.exists(_.value != 0) mustBe true
       traceLastValues.zipWithIndex.foreach { case (traceLast, ordinal) =>
         withClue(s"prepared combined traceLast at output ordinal $ordinal") {
+          traceLast mustBe (ordinal == traces.length - 1)
+        }
+      }
+
+      dut.io.trace.valid.expect(false.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
+  "FramePreparedTokenTraceStage preserves stream partitions for exact 72px capacity" in {
+    val exactCapacity = HjxlConfig(maxFrameWidth = 72, maxFrameHeight = 8)
+    simulate(new FramePreparedTokenTraceStage(exactCapacity)) { dut =>
+      val width = 72
+      val height = 8
+      val xBlocks = 9
+      val yBlocks = 1
+      val xTiles = 2
+      val yTiles = 1
+      val dcSamples =
+        Seq(10, 12, 14, 13, 17, 19, 18, 20, 21) ++
+          Seq(-3, -1, 0, 2, 1, 4, 6, 5, 7) ++
+          Seq(50, 49, 51, 53, 52, 55, 56, 58, 57)
+      val blocks = Seq.fill(xBlocks * yBlocks)(zeroBlock)
+      val dcTokenCount = dcSamples.length
+      val strategyCount = xBlocks * yBlocks
+      val metadataCount = xTiles * yTiles * 2 + strategyCount * 3
+      val expectedAcTokenCount = acTokenCount(blocks)
+      expectedAcTokenCount mustBe strategyCount * 3
+
+      pokeConfig(dut, width, height, fixedYtox = -3, fixedYtob = 4)
+      dut.io.dcInput.valid.poke(false.B)
+      dut.io.acInput.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      for (sample <- dcSamples) {
+        dut.io.dcInput.valid.poke(true.B)
+        dut.io.dcInput.bits.poke(sample.S)
+        dut.io.dcInput.ready.expect(true.B)
+        dut.clock.step()
+      }
+      dut.io.dcInput.valid.poke(false.B)
+
+      for (block <- blocks) {
+        dut.io.acInput.valid.poke(true.B)
+        for (channel <- 0 until 3) {
+          dut.io.acInput.bits.numNonzeros(channel).poke(block.numNonzeros(channel).U)
+          for (i <- 0 until blockSize) {
+            dut.io.acInput.bits.quantized(channel)(i).poke(block.quantized(channel)(i).S)
+          }
+        }
+        dut.io.acInput.ready.expect(true.B)
+        dut.clock.step()
+      }
+      dut.io.acInput.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+
+      val totalTraceCount = dcTokenCount + strategyCount + metadataCount + expectedAcTokenCount
+      val traces = scala.collection.mutable.ArrayBuffer.empty[ExpectedTrace]
+      val traceLastValues = scala.collection.mutable.ArrayBuffer.empty[Boolean]
+      for (ordinal <- 0 until totalTraceCount) {
+        waitForTraceValid(dut)
+        traces += ExpectedTrace(
+          dut.io.trace.bits.stage.peekValue().asBigInt.toInt,
+          dut.io.trace.bits.group.peekValue().asBigInt.toInt,
+          dut.io.trace.bits.index.peekValue().asBigInt.toInt,
+          dut.io.trace.bits.value.peekValue().asBigInt.toInt
+        )
+        traceLastValues += dut.io.traceLast.peekValue().asBigInt.testBit(0)
+        dut.clock.step()
+      }
+
+      traces.take(dcTokenCount).forall(_.stage == TraceStage.DcTokens) mustBe true
+      traces.slice(dcTokenCount, dcTokenCount + strategyCount).zipWithIndex.foreach { case (trace, index) =>
+        trace.stage mustBe TraceStage.AcStrategy
+        trace.index mustBe index
+      }
+      val metadataTraces = traces.slice(dcTokenCount + strategyCount, dcTokenCount + strategyCount + metadataCount)
+      metadataTraces.map(_.stage).forall(_ == TraceStage.AcMetadataTokens) mustBe true
+      metadataTraces.length mustBe 31
+      metadataTraces.take(4).map(_.index) mustBe Seq(2, 2, 1, 1)
+      val acTraces = traces.drop(dcTokenCount + strategyCount + metadataCount)
+      acTraces.map(_.stage).forall(_ == TraceStage.AcTokens) mustBe true
+      acTraces.map(_.group) mustBe (0 until expectedAcTokenCount)
+      traceLastValues.zipWithIndex.foreach { case (traceLast, ordinal) =>
+        withClue(s"exact-capacity combined traceLast at output ordinal $ordinal") {
           traceLast mustBe (ordinal == traces.length - 1)
         }
       }

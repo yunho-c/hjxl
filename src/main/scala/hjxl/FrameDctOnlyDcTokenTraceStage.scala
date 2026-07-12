@@ -49,7 +49,7 @@ class FrameDctOnlyDcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
 
   private def ceilToBlock(value: UInt): UInt = {
     val block = blockDim.U
-    ((value + (block - 1.U)) / block) * block
+    ((value +& (block - 1.U)) / block) * block
   }
 
   private def quantizedDcForBlock(blockX: UInt, blockY: UInt): (Seq[SInt], Bool) = {

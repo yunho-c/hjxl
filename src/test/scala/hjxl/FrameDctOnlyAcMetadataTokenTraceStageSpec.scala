@@ -14,7 +14,9 @@ class FrameDctOnlyAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matcher
       dut: FrameDctOnlyAcMetadataTokenTraceStage,
       width: Int,
       height: Int,
-      fixedRawQuant: Int = 0
+      fixedRawQuant: Int = 0,
+      fixedYtox: Int = 0,
+      fixedYtob: Int = 0
   ): Unit = {
     dut.io.config.xsize.poke(width.U)
     dut.io.config.ysize.poke(height.U)
@@ -22,6 +24,8 @@ class FrameDctOnlyAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matcher
     dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
     dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
     dut.io.config.fixedRawQuant.poke(fixedRawQuant.U)
+    dut.io.config.fixedYtox.poke(fixedYtox.S)
+    dut.io.config.fixedYtob.poke(fixedYtob.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(false.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -126,6 +130,46 @@ class FrameDctOnlyAcMetadataTokenTraceStageSpec extends AnyFreeSpec with Matcher
       dut.io.traceLast.expect(true.B)
       dut.clock.step()
 
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
+  "FrameDctOnlyAcMetadataTokenTraceStage emits configured fixed CFL tokens" in {
+    simulate(new FrameDctOnlyAcMetadataTokenTraceStage(config)) { dut =>
+      val width = 8
+      val height = 8
+      pokeConfig(dut, width, height, fixedYtox = -7, fixedYtob = 11)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      for {
+        y <- 0 until height
+        x <- 0 until width
+      } drivePixel(dut, x, y)
+      dut.io.input.valid.poke(false.B)
+
+      val expected = Seq(
+        (2, 13),
+        (1, 22),
+        (10, 0),
+        (6, 8),
+        (0, 8)
+      )
+      dut.io.trace.ready.poke(true.B)
+      for (((context, value), ordinal) <- expected.zipWithIndex) {
+        withClue(s"token $ordinal context=$context value=$value") {
+          dut.io.trace.valid.expect(true.B)
+          dut.io.trace.bits.stage.expect(TraceStage.AcMetadataTokens.U)
+          dut.io.trace.bits.group.expect(ordinal.U)
+          dut.io.trace.bits.index.expect(context.U)
+          dut.io.trace.bits.value.expect(value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
+        }
+        dut.clock.step()
+      }
+
+      dut.io.trace.valid.expect(false.B)
       dut.io.overflow.expect(false.B)
     }
   }

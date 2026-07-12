@@ -43,7 +43,7 @@ class FrameXybTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
 
   private def ceilToBlock(value: UInt): UInt = {
     val block = HjxlConstants.BlockDim.U
-    ((value + (block - 1.U)) / block) * block
+    ((value +& (block - 1.U)) / block) * block
   }
 
   val configWidth = io.config.xsize(widthBits - 1, 0)

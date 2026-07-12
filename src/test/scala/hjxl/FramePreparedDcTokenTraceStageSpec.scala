@@ -17,6 +17,8 @@ class FramePreparedDcTokenTraceStageSpec extends AnyFreeSpec with Matchers with 
     dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
     dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(false.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -95,6 +97,52 @@ class FramePreparedDcTokenTraceStageSpec extends AnyFreeSpec with Matchers with 
 
       for (((context, value), ordinal) <- expected.zipWithIndex) {
         withClue(s"DC token $ordinal context=$context value=$value") {
+          dut.io.trace.valid.expect(true.B)
+          dut.io.trace.bits.stage.expect(TraceStage.DcTokens.U)
+          dut.io.trace.bits.group.expect(ordinal.U)
+          dut.io.trace.bits.index.expect(context.U)
+          dut.io.trace.bits.value.expect(value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
+        }
+        dut.clock.step()
+      }
+
+      dut.io.trace.valid.expect(false.B)
+      dut.io.input.ready.expect(true.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
+  "FramePreparedDcTokenTraceStage preserves block counts for exact 72px capacity" in {
+    val exactCapacity = HjxlConfig(maxFrameWidth = 72, maxFrameHeight = 8)
+    simulate(new FramePreparedDcTokenTraceStage(exactCapacity)) { dut =>
+      val width = 72
+      val height = 8
+      val xBlocks = 9
+      val planes = Seq(
+        Seq(10, 12, 14, 13, 17, 19, 18, 20, 21),
+        Seq(-3, -1, 0, 2, 1, 4, 6, 5, 7),
+        Seq(50, 49, 51, 53, 52, 55, 56, 58, 57)
+      )
+      val samples = planes.flatten
+      val expected = expectedTokens(planes, xBlocks)
+
+      pokeConfig(dut, width, height)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      for (sample <- samples) {
+        dut.io.input.valid.poke(true.B)
+        dut.io.input.bits.poke(sample.S)
+        dut.io.input.ready.expect(true.B)
+        dut.clock.step()
+      }
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+
+      for (((context, value), ordinal) <- expected.zipWithIndex) {
+        withClue(s"exact-capacity DC token $ordinal context=$context value=$value") {
           dut.io.trace.valid.expect(true.B)
           dut.io.trace.bits.stage.expect(TraceStage.DcTokens.U)
           dut.io.trace.bits.group.expect(ordinal.U)

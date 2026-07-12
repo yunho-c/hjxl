@@ -49,6 +49,8 @@ object HjxlAxiLiteRegister {
   val FixedInvQacQ16 = 0x14
   val FixedRawQuant = 0x18
   val Flags = 0x1c
+  val FixedYtox = 0x20
+  val FixedYtob = 0x24
 }
 
 object HjxlStatusControlBit {
@@ -73,13 +75,15 @@ object HjxlStatusControlBit {
   *   - 0x18 fixedRawQuant
   *   - 0x1c flags: bit 0 enableXyb, bit 1 enableDct, bit 2 enableQuant,
   *     bit 3 enableTokenize, bits 9:8 tokenSelect
+  *   - 0x20 fixedYtox, low byte interpreted as signed two's-complement CFL
+  *   - 0x24 fixedYtob, low byte interpreted as signed two's-complement CFL
   */
 class HjxlAxiLiteStreamCore(
     c: HjxlConfig = HjxlConfig(),
     traceRoute: Int = HjxlCoreTraceRoute.All,
     axiAddrBits: Int = 8
 ) extends Module {
-  require(axiAddrBits >= 5, "axiAddrBits must address the complete register map")
+  require(axiAddrBits >= 6, "axiAddrBits must address the complete register map")
   require(c.coordBits <= 32, "AXI-Lite xsize/ysize registers are 32 bits")
 
   private val dataBits = 32
@@ -124,6 +128,8 @@ class HjxlAxiLiteStreamCore(
   val fixedPointScale = RegInit(0.U(16.W))
   val fixedInvQacQ16 = RegInit(0.U(32.W))
   val fixedRawQuant = RegInit(0.U(8.W))
+  val fixedYtox = RegInit(0.U(8.W))
+  val fixedYtob = RegInit(0.U(8.W))
   val enableXyb = RegInit(false.B)
   val enableDct = RegInit(false.B)
   val enableQuant = RegInit(false.B)
@@ -140,6 +146,8 @@ class HjxlAxiLiteStreamCore(
   stream.io.config.fixedPointScale := fixedPointScale
   stream.io.config.fixedInvQacQ16 := fixedInvQacQ16
   stream.io.config.fixedRawQuant := fixedRawQuant
+  stream.io.config.fixedYtox := fixedYtox.asSInt
+  stream.io.config.fixedYtob := fixedYtob.asSInt
   stream.io.config.enableXyb := enableXyb
   stream.io.config.enableDct := enableDct
   stream.io.config.enableQuant := enableQuant
@@ -243,6 +251,14 @@ class HjxlAxiLiteStreamCore(
         enableTokenize := mergedFlags(3)
         tokenSelect := mergedFlags(9, 8)
       }
+      is(word(HjxlAxiLiteRegister.FixedYtox)) {
+        writeOkay := true.B
+        fixedYtox := mergeWrite(fixedYtox.pad(dataBits), wData, wStrb)(7, 0)
+      }
+      is(word(HjxlAxiLiteRegister.FixedYtob)) {
+        writeOkay := true.B
+        fixedYtob := mergeWrite(fixedYtob.pad(dataBits), wData, wStrb)(7, 0)
+      }
     }
 
     bResp := Mux(writeOkay, AxiLiteResponse.Okay.U, AxiLiteResponse.Decerr.U)
@@ -303,6 +319,14 @@ class HjxlAxiLiteStreamCore(
     is(word(HjxlAxiLiteRegister.Flags)) {
       readOkay := true.B
       readData := flagsWord(enableXyb, enableDct, enableQuant, enableTokenize, tokenSelect)
+    }
+    is(word(HjxlAxiLiteRegister.FixedYtox)) {
+      readOkay := true.B
+      readData := fixedYtox.pad(dataBits)
+    }
+    is(word(HjxlAxiLiteRegister.FixedYtob)) {
+      readOkay := true.B
+      readData := fixedYtob.pad(dataBits)
     }
   }
 

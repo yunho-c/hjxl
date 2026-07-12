@@ -51,7 +51,7 @@ class FramePreparedAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
   val overflow = RegInit(false.B)
 
   private def ceilDiv(value: UInt, divisor: Int): UInt =
-    (value + (divisor - 1).U) / divisor.U
+    (value +& (divisor - 1).U) / divisor.U
 
   private def blockIndex(value: UInt): UInt =
     value(blockIndexBits - 1, 0)

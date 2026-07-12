@@ -66,4 +66,27 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must include("io_overflow")
     text must not include "module FrameDctOnlyAcTokenTraceStage"
   }
+
+  "HjxlCore focused raw-quant route elaborates the raw quant-field scheduler" in {
+    val files = emittedSystemVerilog(TraceStage.RawQuantField)
+    val text = combinedText(files)
+    text must include("module HjxlCore")
+    text must include("module FrameRawQuantFieldTraceStage")
+    text must include("io_trace_bits_stage")
+    text must include("io_traceLast")
+    text must not include "module FrameAcStrategyTraceStage"
+  }
+
+  "HjxlCore focused CFL-map routes elaborate the fixed CFL map scheduler" in {
+    for (route <- Seq(TraceStage.YtoxMap, TraceStage.YtobMap)) {
+      val files = emittedSystemVerilog(route)
+      val text = combinedText(files)
+      text must include("module HjxlCore")
+      text must include("module FrameCflMapTraceStage")
+      text must include("io_trace_bits_stage")
+      text must include("io_traceLast")
+      text must not include "module FrameAcStrategyTraceStage"
+      text must not include "module FrameRawQuantFieldTraceStage"
+    }
+  }
 }

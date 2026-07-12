@@ -8,7 +8,7 @@ import chisel3.util._
 /** Emits AC-metadata tokens for the current fixed all-DCT quantization path.
   *
   * This stage mirrors libjxl-tiny's `ac_metadata_tokens` order for the current
-  * hardware subset: zero Y-to-X/Y-to-B CFL tile maps, all-DCT first-block
+  * hardware subset: scalar fixed Y-to-X/Y-to-B CFL tile maps, all-DCT first-block
   * strategy tokens, fixed raw quant-field tokens from `FrameConfig`, and fixed
   * block metadata literals. Token traces use `trace.group = token ordinal`,
   * `trace.index = context`, and `trace.value = packed residual/literal`.
@@ -35,11 +35,12 @@ class FrameDctOnlyAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) extend
   val received = RegInit(0.U(frameCountBits.W))
   val emitIndex = RegInit(0.U(32.W))
   val totalBlocks = RegInit(0.U(32.W))
+  val xTiles = RegInit(0.U(32.W))
   val totalTiles = RegInit(0.U(32.W))
   val overflow = RegInit(false.B)
 
   private def ceilDiv(value: UInt, divisor: Int): UInt =
-    (value + (divisor - 1).U) / divisor.U
+    (value +& (divisor - 1).U) / divisor.U
 
   private def ceilToBlock(value: UInt): UInt =
     ceilDiv(value, blockDim) * blockDim.U
@@ -70,6 +71,15 @@ class FrameDctOnlyAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) extend
   val isStrategy = emitIndex >= strategyStart && emitIndex < quantStart
   val isQuant = emitIndex >= quantStart && emitIndex < blockMetadataStart
   val cflMap = emitIndex / Mux(totalTiles === 0.U, 1.U, totalTiles)
+  val cflOrdinal = emitIndex - cflMap * Mux(totalTiles === 0.U, 1.U, totalTiles)
+  val xTilesSafe = Mux(xTiles === 0.U, 1.U, xTiles)
+  val tileX = cflOrdinal - (cflOrdinal / xTilesSafe) * xTilesSafe
+  val tileY = cflOrdinal / xTilesSafe
+  val fixedCfl = Mux(cflMap === 0.U, io.config.fixedYtox, io.config.fixedYtob)
+  val westCfl = Mux(tileX === 0.U && tileY === 0.U, 0.S, fixedCfl)
+  val northCfl = Mux(tileY === 0.U, westCfl, fixedCfl)
+  val northwestCfl = Mux(tileX === 0.U || tileY === 0.U, westCfl, fixedCfl)
+  val cflResidual = fixedCfl - DcTokenize.clampedGradient(northCfl, westCfl, northwestCfl)
   val quantOrdinal = emitIndex - quantStart
   val selectedRawQuant = Mux(
     io.config.fixedRawQuant === 0.U,
@@ -97,14 +107,15 @@ class FrameDctOnlyAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) extend
       Mux(isQuant, Tokenize.quantFieldContext(quantLeft), 0.U)
     )
   )
-  val cflOrStrategyValue = 0.S(c.traceValueBits.W)
+  val cflValue = Tokenize.packSigned(cflResidual, c.traceValueBits)
+  val strategyValue = Tokenize.packSigned(0.S, c.traceValueBits)
   val quantValue = Tokenize.packSigned(quantResidual, c.traceValueBits)
   val blockMetadataValue = Tokenize.packSigned(Tokenize.DefaultBlockMetadata.S, c.traceValueBits)
   io.trace.bits.value := MuxCase(
     blockMetadataValue,
     Seq(
-      isCfl -> cflOrStrategyValue,
-      isStrategy -> cflOrStrategyValue,
+      isCfl -> cflValue,
+      isStrategy -> strategyValue,
       isQuant -> quantValue
     )
   )
@@ -119,6 +130,7 @@ class FrameDctOnlyAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) extend
       state := emitting
       emitIndex := 0.U
       totalBlocks := nextXBlocks * nextYBlocks
+      xTiles := nextXTiles
       totalTiles := nextXTiles * nextYTiles
     }
   }
@@ -131,6 +143,7 @@ class FrameDctOnlyAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) extend
       received := 0.U
       emitIndex := 0.U
       totalBlocks := 0.U
+      xTiles := 0.U
       totalTiles := 0.U
     }
   }

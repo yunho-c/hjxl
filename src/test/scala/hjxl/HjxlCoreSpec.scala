@@ -16,7 +16,9 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       enableDct: Boolean = false,
       enableQuant: Boolean = false,
       enableTokenize: Boolean = false,
-      tokenSelect: Int = TokenTraceSelect.Dc
+      tokenSelect: Int = TokenTraceSelect.Dc,
+      fixedYtox: Int = 0,
+      fixedYtob: Int = 0
   ): Unit = {
     dut.io.config.xsize.poke(1.U)
     dut.io.config.ysize.poke(1.U)
@@ -24,6 +26,8 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     dut.io.config.fixedPointScale.poke(256.U)
     dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.invQacQ16For(256).U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(fixedYtox.S)
+    dut.io.config.fixedYtob.poke(fixedYtob.S)
     dut.io.config.enableXyb.poke(enableXyb.B)
     dut.io.config.enableDct.poke(enableDct.B)
     dut.io.config.enableQuant.poke(enableQuant.B)
@@ -152,6 +156,58 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
+  "HjxlCore routes to raw quant-field trace when the focused raw-quant route is selected" in {
+    simulate(new HjxlCore(config, traceRoute = TraceStage.RawQuantField)) { dut =>
+      pokeConfig(dut, enableXyb = true, enableQuant = true)
+      dut.io.config.fixedRawQuant.poke(11.U)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      driveOnePixel(dut)
+      dut.io.trace.ready.poke(true.B)
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.stage.expect(TraceStage.RawQuantField.U)
+      dut.io.trace.bits.index.expect(0.U)
+      dut.io.trace.bits.value.expect(11.S)
+      dut.io.traceLast.expect(true.B)
+    }
+  }
+
+  "HjxlCore routes to Y-to-X CFL map trace when the focused Ytox route is selected" in {
+    simulate(new HjxlCore(config, traceRoute = TraceStage.YtoxMap)) { dut =>
+      pokeConfig(dut, enableXyb = true, enableQuant = true, fixedYtox = -7, fixedYtob = 11)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      driveOnePixel(dut)
+      dut.io.trace.ready.poke(true.B)
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.stage.expect(TraceStage.YtoxMap.U)
+      dut.io.trace.bits.index.expect(0.U)
+      dut.io.trace.bits.value.expect((-7).S)
+      dut.io.traceLast.expect(true.B)
+    }
+  }
+
+  "HjxlCore routes to Y-to-B CFL map trace when the focused Ytob route is selected" in {
+    simulate(new HjxlCore(config, traceRoute = TraceStage.YtobMap)) { dut =>
+      pokeConfig(dut, enableXyb = true, enableQuant = true, fixedYtox = -7, fixedYtob = 11)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      driveOnePixel(dut)
+      dut.io.trace.ready.poke(true.B)
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.stage.expect(TraceStage.YtobMap.U)
+      dut.io.trace.bits.index.expect(0.U)
+      dut.io.trace.bits.value.expect(11.S)
+      dut.io.traceLast.expect(true.B)
+    }
+  }
+
   "HjxlCore routes to DCT-only quantized traces when DCT and quantization are enabled" in {
     simulate(new HjxlCore(config, traceRoute = TraceStage.QuantizedAc)) { dut =>
       pokeConfig(dut, enableXyb = true, enableDct = true, enableQuant = true)
@@ -202,7 +258,15 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
 
   "HjxlCore routes to AC metadata token traces when quantized tokenization is enabled without DCT" in {
     simulate(new HjxlCore(config, traceRoute = TraceStage.AcMetadataTokens)) { dut =>
-      pokeConfig(dut, enableXyb = true, enableQuant = true, enableTokenize = true, tokenSelect = TokenTraceSelect.AcMetadata)
+      pokeConfig(
+        dut,
+        enableXyb = true,
+        enableQuant = true,
+        enableTokenize = true,
+        tokenSelect = TokenTraceSelect.AcMetadata,
+        fixedYtox = -7,
+        fixedYtob = 11
+      )
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
       dut.clock.step()
@@ -213,20 +277,23 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.trace.bits.stage.expect(TraceStage.AcMetadataTokens.U)
       dut.io.trace.bits.group.expect(0.U)
       dut.io.trace.bits.index.expect(2.U)
-      dut.io.trace.bits.value.expect(0.S)
+      dut.io.trace.bits.value.expect(13.S)
       dut.io.traceLast.expect(false.B)
-      for (ordinal <- 1 until 4) {
+      val expectedRemaining = Seq(
+        (1, 1, 22, false),
+        (2, 10, 0, false),
+        (3, 6, 8, false),
+        (4, 0, 8, true)
+      )
+      for ((group, index, value, traceLast) <- expectedRemaining) {
         dut.clock.step()
         dut.io.trace.valid.expect(true.B)
         dut.io.trace.bits.stage.expect(TraceStage.AcMetadataTokens.U)
-        dut.io.trace.bits.group.expect(ordinal.U)
-        dut.io.traceLast.expect(false.B)
+        dut.io.trace.bits.group.expect(group.U)
+        dut.io.trace.bits.index.expect(index.U)
+        dut.io.trace.bits.value.expect(value.S)
+        dut.io.traceLast.expect(traceLast.B)
       }
-      dut.clock.step()
-      dut.io.trace.valid.expect(true.B)
-      dut.io.trace.bits.stage.expect(TraceStage.AcMetadataTokens.U)
-      dut.io.trace.bits.group.expect(4.U)
-      dut.io.traceLast.expect(true.B)
     }
   }
 

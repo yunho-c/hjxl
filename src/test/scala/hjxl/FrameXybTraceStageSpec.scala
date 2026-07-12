@@ -18,6 +18,8 @@ class FrameXybTraceStageSpec extends AnyFreeSpec with Matchers with ChiselSim {
     dut.io.config.fixedPointScale.poke(256.U)
     dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.invQacQ16For(256).U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
     dut.io.config.enableXyb.poke(true.B)
     dut.io.config.enableDct.poke(false.B)
     dut.io.config.enableQuant.poke(false.B)

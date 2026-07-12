@@ -38,7 +38,7 @@ class FramePreparedDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) exten
   val overflow = RegInit(false.B)
 
   private def ceilDivBlock(value: UInt): UInt =
-    (value + (blockDim - 1).U) >> log2Ceil(blockDim)
+    (value +& (blockDim - 1).U) >> log2Ceil(blockDim)
 
   val configWidth = io.config.xsize(widthBits - 1, 0)
   val configHeight = io.config.ysize(heightBits - 1, 0)

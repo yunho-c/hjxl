@@ -25,6 +25,9 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   private val includeInput = includes(TraceStage.InputPadded)
   private val includeXyb = includes(TraceStage.Xyb)
   private val includeDct = includes(TraceStage.RawDct8x8)
+  private val includeRawQuant = includes(TraceStage.RawQuantField)
+  private val includeYtoxMap = includes(TraceStage.YtoxMap)
+  private val includeYtobMap = includes(TraceStage.YtobMap)
   private val includeQuant = includes(TraceStage.QuantizedAc)
   private val includeDcToken = includes(TraceStage.DcTokens)
   private val includeAcMetadataToken = includes(TraceStage.AcMetadataTokens)
@@ -34,6 +37,9 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   val inputTrace = if (includeInput) Some(Module(new FramePadTraceStage(c))) else None
   val xybTrace = if (includeXyb) Some(Module(new FrameXybTraceStage(c))) else None
   val dctTrace = if (includeDct) Some(Module(new FrameDct8x8TraceStage(c))) else None
+  val rawQuantTrace = if (includeRawQuant) Some(Module(new FrameRawQuantFieldTraceStage(c))) else None
+  val ytoxTrace = if (includeYtoxMap) Some(Module(new FrameCflMapTraceStage(c, TraceStage.YtoxMap))) else None
+  val ytobTrace = if (includeYtobMap) Some(Module(new FrameCflMapTraceStage(c, TraceStage.YtobMap))) else None
   val quantTrace = if (includeQuant) Some(Module(new FrameDctOnlyQuantizeTraceStage(c))) else None
   val dcTokenTrace = if (includeDcToken) Some(Module(new FrameDctOnlyDcTokenTraceStage(c))) else None
   val acMetadataTokenTrace =
@@ -82,17 +88,39 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     } else {
       false.B
     }
+  val useRawQuantTrace =
+    if (includeRawQuant) {
+      io.config.enableQuant && !io.config.enableTokenize && !io.config.enableDct && !useAcStrategyTrace
+    } else {
+      false.B
+    }
+  val useYtoxTrace =
+    if (includeYtoxMap) {
+      io.config.enableQuant && !io.config.enableTokenize && !io.config.enableDct &&
+        !useAcStrategyTrace && !useRawQuantTrace
+    } else {
+      false.B
+    }
+  val useYtobTrace =
+    if (includeYtobMap) {
+      io.config.enableQuant && !io.config.enableTokenize && !io.config.enableDct &&
+        !useAcStrategyTrace && !useRawQuantTrace && !useYtoxTrace
+    } else {
+      false.B
+    }
   val useXybTrace =
     if (includeXyb) {
       io.config.enableXyb && !useDctTrace && !useQuantTrace && !useDcTokenTrace &&
-        !useAcMetadataTokenTrace && !useAcTokenTrace && !useAcStrategyTrace
+        !useAcMetadataTokenTrace && !useAcTokenTrace && !useAcStrategyTrace &&
+        !useRawQuantTrace && !useYtoxTrace && !useYtobTrace
     } else {
       false.B
     }
   val useInputTrace =
     if (includeInput) {
       !useXybTrace && !useDctTrace && !useQuantTrace && !useDcTokenTrace &&
-        !useAcMetadataTokenTrace && !useAcTokenTrace && !useAcStrategyTrace
+        !useAcMetadataTokenTrace && !useAcTokenTrace && !useAcStrategyTrace &&
+        !useRawQuantTrace && !useYtoxTrace && !useYtobTrace
     } else {
       false.B
     }
@@ -114,6 +142,24 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     stage.io.input.bits := io.input.bits
     stage.io.input.valid := io.input.valid && useDctTrace
     stage.io.trace.ready := io.trace.ready && useDctTrace
+  }
+  rawQuantTrace.foreach { stage =>
+    stage.io.config := io.config
+    stage.io.input.bits := io.input.bits
+    stage.io.input.valid := io.input.valid && useRawQuantTrace
+    stage.io.trace.ready := io.trace.ready && useRawQuantTrace
+  }
+  ytoxTrace.foreach { stage =>
+    stage.io.config := io.config
+    stage.io.input.bits := io.input.bits
+    stage.io.input.valid := io.input.valid && useYtoxTrace
+    stage.io.trace.ready := io.trace.ready && useYtoxTrace
+  }
+  ytobTrace.foreach { stage =>
+    stage.io.config := io.config
+    stage.io.input.bits := io.input.bits
+    stage.io.input.valid := io.input.valid && useYtobTrace
+    stage.io.trace.ready := io.trace.ready && useYtobTrace
   }
   quantTrace.foreach { stage =>
     stage.io.config := io.config
@@ -156,6 +202,9 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useAcTokenTrace -> acTokenTrace.map(_.io.input.ready).getOrElse(false.B),
       useQuantTrace -> quantTrace.map(_.io.input.ready).getOrElse(false.B),
       useDctTrace -> dctTrace.map(_.io.input.ready).getOrElse(false.B),
+      useRawQuantTrace -> rawQuantTrace.map(_.io.input.ready).getOrElse(false.B),
+      useYtoxTrace -> ytoxTrace.map(_.io.input.ready).getOrElse(false.B),
+      useYtobTrace -> ytobTrace.map(_.io.input.ready).getOrElse(false.B),
       useAcStrategyTrace -> acStrategyTrace.map(_.io.input.ready).getOrElse(false.B),
       useXybTrace -> xybTrace.map(_.io.input.ready).getOrElse(false.B)
     )
@@ -168,6 +217,9 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useAcTokenTrace -> acTokenTrace.map(_.io.trace.valid).getOrElse(false.B),
       useQuantTrace -> quantTrace.map(_.io.trace.valid).getOrElse(false.B),
       useDctTrace -> dctTrace.map(_.io.trace.valid).getOrElse(false.B),
+      useRawQuantTrace -> rawQuantTrace.map(_.io.trace.valid).getOrElse(false.B),
+      useYtoxTrace -> ytoxTrace.map(_.io.trace.valid).getOrElse(false.B),
+      useYtobTrace -> ytobTrace.map(_.io.trace.valid).getOrElse(false.B),
       useAcStrategyTrace -> acStrategyTrace.map(_.io.trace.valid).getOrElse(false.B),
       useXybTrace -> xybTrace.map(_.io.trace.valid).getOrElse(false.B)
     )
@@ -180,6 +232,9 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useAcTokenTrace -> acTokenTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useQuantTrace -> quantTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useDctTrace -> dctTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
+      useRawQuantTrace -> rawQuantTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
+      useYtoxTrace -> ytoxTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
+      useYtobTrace -> ytobTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAcStrategyTrace -> acStrategyTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useXybTrace -> xybTrace.map(_.io.trace.bits).getOrElse(inactiveTrace)
     )
@@ -190,6 +245,9 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useInputTrace -> inputTrace.map(_.io.traceLast).getOrElse(false.B),
       useXybTrace -> xybTrace.map(_.io.traceLast).getOrElse(false.B),
       useDctTrace -> dctTrace.map(_.io.traceLast).getOrElse(false.B),
+      useRawQuantTrace -> rawQuantTrace.map(_.io.traceLast).getOrElse(false.B),
+      useYtoxTrace -> ytoxTrace.map(_.io.traceLast).getOrElse(false.B),
+      useYtobTrace -> ytobTrace.map(_.io.traceLast).getOrElse(false.B),
       useQuantTrace -> quantTrace.map(_.io.traceLast).getOrElse(false.B),
       useDcTokenTrace -> dcTokenTrace.map(_.io.traceLast).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.traceLast).getOrElse(false.B),
@@ -203,6 +261,9 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useInputTrace -> inputTrace.map(_.io.busy).getOrElse(false.B),
       useXybTrace -> xybTrace.map(_.io.busy).getOrElse(false.B),
       useDctTrace -> dctTrace.map(_.io.busy).getOrElse(false.B),
+      useRawQuantTrace -> rawQuantTrace.map(_.io.busy).getOrElse(false.B),
+      useYtoxTrace -> ytoxTrace.map(_.io.busy).getOrElse(false.B),
+      useYtobTrace -> ytobTrace.map(_.io.busy).getOrElse(false.B),
       useQuantTrace -> quantTrace.map(_.io.busy).getOrElse(false.B),
       useDcTokenTrace -> dcTokenTrace.map(_.io.busy).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.busy).getOrElse(false.B),
@@ -216,6 +277,9 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useInputTrace -> inputTrace.map(_.io.overflow).getOrElse(false.B),
       useXybTrace -> xybTrace.map(_.io.overflow).getOrElse(false.B),
       useDctTrace -> dctTrace.map(_.io.overflow).getOrElse(false.B),
+      useRawQuantTrace -> rawQuantTrace.map(_.io.overflow).getOrElse(false.B),
+      useYtoxTrace -> ytoxTrace.map(_.io.overflow).getOrElse(false.B),
+      useYtobTrace -> ytobTrace.map(_.io.overflow).getOrElse(false.B),
       useQuantTrace -> quantTrace.map(_.io.overflow).getOrElse(false.B),
       useDcTokenTrace -> dcTokenTrace.map(_.io.overflow).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.overflow).getOrElse(false.B),

@@ -130,6 +130,8 @@ class HjxlAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim
       axiWrite(dut, HjxlAxiLiteRegister.FixedInvQacQ16, 0x89abcdefL) must be(AxiLiteResponse.Okay)
       axiWrite(dut, HjxlAxiLiteRegister.FixedRawQuant, 0xee) must be(AxiLiteResponse.Okay)
       axiWrite(dut, HjxlAxiLiteRegister.Flags, 0x20d) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtox, 0xf9) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtob, 0x0b) must be(AxiLiteResponse.Okay)
 
       axiRead(dut, HjxlAxiLiteRegister.Xsize) must be(BigInt(0x1234) -> AxiLiteResponse.Okay)
       axiRead(dut, HjxlAxiLiteRegister.Ysize) must be(BigInt(0x5678) -> AxiLiteResponse.Okay)
@@ -138,6 +140,8 @@ class HjxlAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim
       axiRead(dut, HjxlAxiLiteRegister.FixedInvQacQ16) must be(BigInt(0x89abcdefL) -> AxiLiteResponse.Okay)
       axiRead(dut, HjxlAxiLiteRegister.FixedRawQuant) must be(BigInt(0xee) -> AxiLiteResponse.Okay)
       axiRead(dut, HjxlAxiLiteRegister.Flags) must be(BigInt(0x20d) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtox) must be(BigInt(0xf9) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtob) must be(BigInt(0x0b) -> AxiLiteResponse.Okay)
     }
   }
 
@@ -150,6 +154,16 @@ class HjxlAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim
 
       axiWrite(dut, HjxlAxiLiteRegister.Xsize, 0x00001234, strb = 0x3) must be(AxiLiteResponse.Okay)
       axiRead(dut, HjxlAxiLiteRegister.Xsize) must be(BigInt(0x1234) -> AxiLiteResponse.Okay)
+
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtox, 0x0000f900, strb = 0xe) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtob, 0x00000b00, strb = 0xe) must be(AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtox) must be(BigInt(0) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtob) must be(BigInt(0) -> AxiLiteResponse.Okay)
+
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtox, 0xf9, strb = 0x1) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtob, 0x0b, strb = 0x1) must be(AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtox) must be(BigInt(0xf9) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtob) must be(BigInt(0x0b) -> AxiLiteResponse.Okay)
     }
   }
 

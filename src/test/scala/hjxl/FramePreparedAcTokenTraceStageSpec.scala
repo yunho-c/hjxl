@@ -20,6 +20,8 @@ class FramePreparedAcTokenTraceStageSpec extends AnyFreeSpec with Matchers with 
     dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
     dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(false.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -93,6 +95,12 @@ class FramePreparedAcTokenTraceStageSpec extends AnyFreeSpec with Matchers with 
     values.foldLeft(Vector.fill(blockSize)(0)) { case (coefficients, (index, value)) =>
       coefficients.updated(index, value)
     }
+
+  private def zeroBlock: PreparedBlock =
+    PreparedBlock(
+      quantized = Vector(quantized(), quantized(), quantized()),
+      numNonzeros = Vector(0, 0, 0)
+    )
 
   private def waitForTraceValid(dut: FramePreparedAcTokenTraceStage): Unit = {
     var cycles = 0
@@ -186,6 +194,53 @@ class FramePreparedAcTokenTraceStageSpec extends AnyFreeSpec with Matchers with 
 
       dut.io.trace.valid.expect(false.B)
       dut.io.input.ready.expect(false.B)
+      waitForInputReady(dut)
+      dut.io.input.ready.expect(true.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
+  "FramePreparedAcTokenTraceStage preserves block counts for exact 72px capacity" in {
+    val exactCapacity = HjxlConfig(maxFrameWidth = 72, maxFrameHeight = 8)
+    simulate(new FramePreparedAcTokenTraceStage(exactCapacity)) { dut =>
+      val width = 72
+      val height = 8
+      val xBlocks = 9
+      val blocks = Seq.fill(xBlocks)(zeroBlock)
+      val expected = expectedTokens(blocks, xBlocks)
+
+      pokeConfig(dut, width, height)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      for (block <- blocks) {
+        dut.io.input.valid.poke(true.B)
+        for (channel <- 0 until 3) {
+          dut.io.input.bits.numNonzeros(channel).poke(block.numNonzeros(channel).U)
+          for (i <- 0 until blockSize) {
+            dut.io.input.bits.quantized(channel)(i).poke(block.quantized(channel)(i).S)
+          }
+        }
+        dut.io.input.ready.expect(true.B)
+        dut.clock.step()
+      }
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+
+      for (((context, value), ordinal) <- expected.zipWithIndex) {
+        waitForTraceValid(dut)
+        withClue(s"exact-capacity AC token $ordinal context=$context value=$value") {
+          dut.io.trace.bits.stage.expect(TraceStage.AcTokens.U)
+          dut.io.trace.bits.group.expect(ordinal.U)
+          dut.io.trace.bits.index.expect(context.U)
+          dut.io.trace.bits.value.expect(value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
+        }
+        dut.clock.step()
+      }
+
+      dut.io.trace.valid.expect(false.B)
       waitForInputReady(dut)
       dut.io.input.ready.expect(true.B)
       dut.io.overflow.expect(false.B)
