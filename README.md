@@ -178,6 +178,26 @@ estimated-CFL prepared-DCT route. It keeps the same ports and trace padding as
 the current KV260 top, but uses `HjxlPreparedCflDctAxiLiteStreamCore`
 internally.
 
+The frozen direct top has a reproducible 200 MHz out-of-context Vivado
+synthesis and reporting flow under [`fpga/vivado/`](fpga/vivado/). Generate the
+RTL and run its toolchain-independent preflight with:
+
+```sh
+sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'
+tclsh fpga/vivado/synth.tcl --preflight-only
+```
+
+In a Vivado environment, run:
+
+```sh
+vivado -mode batch -source fpga/vivado/synth.tcl
+```
+
+This writes timing, utilization, methodology, clock, and constraint reports
+under the gitignored `build/vivado/` tree. The flow is an out-of-context
+feasibility gate; it does not claim place-and-route, bitstream, DMA, or board
+execution.
+
 ## Requirements
 
 - JDK 21 or newer

@@ -955,11 +955,21 @@ Use stage-tolerant parity:
 ## KV260 Path
 
 The local machine has Verilator available, but Vivado/Vitis are not assumed.
-The immediate FPGA deliverable is generated SystemVerilog and a Vivado-ready
-top-level shape. `HjxlKv260PreparedDctTop` is the current candidate wrapper for
-that shape: AXI4-Stream carries prepared DCT-only block records and trace
-output, while AXI4-Lite programs frame configuration and clears stream protocol
-errors. The lower-level `HjxlAxiLiteStreamCore` remains the RGB-input
-controlled shell for simulation and future end-to-end hardware work.
-Host drivers, DMA packaging, timing closure, and bitstream validation belong in
-a later environment with AMD tools installed.
+The immediate FPGA deliverable is generated SystemVerilog plus a reproducible
+out-of-context synthesis gate. `HjxlKv260PreparedDctTop` is the frozen first
+wrapper for that work: AXI4-Stream carries prepared DCT-only block records and
+trace output, while AXI4-Lite programs frame configuration and clears stream
+protocol errors. `fpga/vivado/synth.tcl` targets
+`xck26-sfvc784-2LV-c` at 200 MHz, validates the generated `filelist.f`, and
+writes checkpoint, utilization, timing, constraint, methodology, and clock
+reports. Its `--preflight-only` mode runs under ordinary `tclsh`, so source-set
+and top-module errors can be caught without AMD tools. The 70% per-resource
+budget reserves integration headroom for the later MPSoC block design.
+
+This remains an out-of-context contract: all AXI interfaces are assumed
+synchronous to `ap_clk`, with one nanosecond of input and output integration
+delay and 0.2 ns clock uncertainty. The lower-level `HjxlAxiLiteStreamCore`
+remains the RGB-input controlled shell for simulation and future end-to-end
+hardware work. Place-and-route, host drivers, DMA packaging, XSA/bitstream
+generation, timing closure for the integrated design, and board validation
+still require an environment with AMD tools installed.

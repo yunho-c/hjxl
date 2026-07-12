@@ -420,6 +420,11 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
    flow, KV260 part/board selection, clock constraint, utilization report,
    post-synthesis timing report, and a documented resource budget. This may
    force architectural changes before more feature work is worthwhile.
+   **Infrastructure added 2026-07-12:** `fpga/vivado/` now defines the direct
+   top, K26/KV260 identities, 200 MHz timing contract, 70% resource budget, and
+   checkpoint/utilization/timing/methodology report flow. Its non-Vivado
+   preflight passes locally. Vivado execution and physical evidence remain
+   outstanding because the toolchain is unavailable on this machine.
 
 ### P1 — Architecture and maintainability
 

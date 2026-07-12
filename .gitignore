@@ -4,6 +4,7 @@ target/
 out/
 generated*/
 build-codex/
+/build/
 __pycache__/
 *.py[cod]
 .bsp/

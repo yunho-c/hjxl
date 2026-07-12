@@ -132,6 +132,12 @@ Read these libjxl-tiny files before making architectural changes:
 - Use `chisel3.simulator.scalatest.ChiselSim` for ScalaTest hardware tests.
 - Treat Vivado/KV260 bitstream validation as unavailable unless `vivado` or
   `vitis` is present or the user provides a toolchain environment.
+- For the frozen direct prepared-DCT FPGA target, use
+  `tclsh fpga/vivado/synth.tcl --preflight-only` after elaboration to validate
+  the generated source set without Vivado. With Vivado installed, use
+  `vivado -mode batch -source fpga/vivado/synth.tcl`; keep reports beneath the
+  gitignored `build/vivado/` tree and distinguish out-of-context synthesis from
+  place-and-route, bitstream, and board proof.
 
 ## Current RTL State
 

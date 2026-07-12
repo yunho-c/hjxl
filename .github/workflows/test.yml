@@ -29,7 +29,7 @@ jobs:
       - name: Setup Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-numpy verilator
+          sudo apt-get install -y python3-numpy tcl verilator
           python3 -c 'import numpy'
           verilator --version
       - name: Checkout libjxl-tiny
@@ -57,5 +57,9 @@ jobs:
             tools/hjxl_trace_tokens.py
       - name: SBT Test
         run: sbt test
+      - name: KV260 Vivado Source Preflight
+        run: |
+          sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'
+          tclsh fpga/vivado/synth.tcl --preflight-only
       - name: mill Test
         run: ./mill _.test
