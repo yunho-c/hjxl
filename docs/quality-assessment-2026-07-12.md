@@ -34,6 +34,11 @@ contained 64 modified and 22 untracked paths, with roughly 10,500 inserted and
 work exists only in that uncommitted state. Local validation is valuable, but a
 reviewer or CI run of `main` cannot reproduce this snapshot.
 
+**Follow-up on 2026-07-12:** this immediate reproducibility risk was remediated
+after the review. The implementation wave was partitioned into independently
+validated commits `bbee6a1` (fixed quantization metadata routes), `fec2527`
+(prepared estimated-CFL pipeline), and `748ee78` (host replay contracts).
+
 ### Overall judgment
 
 | Perspective | Assessment |
@@ -345,10 +350,11 @@ Recommended documentation split:
   elaboration entry points.
 - The repository is GPLv3-licensed and small enough to clone and inspect easily.
 
-### Negative
+### Negative or outstanding at review time
 
-- The current advanced state is not reproducible from Git: 86 paths are dirty
-  or untracked. This is the most immediate process-quality problem.
+- At the start of the review, the advanced state was not reproducible from Git:
+  86 paths were dirty or untracked. The follow-up commits named in the executive
+  summary have since resolved this immediate issue.
 - The history contains 23 commits from July 3–4, 2026, then a very large
   uncommitted development wave. The project has no tags or releases.
 - CI has no formatter, lint, warnings-as-errors, coverage, generated-contract
@@ -395,6 +401,8 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
 1. **Checkpoint the current work into reviewable commits.** Separate the
    estimated-CFL RTL, host-contract expansion, wrapper changes, tests, and docs.
    Run the full gate on each final slice. Until then, the best work is local-only.
+   **Completed 2026-07-12:** commits `bbee6a1`, `fec2527`, and `748ee78` preserve
+   the implementation as three staged-state-validated slices.
 2. **State the maturity in one short authoritative status table.** The first
    screen of the README should say that the strongest boundary begins at
    prepared DCT coefficients and that Vivado/board validation has not happened.
