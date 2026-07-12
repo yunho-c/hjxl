@@ -21,7 +21,9 @@ board-proven FPGA encoder.
 The estimated-CFL top remains an experimental sibling until the direct top has
 physical feasibility data. See
 [`docs/quality-assessment-2026-07-12.md`](docs/quality-assessment-2026-07-12.md)
-for the evidence, limitations, and prioritized roadmap behind this status.
+for the evidence, limitations, and prioritized roadmap behind this status, and
+[`docs/performance.md`](docs/performance.md) for the direct prepared-DCT cycle
+baseline.
 
 Current RTL status: the top-level buffers a small RGB frame and emits one of
 several trace streams: libjxl-tiny-compatible `input_padded`, padded

@@ -436,6 +436,11 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
    tile, token, and frame; initiation interval; worst-case token expansion;
    input/output bandwidth; and target clock. Add counters or a simulation
    profiler so regressions are visible.
+   **Partially completed 2026-07-12:** `HjxlPreparedDctThroughputSpec` now
+   profiles and locks input span/stalls, first-output latency, trace span/bubbles,
+   token expansion, and total cycles for one- and two-block direct prepared-DCT
+   frames; `docs/performance.md` records the 200 MHz conversion and limits.
+   Larger multi-tile and worst-case-content measurements remain open.
 7. **Make control transactional.** Snapshot all configuration on frame start and
    reject writes while busy, or introduce shadow registers plus an explicit
    start/commit command. Add ABI version, build ID, capabilities, maximum frame

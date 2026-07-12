@@ -978,3 +978,11 @@ remains the RGB-input controlled shell for simulation and future end-to-end
 hardware work. Place-and-route, host drivers, DMA packaging, XSA/bitstream
 generation, timing closure for the integrated design, and board validation
 still require an environment with AMD tools installed.
+
+`HjxlPreparedDctThroughputSpec` provides the complementary simulation-cycle
+baseline for this target. Under continuous source/sink traffic, the direct
+stream currently measures 225 cycles for one zero 8x8 block, 230 cycles when
+one AC coefficient is nonzero in each channel, and 450 cycles for two zero
+blocks. See `docs/performance.md` for phase definitions and limitations. These
+numbers isolate core behavior and do not include AXI-Lite setup, DMA, memory,
+clock crossings, or physical timing.

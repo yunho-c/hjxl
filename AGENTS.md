@@ -143,6 +143,12 @@ Read these libjxl-tiny files before making architectural changes:
   `vivado -mode batch -source fpga/vivado/synth.tcl`; keep reports beneath the
   gitignored `build/vivado/` tree and distinguish out-of-context synthesis from
   place-and-route, bitstream, and board proof.
+- `HjxlPreparedDctThroughputSpec` is the deterministic no-backpressure cycle
+  baseline for the direct prepared-DCT stream. Keep its exact measurements and
+  `docs/performance.md` synchronized. Explain startup latency, steady-state
+  input cost, and content-dependent token expansion separately; do not present
+  the 200 MHz conversion as measured hardware performance until Vivado timing
+  closes.
 
 ## Current RTL State
 
