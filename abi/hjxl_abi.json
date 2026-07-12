@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "axi_lite": {
+    "addr_bits": 8,
+    "data_bits": 32,
+    "registers": [
+      {"name": "status_control", "scala_name": "StatusControl", "offset": 0},
+      {"name": "xsize", "scala_name": "Xsize", "offset": 4},
+      {"name": "ysize", "scala_name": "Ysize", "offset": 8},
+      {"name": "distance_q8", "scala_name": "DistanceQ8", "offset": 12},
+      {"name": "fixed_point_scale", "scala_name": "FixedPointScale", "offset": 16},
+      {"name": "fixed_inv_qac_q16", "scala_name": "FixedInvQacQ16", "offset": 20},
+      {"name": "fixed_raw_quant", "scala_name": "FixedRawQuant", "offset": 24},
+      {"name": "flags", "scala_name": "Flags", "offset": 28},
+      {"name": "fixed_ytox", "scala_name": "FixedYtox", "offset": 32},
+      {"name": "fixed_ytob", "scala_name": "FixedYtob", "offset": 36}
+    ],
+    "status_bits": [
+      {"name": "protocol_error", "scala_name": "ProtocolError", "bit": 0},
+      {"name": "busy", "scala_name": "Busy", "bit": 1},
+      {"name": "overflow", "scala_name": "Overflow", "bit": 2},
+      {"name": "unsupported_distance", "scala_name": "UnsupportedDistance", "bit": 3}
+    ],
+    "control_bits": [
+      {"name": "clear_protocol_error", "scala_name": "ClearProtocolError", "bit": 0}
+    ]
+  },
+  "trace": {
+    "fields": [
+      {"name": "stage", "scala_name": "Stage", "bits": 8},
+      {"name": "group", "scala_name": "Group", "bits": 16},
+      {"name": "index", "scala_name": "Index", "bits": 32},
+      {"name": "value", "scala_name": "Value", "bits": 32}
+    ],
+    "kv260_capture_word_bytes": 16,
+    "stages": [
+      {"name": "input-padded", "scala_name": "InputPadded", "value": 0},
+      {"name": "xyb", "scala_name": "Xyb", "value": 1},
+      {"name": "raw-dct8x8", "scala_name": "RawDct8x8", "value": 2},
+      {"name": "raw-quant-field", "scala_name": "RawQuantField", "value": 3},
+      {"name": "ytox-map", "scala_name": "YtoxMap", "value": 4},
+      {"name": "ytob-map", "scala_name": "YtobMap", "value": 5},
+      {"name": "ac-strategy", "scala_name": "AcStrategy", "value": 6},
+      {"name": "quant-dc", "scala_name": "QuantDc", "value": 7},
+      {"name": "quantized-ac", "scala_name": "QuantizedAc", "value": 8},
+      {"name": "num-nonzeros", "scala_name": "NumNonzeros", "value": 9},
+      {"name": "dc-tokens", "scala_name": "DcTokens", "value": 10},
+      {"name": "ac-metadata-tokens", "scala_name": "AcMetadataTokens", "value": 11},
+      {"name": "ac-tokens", "scala_name": "AcTokens", "value": 12}
+    ]
+  },
+  "token_select": [
+    {"name": "dc", "scala_name": "Dc", "value": 0},
+    {"name": "ac-metadata", "scala_name": "AcMetadata", "value": 1},
+    {"name": "ac-tokens", "scala_name": "AcTokens", "value": 2}
+  ],
+  "prepared_dct_stream": {
+    "word_bits": 32,
+    "scalar_words": 9,
+    "channels": 3,
+    "coefficients_per_channel": 64,
+    "scalar_fields": [
+      {"name": "quant", "scala_name": "Quant", "offset": 0},
+      {"name": "scale_q16", "scala_name": "ScaleQ16", "offset": 1},
+      {"name": "inv_qac_q16", "scala_name": "InvQacQ16", "offset": 2},
+      {"name": "inv_dc_factor_q16_base", "scala_name": "InvDcFactorQ16Base", "offset": 3},
+      {"name": "x_qm_multiplier_q16", "scala_name": "XQmMultiplierQ16", "offset": 6},
+      {"name": "ytox", "scala_name": "Ytox", "offset": 7},
+      {"name": "ytob", "scala_name": "Ytob", "offset": 8}
+    ]
+  }
+}

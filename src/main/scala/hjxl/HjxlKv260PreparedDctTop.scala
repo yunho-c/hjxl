@@ -16,15 +16,16 @@ import chisel3._
   */
 class HjxlKv260PreparedDctTop(
     c: HjxlConfig = HjxlConfig(),
-    axiAddrBits: Int = 8,
-    traceBusBytes: Int = 16,
+    axiAddrBits: Int = HjxlAbiGenerated.AxiLite.AddrBits,
+    traceBusBytes: Int = HjxlAbiGenerated.Trace.Kv260CaptureWordBytes,
     estimatedCfl: Boolean = false
 ) extends RawModule {
-  private val controlDataBits = 32
+  private val controlDataBits = HjxlAbiGenerated.AxiLite.DataBits
   private val controlStrobeBits = controlDataBits / 8
-  private val inputDataBits = 32
+  private val inputDataBits = HjxlAbiGenerated.PreparedDctStream.WordBits
   private val inputWordBytes = inputDataBits / 8
-  private val traceDataBits = 8 + c.groupBits + 32 + c.traceValueBits
+  private val traceDataBits =
+    HjxlAbiGenerated.Trace.StageBits + c.groupBits + HjxlAbiGenerated.Trace.IndexBits + c.traceValueBits
   private val traceWordBytes = (traceDataBits + 7) / 8
   private val traceBusBits = traceBusBytes * 8
   require(traceBusBytes >= traceWordBytes, "traceBusBytes must fit the packed trace word")
@@ -124,6 +125,6 @@ class HjxlKv260PreparedDctTop(
   */
 class HjxlKv260PreparedCflDctTop(
     c: HjxlConfig = HjxlConfig(),
-    axiAddrBits: Int = 8,
-    traceBusBytes: Int = 16
+    axiAddrBits: Int = HjxlAbiGenerated.AxiLite.AddrBits,
+    traceBusBytes: Int = HjxlAbiGenerated.Trace.Kv260CaptureWordBytes
 ) extends HjxlKv260PreparedDctTop(c, axiAddrBits, traceBusBytes, estimatedCfl = true)

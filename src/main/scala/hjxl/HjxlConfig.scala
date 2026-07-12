@@ -6,8 +6,8 @@ package hjxl
 case class HjxlConfig(
     pixelBits: Int = 16,
     coordBits: Int = 16,
-    groupBits: Int = 16,
-    traceValueBits: Int = 32,
+    groupBits: Int = HjxlAbiGenerated.Trace.GroupBits,
+    traceValueBits: Int = HjxlAbiGenerated.Trace.ValueBits,
     maxFrameWidth: Int = 32,
     maxFrameHeight: Int = 32,
     preparedDctCoefficientFractionBits: Int = 16
@@ -35,25 +35,25 @@ object HjxlConstants {
 }
 
 object TraceStage {
-  val InputPadded = 0
-  val Xyb = 1
-  val RawDct8x8 = 2
-  val RawQuantField = 3
-  val YtoxMap = 4
-  val YtobMap = 5
-  val AcStrategy = 6
-  val QuantDc = 7
-  val QuantizedAc = 8
-  val NumNonzeros = 9
-  val DcTokens = 10
-  val AcMetadataTokens = 11
-  val AcTokens = 12
+  val InputPadded = HjxlAbiGenerated.Trace.Stage.InputPadded
+  val Xyb = HjxlAbiGenerated.Trace.Stage.Xyb
+  val RawDct8x8 = HjxlAbiGenerated.Trace.Stage.RawDct8x8
+  val RawQuantField = HjxlAbiGenerated.Trace.Stage.RawQuantField
+  val YtoxMap = HjxlAbiGenerated.Trace.Stage.YtoxMap
+  val YtobMap = HjxlAbiGenerated.Trace.Stage.YtobMap
+  val AcStrategy = HjxlAbiGenerated.Trace.Stage.AcStrategy
+  val QuantDc = HjxlAbiGenerated.Trace.Stage.QuantDc
+  val QuantizedAc = HjxlAbiGenerated.Trace.Stage.QuantizedAc
+  val NumNonzeros = HjxlAbiGenerated.Trace.Stage.NumNonzeros
+  val DcTokens = HjxlAbiGenerated.Trace.Stage.DcTokens
+  val AcMetadataTokens = HjxlAbiGenerated.Trace.Stage.AcMetadataTokens
+  val AcTokens = HjxlAbiGenerated.Trace.Stage.AcTokens
 }
 
 object TokenTraceSelect {
-  val Dc = 0
-  val AcMetadata = 1
-  val AcTokens = 2
+  val Dc = HjxlAbiGenerated.TokenSelect.Dc
+  val AcMetadata = HjxlAbiGenerated.TokenSelect.AcMetadata
+  val AcTokens = HjxlAbiGenerated.TokenSelect.AcTokens
   val AcNonzero = AcTokens
 }
 

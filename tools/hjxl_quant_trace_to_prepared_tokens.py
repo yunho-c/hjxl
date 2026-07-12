@@ -10,11 +10,11 @@ import json
 from pathlib import Path
 import sys
 
+from hjxl_abi_generated import TRACE_STAGES_BY_SCALA_NAME
 
 TRACE_STAGES = {
-    "QuantDc": 7,
-    "QuantizedAc": 8,
-    "NumNonzeros": 9,
+    name: TRACE_STAGES_BY_SCALA_NAME[name]
+    for name in ("QuantDc", "QuantizedAc", "NumNonzeros")
 }
 BLOCK_DIM = 8
 BLOCK_SIZE = BLOCK_DIM * BLOCK_DIM

@@ -37,8 +37,8 @@ class XybPixel(c: HjxlConfig) extends Bundle {
 }
 
 class StageTrace(c: HjxlConfig) extends Bundle {
-  val stage = UInt(8.W)
+  val stage = UInt(HjxlAbiGenerated.Trace.StageBits.W)
   val group = UInt(c.groupBits.W)
-  val index = UInt(32.W)
+  val index = UInt(HjxlAbiGenerated.Trace.IndexBits.W)
   val value = SInt(c.traceValueBits.W)
 }

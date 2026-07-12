@@ -9,24 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 import sys
 
+from hjxl_abi_generated import TRACE_STAGES_BY_SCALA_NAME
 from hjxl_stream_trace import decode_stream_rows, read_stream_bin, read_stream_csv
 
 
-TRACE_STAGES = {
-    "InputPadded": 0,
-    "Xyb": 1,
-    "RawDct8x8": 2,
-    "RawQuantField": 3,
-    "YtoxMap": 4,
-    "YtobMap": 5,
-    "AcStrategy": 6,
-    "QuantDc": 7,
-    "QuantizedAc": 8,
-    "NumNonzeros": 9,
-    "DcTokens": 10,
-    "AcMetadataTokens": 11,
-    "AcTokens": 12,
-}
+TRACE_STAGES = TRACE_STAGES_BY_SCALA_NAME
 
 TOKEN_STAGES = {
     "dc": TRACE_STAGES["DcTokens"],

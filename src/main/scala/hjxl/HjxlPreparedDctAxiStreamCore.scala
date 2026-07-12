@@ -6,18 +6,18 @@ import chisel3._
 import chisel3.util._
 
 object PreparedDctStreamLayout {
-  val ScalarWords = 9
-  val CoefficientWords = 3 * HjxlConstants.BlockDim * HjxlConstants.BlockDim
-  val WordsPerBlock = ScalarWords + CoefficientWords
+  val ScalarWords = HjxlAbiGenerated.PreparedDctStream.ScalarWords
+  val CoefficientWords = HjxlAbiGenerated.PreparedDctStream.CoefficientWords
+  val WordsPerBlock = HjxlAbiGenerated.PreparedDctStream.WordsPerBlock
 
-  val Quant = 0
-  val ScaleQ16 = 1
-  val InvQacQ16 = 2
-  val InvDcFactorQ16Base = 3
-  val XQmMultiplierQ16 = 6
-  val Ytox = 7
-  val Ytob = 8
-  val CoefficientBase = ScalarWords
+  val Quant = HjxlAbiGenerated.PreparedDctStream.Quant
+  val ScaleQ16 = HjxlAbiGenerated.PreparedDctStream.ScaleQ16
+  val InvQacQ16 = HjxlAbiGenerated.PreparedDctStream.InvQacQ16
+  val InvDcFactorQ16Base = HjxlAbiGenerated.PreparedDctStream.InvDcFactorQ16Base
+  val XQmMultiplierQ16 = HjxlAbiGenerated.PreparedDctStream.XQmMultiplierQ16
+  val Ytox = HjxlAbiGenerated.PreparedDctStream.Ytox
+  val Ytob = HjxlAbiGenerated.PreparedDctStream.Ytob
+  val CoefficientBase = HjxlAbiGenerated.PreparedDctStream.CoefficientBase
 }
 
 class HjxlPreparedDctAxiStreamCoreIO(c: HjxlConfig, inputDataBits: Int, traceDataBits: Int) extends Bundle {
@@ -44,6 +44,10 @@ class HjxlPreparedDctAxiStreamCore(c: HjxlConfig = HjxlConfig()) extends Module 
 
   private val blockDim = HjxlConstants.BlockDim
   private val blockSize = blockDim * blockDim
+  require(
+    blockSize == HjxlAbiGenerated.PreparedDctStream.CoefficientsPerChannel,
+    "prepared-DCT ABI coefficient count must match the RTL block geometry"
+  )
   private val maxXBlocks = c.maxFrameWidth / blockDim
   private val maxYBlocks = c.maxFrameHeight / blockDim
   private val maxBlocks = maxXBlocks * maxYBlocks
@@ -53,8 +57,9 @@ class HjxlPreparedDctAxiStreamCore(c: HjxlConfig = HjxlConfig()) extends Module 
   private val widthBits = log2Ceil(c.maxFrameWidth + 1)
   private val heightBits = log2Ceil(c.maxFrameHeight + 1)
 
-  val inputDataBits = 32
-  val traceDataBits = 8 + c.groupBits + 32 + c.traceValueBits
+  val inputDataBits = HjxlAbiGenerated.PreparedDctStream.WordBits
+  val traceDataBits =
+    HjxlAbiGenerated.Trace.StageBits + c.groupBits + HjxlAbiGenerated.Trace.IndexBits + c.traceValueBits
 
   val io = IO(new HjxlPreparedDctAxiStreamCoreIO(c, inputDataBits, traceDataBits))
 

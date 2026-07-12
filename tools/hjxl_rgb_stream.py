@@ -10,41 +10,28 @@ import math
 from pathlib import Path
 import struct
 
+from hjxl_abi_generated import (
+    REGISTER_DISTANCE_Q8,
+    REGISTER_FIXED_INV_QAC_Q16,
+    REGISTER_FIXED_POINT_SCALE,
+    REGISTER_FIXED_RAW_QUANT,
+    REGISTER_FIXED_YTOB,
+    REGISTER_FIXED_YTOX,
+    REGISTER_FLAGS,
+    REGISTER_XSIZE,
+    REGISTER_YSIZE,
+    TOKEN_SELECT,
+    TRACE_STAGES,
+)
 
-REGISTER_XSIZE = 0x04
-REGISTER_YSIZE = 0x08
-REGISTER_DISTANCE_Q8 = 0x0C
-REGISTER_FIXED_POINT_SCALE = 0x10
-REGISTER_FIXED_INV_QAC_Q16 = 0x14
-REGISTER_FIXED_RAW_QUANT = 0x18
-REGISTER_FLAGS = 0x1C
-REGISTER_FIXED_YTOX = 0x20
-REGISTER_FIXED_YTOB = 0x24
 SINT8_MIN = -(1 << 7)
 SINT8_MAX = (1 << 7) - 1
 UINT8_MAX = (1 << 8) - 1
 UINT32_MAX = (1 << 32) - 1
 
-TOKEN_SELECT = {
-    "dc": 0,
-    "ac-metadata": 1,
-    "ac-tokens": 2,
-}
 TRACE_ROUTES = {
     "all": None,
-    "input-padded": 0,
-    "xyb": 1,
-    "raw-dct8x8": 2,
-    "raw-quant-field": 3,
-    "ytox-map": 4,
-    "ytob-map": 5,
-    "ac-strategy": 6,
-    "quant-dc": 7,
-    "quantized-ac": 8,
-    "num-nonzeros": 9,
-    "dc-tokens": 10,
-    "ac-metadata-tokens": 11,
-    "ac-tokens": 12,
+    **TRACE_STAGES,
 }
 CONFIG_REGISTER_KEYS = (
     ("xsize", "xsize"),

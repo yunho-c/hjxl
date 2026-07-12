@@ -9,6 +9,33 @@ import json
 from pathlib import Path
 import re
 
+from hjxl_abi_generated import (
+    AXI_LITE_ADDR_BITS,
+    AXI_LITE_DATA_BITS,
+    AXI_LITE_STRB_BITS,
+    KV260_TRACE_CAPTURE_WORD_BYTES,
+    TRACE_GROUP_BITS,
+    TRACE_GROUP_BYTE_OFFSET,
+    TRACE_GROUP_MASK,
+    TRACE_GROUP_SHIFT,
+    TRACE_INDEX_BITS,
+    TRACE_INDEX_BYTE_OFFSET,
+    TRACE_INDEX_MASK,
+    TRACE_INDEX_SHIFT,
+    TRACE_PACKED_BITS,
+    TRACE_PACKED_BYTES,
+    TRACE_STAGE_BITS,
+    TRACE_STAGE_BYTE_OFFSET,
+    TRACE_STAGE_MASK,
+    TRACE_STAGE_SHIFT,
+    TRACE_STAGES,
+    TRACE_TKEEP_MASK,
+    TRACE_VALUE_BITS,
+    TRACE_VALUE_BYTE_OFFSET,
+    TRACE_VALUE_MASK,
+    TRACE_VALUE_SHIFT,
+)
+
 
 SUPPORTED_FORMATS = {
     "hjxl.rgb_stream_manifest.v1": "RGB stream input",
@@ -52,45 +79,9 @@ TARGET_VARIANTS = {
 
 TRACE_ROUTES = {
     "all": {"stage": None, "focused": False},
-    "input-padded": {"stage": 0, "focused": True},
-    "xyb": {"stage": 1, "focused": True},
-    "raw-dct8x8": {"stage": 2, "focused": True},
-    "raw-quant-field": {"stage": 3, "focused": True},
-    "ytox-map": {"stage": 4, "focused": True},
-    "ytob-map": {"stage": 5, "focused": True},
-    "ac-strategy": {"stage": 6, "focused": True},
-    "quant-dc": {"stage": 7, "focused": True},
-    "quantized-ac": {"stage": 8, "focused": True},
-    "num-nonzeros": {"stage": 9, "focused": True},
-    "dc-tokens": {"stage": 10, "focused": True},
-    "ac-metadata-tokens": {"stage": 11, "focused": True},
-    "ac-tokens": {"stage": 12, "focused": True},
+    **{name: {"stage": value, "focused": True} for name, value in TRACE_STAGES.items()},
     "prepared-dct-quantize-token": {"stage": None, "focused": True},
 }
-
-TRACE_STAGE_BITS = 8
-TRACE_GROUP_BITS = 16
-TRACE_INDEX_BITS = 32
-TRACE_VALUE_BITS = 32
-TRACE_STAGE_SHIFT = 0
-TRACE_GROUP_SHIFT = TRACE_STAGE_SHIFT + TRACE_STAGE_BITS
-TRACE_INDEX_SHIFT = TRACE_GROUP_SHIFT + TRACE_GROUP_BITS
-TRACE_VALUE_SHIFT = TRACE_INDEX_SHIFT + TRACE_INDEX_BITS
-TRACE_STAGE_MASK = (1 << TRACE_STAGE_BITS) - 1
-TRACE_GROUP_MASK = (1 << TRACE_GROUP_BITS) - 1
-TRACE_INDEX_MASK = (1 << TRACE_INDEX_BITS) - 1
-TRACE_VALUE_MASK = (1 << TRACE_VALUE_BITS) - 1
-TRACE_PACKED_BITS = TRACE_STAGE_BITS + TRACE_GROUP_BITS + TRACE_INDEX_BITS + TRACE_VALUE_BITS
-TRACE_PACKED_BYTES = (TRACE_PACKED_BITS + 7) // 8
-TRACE_TKEEP_MASK = (1 << TRACE_PACKED_BYTES) - 1
-TRACE_STAGE_BYTE_OFFSET = TRACE_STAGE_SHIFT // 8
-TRACE_GROUP_BYTE_OFFSET = TRACE_GROUP_SHIFT // 8
-TRACE_INDEX_BYTE_OFFSET = TRACE_INDEX_SHIFT // 8
-TRACE_VALUE_BYTE_OFFSET = TRACE_VALUE_SHIFT // 8
-KV260_TRACE_CAPTURE_WORD_BYTES = 16
-AXI_LITE_ADDR_BITS = 8
-AXI_LITE_DATA_BITS = 32
-AXI_LITE_STRB_BITS = AXI_LITE_DATA_BITS // 8
 DEFAULT_DISTANCE_Q8 = 256
 SUPPORTED_DISTANCE_Q8 = (64, 128, 256, 512, 1024, 2048)
 

@@ -28,7 +28,8 @@ class HjxlPreparedCflDctAxiStreamCore(c: HjxlConfig = HjxlConfig()) extends Modu
   private val heightBits = log2Ceil(c.maxFrameHeight + 1)
 
   val inputDataBits = 32
-  val traceDataBits = 8 + c.groupBits + 32 + c.traceValueBits
+  val traceDataBits =
+    HjxlAbiGenerated.Trace.StageBits + c.groupBits + HjxlAbiGenerated.Trace.IndexBits + c.traceValueBits
 
   val io = IO(new HjxlPreparedDctAxiStreamCoreIO(c, inputDataBits, traceDataBits))
 

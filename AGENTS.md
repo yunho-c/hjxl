@@ -100,6 +100,11 @@ Use a hardware/software split:
   `target.variant = "estimated-cfl"`; the default prepared-DCT target remains
   `target.variant = "direct"`.
 - Keep stage outputs traceable against libjxl-tiny names and array shapes.
+- Treat `abi/hjxl_abi.json` as authoritative for shared register, status,
+  trace-packing/stage, token-select, and prepared-stream-layout constants. Run
+  `python3 tools/hjxl_generate_abi.py` after intentional changes and
+  `python3 tools/hjxl_generate_abi.py --check` before committing. Do not edit
+  `HjxlAbiGenerated.scala` or `hjxl_abi_generated.py` by hand.
 
 Use stage-tolerant accuracy:
 - Floating/fixed-point stages compare with documented tolerances.

@@ -1037,6 +1037,14 @@ one-step StageTrace-to-byte assembler, against the same token arrays and byte
 oracle. The full RGB-input token schedulers still depend on the approximate
 fixed-point RGB/XYB/DCT path and are tracked as a separate parity gap.
 
+## ABI generation
+
+Stable host/RTL constants originate in [`abi/hjxl_abi.json`](abi/hjxl_abi.json).
+Run `python3 tools/hjxl_generate_abi.py` after an intentional ABI edit and
+`python3 tools/hjxl_generate_abi.py --check` to detect stale checked-in Scala
+or Python bindings. See [`abi/README.md`](abi/README.md) for scope and update
+rules.
+
 ## Versions
 
 - Scala 2.13.18

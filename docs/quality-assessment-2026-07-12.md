@@ -454,6 +454,12 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
    status bits, trace stages, packing, target variants, and the prepared stream
    layout should originate in one checked schema and emit Scala/Python/C
    definitions and documentation.
+   **Substantially completed 2026-07-12:** `abi/hjxl_abi.json` now generates
+   checked Scala and Python bindings for registers, status/control, trace
+   packing/stages, token selection, and the prepared layout; existing APIs are
+   compatibility aliases and CI rejects drift. Target-variant descriptions,
+   manifest-specific C output, and generated reference documentation remain to
+   be folded into the schema.
 9. **Refactor the wrapper matrix.** Extract reusable frame geometry, config
    latching, storage, trace packing, and AXI-Lite register-bank components.
    Organize sources into `core`, `stages`, `prepared`, `interfaces`, and

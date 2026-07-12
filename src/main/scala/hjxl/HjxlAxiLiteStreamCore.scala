@@ -41,24 +41,24 @@ object AxiLiteResponse {
 }
 
 object HjxlAxiLiteRegister {
-  val StatusControl = 0x00
-  val Xsize = 0x04
-  val Ysize = 0x08
-  val DistanceQ8 = 0x0c
-  val FixedPointScale = 0x10
-  val FixedInvQacQ16 = 0x14
-  val FixedRawQuant = 0x18
-  val Flags = 0x1c
-  val FixedYtox = 0x20
-  val FixedYtob = 0x24
+  val StatusControl = HjxlAbiGenerated.AxiLite.Register.StatusControl
+  val Xsize = HjxlAbiGenerated.AxiLite.Register.Xsize
+  val Ysize = HjxlAbiGenerated.AxiLite.Register.Ysize
+  val DistanceQ8 = HjxlAbiGenerated.AxiLite.Register.DistanceQ8
+  val FixedPointScale = HjxlAbiGenerated.AxiLite.Register.FixedPointScale
+  val FixedInvQacQ16 = HjxlAbiGenerated.AxiLite.Register.FixedInvQacQ16
+  val FixedRawQuant = HjxlAbiGenerated.AxiLite.Register.FixedRawQuant
+  val Flags = HjxlAbiGenerated.AxiLite.Register.Flags
+  val FixedYtox = HjxlAbiGenerated.AxiLite.Register.FixedYtox
+  val FixedYtob = HjxlAbiGenerated.AxiLite.Register.FixedYtob
 }
 
 object HjxlStatusControlBit {
-  val ProtocolError = 0
-  val Busy = 1
-  val Overflow = 2
-  val UnsupportedDistance = 3
-  val ClearProtocolError = 0
+  val ProtocolError = HjxlAbiGenerated.AxiLite.StatusBit.ProtocolError
+  val Busy = HjxlAbiGenerated.AxiLite.StatusBit.Busy
+  val Overflow = HjxlAbiGenerated.AxiLite.StatusBit.Overflow
+  val UnsupportedDistance = HjxlAbiGenerated.AxiLite.StatusBit.UnsupportedDistance
+  val ClearProtocolError = HjxlAbiGenerated.AxiLite.ControlBit.ClearProtocolError
 }
 
 /** AXI4-Lite control-plane wrapper around the AXI4-Stream `HjxlCore` shell.
@@ -86,16 +86,17 @@ object HjxlStatusControlBit {
 class HjxlAxiLiteStreamCore(
     c: HjxlConfig = HjxlConfig(),
     traceRoute: Int = HjxlCoreTraceRoute.All,
-    axiAddrBits: Int = 8
+    axiAddrBits: Int = HjxlAbiGenerated.AxiLite.AddrBits
 ) extends Module {
   require(axiAddrBits >= 6, "axiAddrBits must address the complete register map")
   require(c.coordBits <= 32, "AXI-Lite xsize/ysize registers are 32 bits")
 
-  private val dataBits = 32
+  private val dataBits = HjxlAbiGenerated.AxiLite.DataBits
   private val wordAddrBits = axiAddrBits - 2
 
   val pixelDataBits = c.pixelBits * 3
-  val traceDataBits = 8 + c.groupBits + 32 + c.traceValueBits
+  val traceDataBits =
+    HjxlAbiGenerated.Trace.StageBits + c.groupBits + HjxlAbiGenerated.Trace.IndexBits + c.traceValueBits
 
   val io = IO(new Bundle {
     val control = new AxiLiteSlave(axiAddrBits, dataBits)

@@ -65,6 +65,15 @@ contract is intentionally simple:
 Use the internal contracts for simulation and trace extraction, and use the
 KV260 prepared-DCT top as the current Vivado-facing top-level shape.
 
+Stable cross-language values in these contracts are defined once in
+`abi/hjxl_abi.json` and generated into `HjxlAbiGenerated.scala` and
+`hjxl_abi_generated.py`. Existing Scala public objects alias the generated
+values, while RGB/prepared manifest generation, trace conversion, token
+extraction, and C-header generation import the Python binding. CI runs
+`tools/hjxl_generate_abi.py --check` so a schema change cannot land with stale
+language bindings. Target descriptions and manifest-specific C tables remain
+owned by the host tools for now.
+
 ## Implemented RTL Slices
 
 - `FramePadTraceStage` buffers a bounded simulation frame and emits

@@ -26,7 +26,8 @@ class AxiStreamWord(dataBits: Int) extends Bundle {
   */
 class HjxlAxiStreamCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRoute.All) extends Module {
   val pixelDataBits = c.pixelBits * 3
-  val traceDataBits = 8 + c.groupBits + 32 + c.traceValueBits
+  val traceDataBits =
+    HjxlAbiGenerated.Trace.StageBits + c.groupBits + HjxlAbiGenerated.Trace.IndexBits + c.traceValueBits
 
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))

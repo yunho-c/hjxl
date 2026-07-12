@@ -22,18 +22,19 @@ import chisel3.util._
   */
 class HjxlPreparedDctAxiLiteStreamCore(
     c: HjxlConfig = HjxlConfig(),
-    axiAddrBits: Int = 8,
+    axiAddrBits: Int = HjxlAbiGenerated.AxiLite.AddrBits,
     estimatedCfl: Boolean = false
 ) extends Module {
   require(axiAddrBits >= 6, "axiAddrBits must address the complete register map")
   require(c.coordBits <= 32, "AXI-Lite xsize/ysize registers are 32 bits")
 
-  private val dataBits = 32
+  private val dataBits = HjxlAbiGenerated.AxiLite.DataBits
   private val wordAddrBits = axiAddrBits - 2
 
-  val inputDataBits = 32
+  val inputDataBits = HjxlAbiGenerated.PreparedDctStream.WordBits
   private val inputWordBytes = inputDataBits / 8
-  val traceDataBits = 8 + c.groupBits + 32 + c.traceValueBits
+  val traceDataBits =
+    HjxlAbiGenerated.Trace.StageBits + c.groupBits + HjxlAbiGenerated.Trace.IndexBits + c.traceValueBits
 
   val io = IO(new Bundle {
     val control = new AxiLiteSlave(axiAddrBits, dataBits)
@@ -309,5 +310,5 @@ class HjxlPreparedDctAxiLiteStreamCore(
   */
 class HjxlPreparedCflDctAxiLiteStreamCore(
     c: HjxlConfig = HjxlConfig(),
-    axiAddrBits: Int = 8
+    axiAddrBits: Int = HjxlAbiGenerated.AxiLite.AddrBits
 ) extends HjxlPreparedDctAxiLiteStreamCore(c, axiAddrBits, estimatedCfl = true)
