@@ -266,11 +266,12 @@ Read these libjxl-tiny files before making architectural changes:
   integration.
 - `FramePreparedDctOnlyQuantizeTokenTraceStage` is the direct prepared-DCT
   quantize-to-token RTL wrapper. Feed it the same prepared DCT-only raster block
-  inputs; it runs `DctOnlyQuantizeBlock`, buffers quantized frame state, then
-  drives prepared DC, AC-metadata, and AC-token schedulers internally to emit
-  DC, strategy, metadata, and AC token traces. This wrapper preserves prepared
-  raw-quant and CFL metadata instead of falling back to fixed raw-quant/scalar-CFL
-  metadata, and its `traceLast` output marks the final AC-token trace beat.
+  inputs; it runs `DctOnlyQuantizeBlock`, stores DC for plane-order replay, and
+  atomically streams AC/nonzero results plus metadata into the dedicated frame
+  schedulers that own those stores. Do not reintroduce orchestration-level
+  AC/metadata frame arrays. This wrapper preserves prepared raw-quant and CFL
+  metadata instead of falling back to fixed raw-quant/scalar-CFL metadata, and
+  its `traceLast` output marks the final AC-token trace beat.
 - `FrameRawQuantFieldTraceStage` emits the current fixed-path raw-quant field:
   one adjusted raw quant value per padded 8x8 block, defaulting to
   `QuantizeDct8x8Block.DefaultRawQuant` unless `FrameConfig.fixedRawQuant`

@@ -432,6 +432,13 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
    Use inferred BRAM/URAM, tile buffers, ping-pong buffers, or external-memory
    scheduling. Define which stage owns each stored plane and whether stages can
    overlap.
+   **Partially completed 2026-07-12:** the direct prepared-DCT orchestration
+   stage no longer duplicates full-frame quantized AC/nonzero and metadata
+   arrays already owned by its downstream schedulers. Atomic streaming removes
+   6,192 register bits per configured block (99,072 bits at the frozen 32x32
+   default) and shortens pre-output feed latency. The owning schedulers still
+   use whole-frame `Reg(Vec(...))` storage, so RAM inference and true pipeline
+   overlap remain open.
 6. **Create an explicit throughput model.** Record cycles per input word, block,
    tile, token, and frame; initiation interval; worst-case token expansion;
    input/output bandwidth; and target clock. Add counters or a simulation

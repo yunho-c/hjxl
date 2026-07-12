@@ -247,11 +247,11 @@ class HjxlPreparedDctThroughputSpec extends AnyFreeSpec with Matchers with Chise
       Seq(zeroOne, impulseOne, zeroTwo, zeroMultiTile, denseMultiTile)
         .foreach(result => println(s"HJXL_THROUGHPUT ${result.csv}"))
 
-      zeroOne mustBe Measurement("zero-8x8", 8, 8, 1, 1, 201, 201, 0, 7, 12, 3, 1, 5, 3, 18, 6, 225)
+      zeroOne mustBe Measurement("zero-8x8", 8, 8, 1, 1, 201, 201, 0, 5, 12, 3, 1, 5, 3, 18, 6, 223)
       impulseOne mustBe
-        Measurement("three-ac-8x8", 8, 8, 1, 1, 201, 201, 0, 7, 15, 3, 1, 5, 6, 23, 8, 230)
+        Measurement("three-ac-8x8", 8, 8, 1, 1, 201, 201, 0, 5, 15, 3, 1, 5, 6, 23, 8, 228)
       zeroTwo mustBe
-        Measurement("zero-16x8", 16, 8, 2, 1, 402, 403, 1, 12, 22, 6, 2, 8, 6, 36, 14, 450)
+        Measurement("zero-16x8", 16, 8, 2, 1, 402, 403, 1, 8, 22, 6, 2, 8, 6, 36, 14, 446)
       zeroMultiTile mustBe
         Measurement(
           "zero-72x72",
@@ -262,7 +262,7 @@ class HjxlPreparedDctThroughputSpec extends AnyFreeSpec with Matchers with Chise
           16281,
           16361,
           80,
-          407,
+          245,
           818,
           243,
           81,
@@ -270,7 +270,7 @@ class HjxlPreparedDctThroughputSpec extends AnyFreeSpec with Matchers with Chise
           243,
           1464,
           646,
-          18231
+          18069
         )
       denseMultiTile mustBe
         Measurement(
@@ -282,7 +282,7 @@ class HjxlPreparedDctThroughputSpec extends AnyFreeSpec with Matchers with Chise
           16281,
           16361,
           80,
-          407,
+          245,
           16127,
           243,
           81,
@@ -290,7 +290,7 @@ class HjxlPreparedDctThroughputSpec extends AnyFreeSpec with Matchers with Chise
           15552,
           17015,
           888,
-          33782
+          33620
         )
     }
   }

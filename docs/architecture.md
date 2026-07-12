@@ -221,11 +221,14 @@ wrappers.
   `NumNonzeros` record of the final prepared raster block.
 - `FramePreparedDctOnlyQuantizeTokenTraceStage` is the first direct RTL bridge
   from prepared DCT-only block inputs to fixed all-DCT logical token traces. It
-  runs `DctOnlyQuantizeBlock`, buffers quantized DC/AC/nonzero frame state, and
-  internally drives prepared DC, AC-metadata, and AC-token schedulers in the
-  required output order. Unlike `FramePreparedTokenTraceStage`, it can describe
-  the prepared raw-quant and CFL values used during quantization. It exposes
-  `traceLast` on the final AC-token trace beat for host capture.
+  runs `DctOnlyQuantizeBlock`, stores DC values for the required Y/X/B plane
+  reorder, and atomically streams each quantized AC/nonzero result and metadata
+  record into the dedicated prepared schedulers that own those frame stores.
+  This removes the orchestration layer's duplicate AC/nonzero and metadata
+  arrays while preserving the required DC, strategy, metadata, and AC output
+  order. Unlike `FramePreparedTokenTraceStage`, it can describe the prepared
+  raw-quant and CFL values used during quantization. It exposes `traceLast` on
+  the final AC-token trace beat for host capture.
 - `FrameRawQuantFieldTraceStage` emits the current fixed raw-quant field for a
   padded frame: one adjusted raw-quant value per 8x8 block, defaulting to
   `QuantizeDct8x8Block.DefaultRawQuant` unless `FrameConfig.fixedRawQuant`
@@ -998,10 +1001,10 @@ still require an environment with AMD tools installed.
 
 `HjxlPreparedDctThroughputSpec` provides the complementary simulation-cycle
 baseline for this target. Under continuous source/sink traffic, the direct
-stream currently measures 225 cycles for one zero 8x8 block, 230 cycles when
-one AC coefficient is nonzero in each channel, and 450 cycles for two zero
+stream currently measures 223 cycles for one zero 8x8 block, 228 cycles when
+one AC coefficient is nonzero in each channel, and 446 cycles for two zero
 blocks. A parameterized 72x72 profiling elaboration additionally measures
-18,231 cycles for an 81-block/four-tile zero frame and 33,782 cycles when all
+18,069 cycles for an 81-block/four-tile zero frame and 33,620 cycles when all
 63 AC positions in every channel and block are nonzero. See
 `docs/performance.md` for phase definitions, exact token counts, and
 limitations. These numbers isolate core behavior and do not include AXI-Lite

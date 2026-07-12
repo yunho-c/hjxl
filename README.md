@@ -102,8 +102,10 @@ quantization path can match libjxl-tiny's float reference on the oracle fixture;
 the RGB-input DCT path still emits Q12 coefficients.
 `FramePreparedDctOnlyQuantizeTokenTraceStage` bridges the same prepared-DCT
 input boundary directly into fixed all-DCT logical token traces by internally
-buffering quantized results and driving `FramePreparedTokenTraceStage`. It also
-exposes `traceLast` on the final AC-token trace beat.
+retaining DC values for plane reordering while streaming quantized AC/nonzero
+data and metadata into their owning prepared frame schedulers. This avoids a
+second full-frame AC store in the orchestration layer. It also exposes
+`traceLast` on the final AC-token trace beat.
 The combined prepared-token boundary exposes `traceLast` on the final AC-token
 trace beat, so generated prepared-token RTL has a concrete frame delimiter for
 host capture.
