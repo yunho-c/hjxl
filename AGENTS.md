@@ -85,6 +85,9 @@ Use a hardware/software split:
   prepared-word stream contract requires full 32-bit beats (`0xF`); partial
   masks are consumed and reported through the sticky protocol-error bit.
   `m_axis_trace_tkeep` marks the low 11 bytes that carry the packed trace word.
+  This direct prepared-DCT wrapper is the frozen near-term synthesis and KV260
+  bring-up target. Prioritize physical feasibility work here before expanding
+  the experimental estimated-CFL target in parallel.
 - `HjxlKv260PreparedCflDctTop` is the alternate Vivado-facing wrapper around
   `HjxlPreparedCflDctAxiLiteStreamCore`. Its flat ports and trace padding match
   `HjxlKv260PreparedDctTop`, but it estimates tile CFL maps internally from

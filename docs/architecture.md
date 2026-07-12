@@ -415,7 +415,9 @@ wrappers.
   reporting, and output TKEEP marking the valid low 11 bytes, and
   `busy`/`overflow`/`protocol_error`/`unsupported_distance` status ports. Use
   `sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'` to write
-  `generated-kv260-prepared-dct-top/`.
+  `generated-kv260-prepared-dct-top/`. This direct variant is the frozen
+  near-term synthesis and KV260 bring-up target; collect physical feasibility
+  data for it before expanding the experimental estimated-CFL variant.
 - `HjxlKv260PreparedCflDctTop` is the estimated-CFL variant of that flat
   wrapper. It preserves the KV260-facing ports and 128-bit padded trace stream,
   but wraps `HjxlPreparedCflDctAxiLiteStreamCore` internally so prepared

@@ -5,6 +5,24 @@ parity with
 [libjxl-tiny](https://github.com/libjxl/libjxl-tiny), not the full JPEG XL
 encoder surface.
 
+## Project status
+
+`hjxl` is a verification-led research prototype, not yet a complete or
+board-proven FPGA encoder.
+
+| Area | Current state |
+| --- | --- |
+| Strongest validated boundary | Host-prepared, all-DCT coefficients through quantization and logical token traces, followed by host-side codestream assembly |
+| RGB-input pipeline | Frame padding, approximate XYB/DCT, fixed quantization metadata, and selected token routes; adaptive quantization and full RGB-path CFL/strategy parity remain incomplete |
+| Hardware output | Trace/token records; entropy optimization and final JPEG XL bitstream assembly remain host software responsibilities |
+| Near-term FPGA top | `HjxlKv260PreparedDctTop`, the direct prepared-DCT variant, is frozen as the first synthesis and bring-up target |
+| Physical validation | Chisel simulation and generated SystemVerilog are covered; Vivado synthesis, timing closure, resource use, bitstream generation, and KV260 execution have not been demonstrated |
+
+The estimated-CFL top remains an experimental sibling until the direct top has
+physical feasibility data. See
+[`docs/quality-assessment-2026-07-12.md`](docs/quality-assessment-2026-07-12.md)
+for the evidence, limitations, and prioritized roadmap behind this status.
+
 Current RTL status: the top-level buffers a small RGB frame and emits one of
 several trace streams: libjxl-tiny-compatible `input_padded`, padded
 channel-first XYB when `enableXyb` is set, raster 8x8-block raw scaled-DCT

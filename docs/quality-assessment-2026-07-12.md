@@ -406,10 +406,16 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
 2. **State the maturity in one short authoritative status table.** The first
    screen of the README should say that the strongest boundary begins at
    prepared DCT coefficients and that Vivado/board validation has not happened.
+   **Completed 2026-07-12:** the README now opens with a compact status table
+   covering the strongest boundary, remaining RGB work, host/hardware split,
+   selected top, and missing physical validation.
 3. **Choose and freeze one near-term FPGA top.** The direct prepared-DCT top is
    the lowest-risk first synthesis target; the estimated-CFL top is more
    ambitious. Avoid growing both surfaces equally until one has timing and
    resource evidence.
+   **Completed 2026-07-12:** `HjxlKv260PreparedDctTop` is the frozen first
+   synthesis and bring-up target; the estimated-CFL sibling remains
+   experimental until direct-top physical evidence exists.
 4. **Run first physical feasibility experiments.** Add a reproducible Vivado Tcl
    flow, KV260 part/board selection, clock constraint, utilization report,
    post-synthesis timing report, and a documented resource budget. This may
