@@ -26,6 +26,31 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     CommandResult(exitCode, output.mkString("\n"))
   }
 
+  private def requireNumpy(): Unit =
+    assume(
+      Process(Seq("python3", "-c", "import numpy")).! == 0,
+      "python3 with numpy is required for AXI-stream metadata extraction tests"
+    )
+
+  private def expectCommandSuccess(command: Seq[String]): String = {
+    val result = runCommand(command)
+    withClue(result.output) {
+      result.exitCode mustBe 0
+    }
+    result.output
+  }
+
+  private def readNpyAsJson(path: Path): String =
+    expectCommandSuccess(
+      Seq(
+        "python3",
+        "-c",
+        "import json, sys, numpy as np\n" +
+          "print(json.dumps(np.load(sys.argv[1]).tolist(), separators=(',', ':')))\n",
+        path.toString
+      )
+    ).trim
+
   private def pokeConfig(dut: HjxlAxiStreamCore, width: Int, height: Int): Unit = {
     dut.io.config.xsize.poke(width.U)
     dut.io.config.ysize.poke(height.U)
@@ -33,6 +58,8 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     dut.io.config.fixedPointScale.poke(0.U)
     dut.io.config.fixedInvQacQ16.poke(0.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(false.B)
     dut.io.config.enableQuant.poke(false.B)
@@ -78,6 +105,40 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     val rawValue = (data >> 56) & 0xffffffffL
     val value = if ((rawValue & 0x80000000L) != 0) (rawValue - (1L << 32)).toInt else rawValue.toInt
     (stage, group, index, value)
+  }
+
+  private def captureSingleMetadataRoute(
+      traceRoute: Int,
+      fixedRawQuant: Int = 0,
+      fixedYtox: Int = 0,
+      fixedYtob: Int = 0
+  ): Seq[StreamWord] = {
+    val captured = scala.collection.mutable.ArrayBuffer.empty[StreamWord]
+    simulate(new HjxlAxiStreamCore(config, traceRoute = traceRoute)) { dut =>
+      pokeConfig(dut, width = 1, height = 1)
+      dut.io.config.enableQuant.poke(true.B)
+      dut.io.config.fixedRawQuant.poke(fixedRawQuant.U)
+      dut.io.config.fixedYtox.poke(fixedYtox.S)
+      dut.io.config.fixedYtob.poke(fixedYtob.S)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      drivePixel(dut, rgb(10, 20, 30), last = true)
+      dut.io.input.valid.poke(false.B)
+      dut.io.protocolError.expect(false.B)
+
+      dut.io.trace.ready.poke(true.B)
+      dut.io.trace.valid.expect(true.B)
+      captured += StreamWord(
+        dut.io.trace.bits.data.peekValue().asBigInt,
+        dut.io.trace.bits.last.peekValue().asBigInt.testBit(0)
+      )
+      dut.io.trace.bits.last.expect(true.B)
+      dut.clock.step()
+      dut.io.trace.valid.expect(false.B)
+    }
+    captured.toSeq
   }
 
   "HjxlAxiStreamCore generates raster coordinates and packs trace rows" in {
@@ -280,6 +341,130 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.clock.step()
       dut.io.trace.valid.expect(false.B)
     }
+  }
+
+  "HjxlAxiStreamCore metadata trace routes feed host metadata-grid extraction" in {
+    requireNumpy()
+
+    val temp = Files.createTempDirectory("hjxl-axi-stream-core-metadata-")
+    val rawStreamCsv = temp.resolve("raw-quant-stream.csv")
+    val ytoxStreamCsv = temp.resolve("ytox-stream.csv")
+    val ytobStreamCsv = temp.resolve("ytob-stream.csv")
+    val rawQuant = temp.resolve("raw-quant.npy")
+    val ytox = temp.resolve("ytox.npy")
+    val ytob = temp.resolve("ytob.npy")
+    val expectedRawQuant = temp.resolve("expected-raw-quant.npy")
+    val expectedYtox = temp.resolve("expected-ytox.npy")
+    val expectedYtob = temp.resolve("expected-ytob.npy")
+    val rawCaptured = captureSingleMetadataRoute(TraceStage.RawQuantField, fixedRawQuant = 200)
+    val ytoxCaptured = captureSingleMetadataRoute(TraceStage.YtoxMap, fixedYtox = -7, fixedYtob = 11)
+    val ytobCaptured = captureSingleMetadataRoute(TraceStage.YtobMap, fixedYtox = -7, fixedYtob = 11)
+
+    Files.writeString(
+      rawStreamCsv,
+      "data,last\n" + rawCaptured.map(row => s"${row.data},${if (row.last) 1 else 0}").mkString("\n") + "\n"
+    )
+    Files.writeString(
+      ytoxStreamCsv,
+      "data,last\n" + ytoxCaptured.map(row => s"${row.data},${if (row.last) 1 else 0}").mkString("\n") + "\n"
+    )
+    Files.writeString(
+      ytobStreamCsv,
+      "data,last\n" + ytobCaptured.map(row => s"${row.data},${if (row.last) 1 else 0}").mkString("\n") + "\n"
+    )
+
+    expectCommandSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_trace_tokens.py",
+        "--stream-csv",
+        rawStreamCsv.toString,
+        "--raw-quant-field-npy",
+        rawQuant.toString,
+        "--width",
+        "1",
+        "--height",
+        "1",
+        "--require-stream-final-last"
+      )
+    )
+    expectCommandSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_trace_tokens.py",
+        "--stream-csv",
+        ytoxStreamCsv.toString,
+        "--ytox-map-npy",
+        ytox.toString,
+        "--width",
+        "1",
+        "--height",
+        "1",
+        "--require-stream-final-last"
+      )
+    )
+    expectCommandSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_trace_tokens.py",
+        "--stream-csv",
+        ytobStreamCsv.toString,
+        "--ytob-map-npy",
+        ytob.toString,
+        "--width",
+        "1",
+        "--height",
+        "1",
+        "--require-stream-final-last"
+      )
+    )
+    expectCommandSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_reference.py",
+        "--width",
+        "1",
+        "--height",
+        "1",
+        "--pattern",
+        "constant",
+        "--fixed-raw-quant",
+        "200",
+        "--fixed-ytox",
+        "-7",
+        "--fixed-ytob",
+        "11",
+        "--fixed-dct-only-raw-quant-field-npy",
+        expectedRawQuant.toString,
+        "--fixed-dct-only-ytox-map-npy",
+        expectedYtox.toString,
+        "--fixed-dct-only-ytob-map-npy",
+        expectedYtob.toString
+      )
+    )
+
+    readNpyAsJson(rawQuant) mustBe "[[200]]"
+    readNpyAsJson(ytox) mustBe "[[-7]]"
+    readNpyAsJson(ytob) mustBe "[[11]]"
+
+    expectCommandSuccess(
+      Seq(
+        "python3",
+        "tools/hjxl_compare_tokens.py",
+        "--expected-raw-quant-field-npy",
+        expectedRawQuant.toString,
+        "--actual-raw-quant-field-npy",
+        rawQuant.toString,
+        "--expected-ytox-map-npy",
+        expectedYtox.toString,
+        "--actual-ytox-map-npy",
+        ytox.toString,
+        "--expected-ytob-map-npy",
+        expectedYtob.toString,
+        "--actual-ytob-map-npy",
+        ytob.toString
+      )
+    ) must include("artifacts match")
   }
 
   "HjxlAxiStreamCore reports mismatched input TLAST" in {

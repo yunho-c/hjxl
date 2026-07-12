@@ -35,6 +35,7 @@ TOKEN_STAGES = {
 }
 
 BLOCK_DIM = 8
+TILE_DIM = 64
 
 
 @dataclass(frozen=True)
@@ -53,15 +54,34 @@ def _load_numpy():
     return np
 
 
-def parse_stage(value: str) -> int:
+def parse_stage(value: str | None, *, source: Path, line: int) -> int:
+    if value is None:
+        raise ValueError(f"{source}:{line}: stage is required")
     stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{source}:{line}: stage is required")
     if stripped in TRACE_STAGES:
         return TRACE_STAGES[stripped]
-    return int(stripped, 0)
+    try:
+        return int(stripped, 0)
+    except ValueError as exc:
+        raise ValueError(
+            f"{source}:{line}: stage must be a trace stage name or integer, got {value!r}"
+        ) from exc
 
 
-def parse_int(value: str) -> int:
-    return int(value.strip(), 0)
+def parse_int(value: str | None, *, field: str, source: Path, line: int) -> int:
+    if value is None:
+        raise ValueError(f"{source}:{line}: {field} is required")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{source}:{line}: {field} is required")
+    try:
+        return int(stripped, 0)
+    except ValueError as exc:
+        raise ValueError(
+            f"{source}:{line}: {field} must be an integer, got {value!r}"
+        ) from exc
 
 
 def read_trace_csv(path: Path) -> list[TraceRow]:
@@ -75,19 +95,31 @@ def read_trace_csv(path: Path) -> list[TraceRow]:
         if missing:
             raise ValueError(f"{path}: missing CSV columns: {', '.join(sorted(missing))}")
         for line, row in enumerate(reader, start=2):
-            try:
-                rows.append(
-                    TraceRow(
-                        stage=parse_stage(row["stage"]),
-                        group=parse_int(row["group"]),
-                        index=parse_int(row["index"]),
-                        value=parse_int(row["value"]),
-                        source=str(path),
+            rows.append(
+                TraceRow(
+                    stage=parse_stage(row["stage"], source=path, line=line),
+                    group=parse_int(
+                        row["group"],
+                        field="group",
+                        source=path,
                         line=line,
-                    )
+                    ),
+                    index=parse_int(
+                        row["index"],
+                        field="index",
+                        source=path,
+                        line=line,
+                    ),
+                    value=parse_int(
+                        row["value"],
+                        field="value",
+                        source=path,
+                        line=line,
+                    ),
+                    source=str(path),
+                    line=line,
                 )
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                raise ValueError(f"{path}:{line}: invalid trace row: {row}") from exc
+            )
     return rows
 
 
@@ -147,6 +179,7 @@ def load_trace_rows(
 def token_pairs(rows: list[TraceRow], stage: int) -> list[tuple[int, int]]:
     selected = [row for row in rows if row.stage == stage]
     by_group: dict[int, TraceRow] = {}
+    max_uint32 = (1 << 32) - 1
     for row in selected:
         if row.group in by_group:
             previous = by_group[row.group]
@@ -158,6 +191,10 @@ def token_pairs(rows: list[TraceRow], stage: int) -> list[tuple[int, int]]:
             raise ValueError(f"{row.source}:{row.line}: negative token context {row.index}")
         if row.value < 0:
             raise ValueError(f"{row.source}:{row.line}: negative packed token value {row.value}")
+        if row.index > max_uint32:
+            raise ValueError(f"{row.source}:{row.line}: token context {row.index} outside uint32")
+        if row.value > max_uint32:
+            raise ValueError(f"{row.source}:{row.line}: packed token value {row.value} outside uint32")
         by_group[row.group] = row
 
     expected = list(range(len(by_group)))
@@ -196,6 +233,66 @@ def ac_strategy_grid(rows: list[TraceRow], width: int, height: int):
         raise ValueError(f"missing AC strategy trace indices: {missing[:8]}")
     values = [by_index[index].value for index in range(total)]
     return np.asarray(values, dtype=np.uint8).reshape((y_blocks, x_blocks))
+
+
+def uint8_grid(rows: list[TraceRow], *, stage: int, width: int, height: int, label: str):
+    np = _load_numpy()
+    x_blocks = (width + BLOCK_DIM - 1) // BLOCK_DIM
+    y_blocks = (height + BLOCK_DIM - 1) // BLOCK_DIM
+    total = x_blocks * y_blocks
+    selected = [row for row in rows if row.stage == stage]
+    by_index: dict[int, TraceRow] = {}
+    for row in selected:
+        if row.index in by_index:
+            previous = by_index[row.index]
+            raise ValueError(
+                f"duplicate {label} index {row.index}: {previous.source}:{previous.line} "
+                f"and {row.source}:{row.line}"
+            )
+        if row.index < 0 or row.index >= total:
+            raise ValueError(f"{row.source}:{row.line}: {label} index {row.index} outside 0..{total - 1}")
+        if row.value < 0 or row.value > 255:
+            raise ValueError(f"{row.source}:{row.line}: {label} value {row.value} outside uint8")
+        by_index[row.index] = row
+    missing = [index for index in range(total) if index not in by_index]
+    if missing:
+        raise ValueError(f"missing {label} trace indices: {missing[:8]}")
+    values = [by_index[index].value for index in range(total)]
+    return np.asarray(values, dtype=np.uint8).reshape((y_blocks, x_blocks))
+
+
+def int8_tile_grid(rows: list[TraceRow], *, stage: int, width: int, height: int, label: str):
+    np = _load_numpy()
+    x_tiles = (width + TILE_DIM - 1) // TILE_DIM
+    y_tiles = (height + TILE_DIM - 1) // TILE_DIM
+    total = x_tiles * y_tiles
+    selected = [row for row in rows if row.stage == stage]
+    by_index: dict[int, TraceRow] = {}
+    for row in selected:
+        if row.index in by_index:
+            previous = by_index[row.index]
+            raise ValueError(
+                f"duplicate {label} index {row.index}: {previous.source}:{previous.line} "
+                f"and {row.source}:{row.line}"
+            )
+        if row.index < 0 or row.index >= total:
+            raise ValueError(f"{row.source}:{row.line}: {label} index {row.index} outside 0..{total - 1}")
+        if row.value < -128 or row.value > 127:
+            raise ValueError(f"{row.source}:{row.line}: {label} value {row.value} outside int8")
+        by_index[row.index] = row
+    missing = [index for index in range(total) if index not in by_index]
+    if missing:
+        raise ValueError(f"missing {label} trace indices: {missing[:8]}")
+    values = [by_index[index].value for index in range(total)]
+    return np.asarray(values, dtype=np.int8).reshape((y_tiles, x_tiles))
+
+
+def require_positive_dimensions(width: int | None, height: int | None, *, output: str) -> tuple[int, int]:
+    if width is None or height is None:
+        raise SystemExit(f"{output} requires --width and --height")
+    if width <= 0 or height <= 0:
+        raise ValueError(f"{output} requires positive --width and --height")
+    return width, height
 
 
 def write_token_npy(path: Path, pairs: list[tuple[int, int]]) -> None:
@@ -260,41 +357,105 @@ def main() -> int:
     )
     parser.add_argument("--ac-tokens-npy", type=Path, help="output AC token rows (context, value)")
     parser.add_argument("--ac-strategy-npy", type=Path, help="output AC strategy grid")
+    parser.add_argument("--raw-quant-field-npy", type=Path, help="output raw quant-field block grid")
+    parser.add_argument("--ytox-map-npy", type=Path, help="output Y-to-X CFL tile grid")
+    parser.add_argument("--ytob-map-npy", type=Path, help="output Y-to-B CFL tile grid")
     parser.add_argument("--width", type=int, help="image width for AC strategy grid")
-    parser.add_argument("--height", type=int, help="image height for AC strategy grid")
+    parser.add_argument("--height", type=int, help="image height for metadata grids")
     args = parser.parse_args()
 
     if not args.trace_csv and not args.stream_csv and not args.stream_bin:
         raise SystemExit("at least one --trace-csv, --stream-csv, or --stream-bin input is required")
 
-    rows = load_trace_rows(
+    try:
+        rows = load_trace_rows(
             args.trace_csv,
             stream_paths=args.stream_csv,
             stream_bin_paths=args.stream_bin,
             last_bin_paths=args.last_bin,
             stream_word_bytes=args.stream_word_bytes,
             group_bits=args.group_bits,
-        trace_value_bits=args.trace_value_bits,
-        require_stream_final_last=args.require_stream_final_last,
-    )
-    if args.dc_tokens_npy is not None:
-        write_token_npy(args.dc_tokens_npy, token_pairs(rows, TOKEN_STAGES["dc"]))
-    if args.ac_metadata_tokens_npy is not None:
-        write_token_npy(
-            args.ac_metadata_tokens_npy,
-            token_pairs(rows, TOKEN_STAGES["ac_metadata"]),
+            trace_value_bits=args.trace_value_bits,
+            require_stream_final_last=args.require_stream_final_last,
         )
-    if args.ac_tokens_npy is not None:
-        write_token_npy(args.ac_tokens_npy, token_pairs(rows, TOKEN_STAGES["ac"]))
-    if args.ac_strategy_npy is not None:
-        if args.width is None or args.height is None:
-            raise SystemExit("--ac-strategy-npy requires --width and --height")
-        write_array_npy(args.ac_strategy_npy, ac_strategy_grid(rows, args.width, args.height))
+        if args.dc_tokens_npy is not None:
+            write_token_npy(args.dc_tokens_npy, token_pairs(rows, TOKEN_STAGES["dc"]))
+        if args.ac_metadata_tokens_npy is not None:
+            write_token_npy(
+                args.ac_metadata_tokens_npy,
+                token_pairs(rows, TOKEN_STAGES["ac_metadata"]),
+            )
+        if args.ac_tokens_npy is not None:
+            write_token_npy(args.ac_tokens_npy, token_pairs(rows, TOKEN_STAGES["ac"]))
+        if args.ac_strategy_npy is not None:
+            width, height = require_positive_dimensions(
+                args.width,
+                args.height,
+                output="--ac-strategy-npy",
+            )
+            write_array_npy(
+                args.ac_strategy_npy,
+                ac_strategy_grid(rows, width, height),
+            )
+        if args.raw_quant_field_npy is not None:
+            width, height = require_positive_dimensions(
+                args.width,
+                args.height,
+                output="--raw-quant-field-npy",
+            )
+            write_array_npy(
+                args.raw_quant_field_npy,
+                uint8_grid(
+                    rows,
+                    stage=TRACE_STAGES["RawQuantField"],
+                    width=width,
+                    height=height,
+                    label="raw quant-field",
+                ),
+            )
+        if args.ytox_map_npy is not None:
+            width, height = require_positive_dimensions(
+                args.width,
+                args.height,
+                output="--ytox-map-npy",
+            )
+            write_array_npy(
+                args.ytox_map_npy,
+                int8_tile_grid(
+                    rows,
+                    stage=TRACE_STAGES["YtoxMap"],
+                    width=width,
+                    height=height,
+                    label="Y-to-X CFL map",
+                ),
+            )
+        if args.ytob_map_npy is not None:
+            width, height = require_positive_dimensions(
+                args.width,
+                args.height,
+                output="--ytob-map-npy",
+            )
+            write_array_npy(
+                args.ytob_map_npy,
+                int8_tile_grid(
+                    rows,
+                    stage=TRACE_STAGES["YtobMap"],
+                    width=width,
+                    height=height,
+                    label="Y-to-B CFL map",
+                ),
+            )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     if (
         args.dc_tokens_npy is None
         and args.ac_metadata_tokens_npy is None
         and args.ac_tokens_npy is None
         and args.ac_strategy_npy is None
+        and args.raw_quant_field_npy is None
+        and args.ytox_map_npy is None
+        and args.ytob_map_npy is None
     ):
         print(f"read {len(rows)} trace rows", file=sys.stderr)
     return 0

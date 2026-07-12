@@ -18,11 +18,33 @@ REGISTER_FIXED_POINT_SCALE = 0x10
 REGISTER_FIXED_INV_QAC_Q16 = 0x14
 REGISTER_FIXED_RAW_QUANT = 0x18
 REGISTER_FLAGS = 0x1C
+REGISTER_FIXED_YTOX = 0x20
+REGISTER_FIXED_YTOB = 0x24
+SINT8_MIN = -(1 << 7)
+SINT8_MAX = (1 << 7) - 1
+UINT8_MAX = (1 << 8) - 1
+UINT32_MAX = (1 << 32) - 1
 
 TOKEN_SELECT = {
     "dc": 0,
     "ac-metadata": 1,
     "ac-tokens": 2,
+}
+TRACE_ROUTES = {
+    "all": None,
+    "input-padded": 0,
+    "xyb": 1,
+    "raw-dct8x8": 2,
+    "raw-quant-field": 3,
+    "ytox-map": 4,
+    "ytob-map": 5,
+    "ac-strategy": 6,
+    "quant-dc": 7,
+    "quantized-ac": 8,
+    "num-nonzeros": 9,
+    "dc-tokens": 10,
+    "ac-metadata-tokens": 11,
+    "ac-tokens": 12,
 }
 CONFIG_REGISTER_KEYS = (
     ("xsize", "xsize"),
@@ -32,6 +54,8 @@ CONFIG_REGISTER_KEYS = (
     ("fixed_inv_qac_q16", "fixed_inv_qac_q16"),
     ("fixed_raw_quant", "fixed_raw_quant"),
     ("flags", "flags"),
+    ("fixed_ytox", "fixed_ytox"),
+    ("fixed_ytob", "fixed_ytob"),
 )
 
 
@@ -150,6 +174,8 @@ def write_axi_lite_csv(
     fixed_inv_qac_q16: int,
     fixed_raw_quant: int,
     flags: int,
+    fixed_ytox: int,
+    fixed_ytob: int,
 ) -> None:
     rows = [
         (REGISTER_XSIZE, width),
@@ -159,6 +185,8 @@ def write_axi_lite_csv(
         (REGISTER_FIXED_INV_QAC_Q16, fixed_inv_qac_q16),
         (REGISTER_FIXED_RAW_QUANT, fixed_raw_quant),
         (REGISTER_FLAGS, flags),
+        (REGISTER_FIXED_YTOX, fixed_ytox),
+        (REGISTER_FIXED_YTOB, fixed_ytob),
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -184,8 +212,13 @@ def write_manifest_json(
     fixed_inv_qac_q16: int,
     fixed_raw_quant: int,
     flags: int,
+    fixed_ytox: int,
+    fixed_ytob: int,
     token_select_name: str,
+    trace_route_name: str,
 ) -> None:
+    x_tiles = (width + 63) // 64
+    y_tiles = (height + 63) // 64
     register_map = {
         "status_control": 0x00,
         "xsize": REGISTER_XSIZE,
@@ -195,11 +228,23 @@ def write_manifest_json(
         "fixed_inv_qac_q16": REGISTER_FIXED_INV_QAC_Q16,
         "fixed_raw_quant": REGISTER_FIXED_RAW_QUANT,
         "flags": REGISTER_FLAGS,
+        "fixed_ytox": REGISTER_FIXED_YTOX,
+        "fixed_ytob": REGISTER_FIXED_YTOB,
     }
     manifest = {
         "format": "hjxl.rgb_stream_manifest.v1",
         "source": {"pfm": str(pfm)},
-        "image": {"width": width, "height": height},
+        "trace_route": {
+            "name": trace_route_name,
+            "stage": TRACE_ROUTES[trace_route_name],
+            "focused": TRACE_ROUTES[trace_route_name] is not None,
+        },
+        "image": {
+            "width": width,
+            "height": height,
+            "x_tiles": x_tiles,
+            "y_tiles": y_tiles,
+        },
         "stream": {
             "csv": str(stream_csv),
             "columns": ["data", "last"],
@@ -228,6 +273,8 @@ def write_manifest_json(
                 "fixed_inv_qac_q16": fixed_inv_qac_q16,
                 "fixed_raw_quant": fixed_raw_quant,
                 "flags": flags,
+                "fixed_ytox": fixed_ytox,
+                "fixed_ytob": fixed_ytob,
                 "token_select": token_select_name,
             },
         },
@@ -242,13 +289,56 @@ def _manifest_path(manifest_path: Path, raw_path: str | None) -> Path | None:
     if raw_path is None:
         return None
     path = Path(raw_path)
-    if path.is_absolute() or path.exists():
+    if path.is_absolute():
         return path
-    return manifest_path.parent / path
+    manifest_relative = manifest_path.parent / path
+    if manifest_relative.exists():
+        return manifest_relative
+    if path.exists():
+        return path
+    return manifest_relative
 
 
-def _csv_bool(value: str) -> bool:
-    return int(value, 0) != 0
+def _parse_int(value: str | None, *, path: Path, line: int, field: str) -> int:
+    if value is None:
+        raise ValueError(f"{path}:{line}: {field} is required")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{path}:{line}: {field} is required")
+    try:
+        return int(stripped, 0)
+    except ValueError as exc:
+        raise ValueError(
+            f"{path}:{line}: {field} must be an integer, got {value!r}"
+        ) from exc
+
+
+def _json_int(value: object, *, path: Path, field: str) -> int:
+    if value is None:
+        raise ValueError(f"{path}: {field} is required")
+    if isinstance(value, bool):
+        raise ValueError(f"{path}: {field} must be an integer, got {value!r}")
+    if isinstance(value, float):
+        raise ValueError(f"{path}: {field} must be an integer, got {value!r}")
+    try:
+        if isinstance(value, str):
+            return int(value.strip(), 0)
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{path}: {field} must be an integer, got {value!r}") from exc
+
+
+def _parse_bool(value: str | None, *, path: Path, line: int, field: str) -> bool:
+    if value is None:
+        raise ValueError(f"{path}:{line}: {field} is required")
+    stripped = value.strip().lower()
+    if not stripped:
+        raise ValueError(f"{path}:{line}: {field} is required")
+    if stripped in {"1", "true", "t", "yes", "y"}:
+        return True
+    if stripped in {"0", "false", "f", "no", "n"}:
+        return False
+    raise ValueError(f"{path}:{line}: {field} must be boolean, got {value!r}")
 
 
 def validate_stream_csv(path: Path, expected_word_count: int) -> None:
@@ -262,13 +352,16 @@ def validate_stream_csv(path: Path, expected_word_count: int) -> None:
     if not rows:
         raise ValueError(f"{path}: stream CSV must contain at least one row")
     for index, row in enumerate(rows):
-        last = _csv_bool(row["last"])
+        line = index + 2
+        data = _parse_int(row["data"], path=path, line=line, field="data")
+        last = _parse_bool(row["last"], path=path, line=line, field="last")
+        if data < 0:
+            raise ValueError(f"{path}:{line}: data must be nonnegative")
         if index == len(rows) - 1:
             if not last:
                 raise ValueError(f"{path}: final stream row does not assert last")
         elif last:
             raise ValueError(f"{path}: last asserted before final row at index {index}")
-        int(row["data"], 0)
 
 
 def validate_axi_lite_csv(path: Path, manifest: dict) -> None:
@@ -279,10 +372,14 @@ def validate_axi_lite_csv(path: Path, manifest: dict) -> None:
         reader = csv.DictReader(handle)
         if reader.fieldnames != ["address", "data", "strb"]:
             raise ValueError(f"{path}: expected address,data,strb columns")
-        writes = {
-            int(row["address"], 0): (int(row["data"], 0), int(row["strb"], 0))
-            for row in reader
-        }
+        writes = {}
+        for line, row in enumerate(reader, start=2):
+            address = _parse_int(
+                row["address"], path=path, line=line, field="address"
+            )
+            data = _parse_int(row["data"], path=path, line=line, field="data")
+            strb = _parse_int(row["strb"], path=path, line=line, field="strb")
+            writes[address] = (data, strb)
     for register_key, config_key in CONFIG_REGISTER_KEYS:
         address = int(register_map[register_key])
         if address not in writes:
@@ -302,11 +399,47 @@ def validate_manifest_json(path: Path) -> None:
         raise ValueError(f"{path}: unsupported manifest format {manifest.get('format')!r}")
     image = manifest["image"]
     stream = manifest["stream"]
-    expected_word_count = int(image["width"]) * int(image["height"])
-    if int(stream["word_count"]) != expected_word_count:
+    width = _json_int(image.get("width"), path=path, field="image.width")
+    height = _json_int(image.get("height"), path=path, field="image.height")
+    if width <= 0 or height <= 0:
+        raise ValueError(f"{path}: image width and height must be positive")
+    expected_word_count = width * height
+    x_tiles = _json_int(
+        image.get("x_tiles", (width + 63) // 64),
+        path=path,
+        field="image.x_tiles",
+    )
+    y_tiles = _json_int(
+        image.get("y_tiles", (height + 63) // 64),
+        path=path,
+        field="image.y_tiles",
+    )
+    if x_tiles <= 0 or y_tiles <= 0:
+        raise ValueError(f"{path}: image tile grid must be positive")
+    if x_tiles * 64 < width or x_tiles * 64 >= width + 64:
+        raise ValueError(f"{path}: image x tile grid does not cover width")
+    if y_tiles * 64 < height or y_tiles * 64 >= height + 64:
+        raise ValueError(f"{path}: image y tile grid does not cover height")
+    if _json_int(stream.get("word_count"), path=path, field="stream.word_count") != expected_word_count:
         raise ValueError(
             f"{path}: stream word_count {stream['word_count']} does not match image dimensions"
         )
+    if "pixel_bits" in stream:
+        pixel_bits = _json_int(stream["pixel_bits"], path=path, field="stream.pixel_bits")
+        if pixel_bits <= 0 or pixel_bits > 32:
+            raise ValueError(f"{path}: stream.pixel_bits must be in the range 1..32")
+    trace_route = manifest.get("trace_route")
+    if trace_route is not None:
+        if not isinstance(trace_route, dict):
+            raise ValueError(f"{path}: trace_route must be an object")
+        name = trace_route.get("name")
+        if name not in TRACE_ROUTES:
+            raise ValueError(f"{path}: unsupported trace_route.name {name!r}")
+        expected_stage = TRACE_ROUTES[name]
+        if trace_route.get("stage") != expected_stage:
+            raise ValueError(f"{path}: trace_route.stage does not match trace_route.name")
+        if bool(trace_route.get("focused")) != (expected_stage is not None):
+            raise ValueError(f"{path}: trace_route.focused does not match trace_route.name")
     stream_csv = _manifest_path(path, stream["csv"])
     if stream_csv is None:
         raise ValueError(f"{path}: missing stream CSV path")
@@ -351,6 +484,8 @@ def main() -> int:
     parser.add_argument("--fixed-point-scale", type=int, default=0, help="FrameConfig fixedPointScale")
     parser.add_argument("--fixed-inv-qac-q16", type=int, default=0, help="FrameConfig fixedInvQacQ16")
     parser.add_argument("--fixed-raw-quant", type=int, default=0, help="FrameConfig fixedRawQuant")
+    parser.add_argument("--fixed-ytox", type=int, default=0, help="FrameConfig fixedYtox signed 8-bit CFL override")
+    parser.add_argument("--fixed-ytob", type=int, default=0, help="FrameConfig fixedYtob signed 8-bit CFL override")
     parser.add_argument("--enable-xyb", action="store_true", help="set FrameConfig enableXyb")
     parser.add_argument("--enable-dct", action="store_true", help="set FrameConfig enableDct")
     parser.add_argument("--enable-quant", action="store_true", help="set FrameConfig enableQuant")
@@ -360,6 +495,12 @@ def main() -> int:
         choices=tuple(TOKEN_SELECT),
         default="dc",
         help="FrameConfig tokenSelect field used when tokenization is enabled",
+    )
+    parser.add_argument(
+        "--trace-route",
+        choices=tuple(TRACE_ROUTES),
+        default="all",
+        help="compile-time HjxlCore traceRoute used by the generated top",
     )
     args = parser.parse_args()
 
@@ -384,6 +525,13 @@ def main() -> int:
     ):
         if value < 0:
             raise SystemExit(f"{name} must be non-negative")
+        if value > UINT32_MAX:
+            raise SystemExit(f"{name} must fit in uint32")
+    if args.fixed_raw_quant > UINT8_MAX:
+        raise SystemExit("--fixed-raw-quant must fit in uint8")
+    for name, value in (("--fixed-ytox", args.fixed_ytox), ("--fixed-ytob", args.fixed_ytob)):
+        if value < SINT8_MIN or value > SINT8_MAX:
+            raise SystemExit(f"{name} must fit in signed 8-bit")
 
     try:
         width, height, pixels = read_pfm(args.pfm)
@@ -411,6 +559,8 @@ def main() -> int:
                 fixed_inv_qac_q16=args.fixed_inv_qac_q16,
                 fixed_raw_quant=args.fixed_raw_quant,
                 flags=flags,
+                fixed_ytox=args.fixed_ytox,
+                fixed_ytob=args.fixed_ytob,
             )
         if args.manifest_json is not None:
             write_manifest_json(
@@ -428,7 +578,10 @@ def main() -> int:
                 fixed_inv_qac_q16=args.fixed_inv_qac_q16,
                 fixed_raw_quant=args.fixed_raw_quant,
                 flags=flags,
+                fixed_ytox=args.fixed_ytox,
+                fixed_ytob=args.fixed_ytob,
                 token_select_name=args.token_select,
+                trace_route_name=args.trace_route,
             )
     except ValueError as exc:
         raise SystemExit(f"error: {exc}") from exc

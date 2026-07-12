@@ -17,11 +17,14 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
   private val width = 16
   private val height = 8
   private val pattern = "gradient"
+  private val fixedYtox = -7
+  private val fixedYtob = 11
   private val libjxlTinyRoot =
     Path.of(sys.env.getOrElse("LIBJXL_TINY", "/Users/yunhocho/GitHub/libjxl-tiny"))
 
   private case class PreparedAcBlock(numNonzeros: Seq[Int], quantized: Seq[Seq[Int]])
   private case class CollectedTrace(stage: Int, group: Int, index: Int, value: Int)
+  private case class CommandResult(exitCode: Int, output: String)
   private def requireReferenceTools(): Unit = {
     assume(
       Files.isDirectory(libjxlTinyRoot.resolve("python")),
@@ -40,6 +43,8 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
     dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
     dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(fixedYtox.S)
+    dut.io.config.fixedYtob.poke(fixedYtob.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(false.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -138,6 +143,13 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
   }
 
   private def runReferenceHelper(args: Seq[String]): Unit = {
+    val result = runReferenceHelperRaw(args)
+    withClue(result.output) {
+      result.exitCode mustBe 0
+    }
+  }
+
+  private def runReferenceHelperRaw(args: Seq[String]): CommandResult = {
     val output = scala.collection.mutable.ArrayBuffer.empty[String]
     val logger = ProcessLogger(line => output += line, line => output += line)
     val exitCode = Process(
@@ -145,9 +157,7 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
       TestPaths.repoRoot.toFile,
       "LIBJXL_TINY" -> libjxlTinyRoot.toString
     ).!(logger)
-    withClue(output.mkString("\n")) {
-      exitCode mustBe 0
-    }
+    CommandResult(exitCode, output.mkString("\n"))
   }
 
   private def runTraceConverter(args: Seq[String]): Unit = {
@@ -228,6 +238,24 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
     )
   }
 
+  private def writeOversizedTokenPairs(path: Path): Unit = {
+    val output = scala.collection.mutable.ArrayBuffer.empty[String]
+    val logger = ProcessLogger(line => output += line, line => output += line)
+    val exitCode = Process(
+      Seq(
+        "python3",
+        "-c",
+        "import numpy as np, sys; " +
+          "np.save(sys.argv[1], np.asarray([[0, 4294967296]], dtype=np.int64))",
+        path.toString
+      ),
+      TestPaths.repoRoot.toFile
+    ).!(logger)
+    withClue(output.mkString("\n")) {
+      exitCode mustBe 0
+    }
+  }
+
   "RTL logical tokens can be consumed by the host bitstream assembler" in {
     requireReferenceTools()
 
@@ -259,6 +287,10 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
         height.toString,
         "--pattern",
         pattern,
+        "--fixed-ytox",
+        fixedYtox.toString,
+        "--fixed-ytob",
+        fixedYtob.toString,
         "--fixed-dct-only-prepared-token-inputs-json",
         preparedJson.toString
       )
@@ -310,6 +342,10 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
         height.toString,
         "--pattern",
         pattern,
+        "--fixed-ytox",
+        fixedYtox.toString,
+        "--fixed-ytob",
+        fixedYtob.toString,
         "--fixed-dct-only-frame-bin",
         directFrame.toString,
         "--fixed-dct-only-codestream-bin",
@@ -361,5 +397,33 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
     Files.readAllBytes(directToolAcStrategy).toSeq mustBe Files.readAllBytes(acStrategy).toSeq
     Files.readAllBytes(directToolFrame).toSeq mustBe Files.readAllBytes(directFrame).toSeq
     Files.readAllBytes(directToolCodestream).toSeq mustBe Files.readAllBytes(directCodestream).toSeq
+
+    val oversizedDcTokens = temp.resolve("oversized-dc.npy")
+    writeOversizedTokenPairs(oversizedDcTokens)
+    val invalidTokenInput = runReferenceHelperRaw(
+      Seq(
+        "--width",
+        width.toString,
+        "--height",
+        height.toString,
+        "--pattern",
+        pattern,
+        "--token-input-dc-tokens-npy",
+        oversizedDcTokens.toString,
+        "--token-input-ac-metadata-tokens-npy",
+        acMetadataTokens.toString,
+        "--token-input-ac-tokens-npy",
+        acTokens.toString,
+        "--token-input-ac-strategy-npy",
+        acStrategy.toString,
+        "--token-input-frame-bin",
+        temp.resolve("invalid-token-frame.bin").toString
+      )
+    )
+    invalidTokenInput.exitCode mustBe 1
+    invalidTokenInput.output must include(
+      "token-input dc-tokens-npy: token value 4294967296 outside uint32 at row 0"
+    )
+    invalidTokenInput.output must not include "Traceback"
   }
 }

@@ -15,13 +15,32 @@ SUPPORTED_FORMATS = {
 }
 
 
+def validate_manifest_json(manifest_path: Path, manifest_format: str) -> None:
+    if manifest_format == "hjxl.rgb_stream_manifest.v1":
+        from hjxl_rgb_stream import validate_manifest_json as validate_rgb_manifest
+
+        validate_rgb_manifest(manifest_path)
+        return
+    if manifest_format == "hjxl.prepared_dct_stream_manifest.v1":
+        from hjxl_prepared_blocks import validate_manifest_json as validate_prepared_manifest
+
+        validate_prepared_manifest(manifest_path)
+        return
+    raise ValueError(f"{manifest_path}: unsupported manifest format {manifest_format!r}")
+
+
 def _manifest_path(manifest_path: Path, raw_path: str | None) -> Path | None:
     if raw_path is None:
         return None
     path = Path(raw_path)
-    if path.is_absolute() or path.exists():
+    if path.is_absolute():
         return path
-    return manifest_path.parent / path
+    manifest_relative = manifest_path.parent / path
+    if manifest_relative.exists():
+        return manifest_relative
+    if path.exists():
+        return path
+    return manifest_relative
 
 
 def _column(fieldnames: list[str], *candidates: str) -> str:
@@ -32,19 +51,52 @@ def _column(fieldnames: list[str], *candidates: str) -> str:
     raise ValueError(f"missing CSV column: expected one of {', '.join(candidates)}")
 
 
-def _parse_bool(value: str) -> bool:
+def _parse_int(value: str | None, *, field: str, source: Path, line: int) -> int:
+    if value is None:
+        raise ValueError(f"{source}:{line}: {field} is required")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{source}:{line}: {field} is required")
+    try:
+        return int(stripped, 0)
+    except ValueError as exc:
+        raise ValueError(
+            f"{source}:{line}: {field} must be an integer, got {value!r}"
+        ) from exc
+
+
+def _manifest_int(value: object, *, field: str, source: Path) -> int:
+    if value is None:
+        raise ValueError(f"{source}: {field} is required")
+    if isinstance(value, bool):
+        raise ValueError(f"{source}: {field} must be an integer, got {value!r}")
+    if isinstance(value, float):
+        raise ValueError(f"{source}: {field} must be an integer, got {value!r}")
+    try:
+        if isinstance(value, str):
+            return int(value.strip(), 0)
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{source}: {field} must be an integer, got {value!r}") from exc
+
+
+def _parse_bool(value: str | None, *, field: str, source: Path, line: int) -> bool:
+    if value is None:
+        raise ValueError(f"{source}:{line}: {field} is required")
     stripped = value.strip().lower()
+    if not stripped:
+        raise ValueError(f"{source}:{line}: {field} is required")
     if stripped in {"1", "true", "t", "yes", "y"}:
         return True
     if stripped in {"0", "false", "f", "no", "n"}:
         return False
-    raise ValueError(f"invalid boolean value {value!r}")
+    raise ValueError(f"{source}:{line}: {field} must be boolean, got {value!r}")
 
 
-def _input_data_bits(manifest: dict) -> int:
+def _input_data_bits(manifest: dict, *, source: Path) -> int:
     stream = manifest["stream"]
     if "pixel_bits" in stream:
-        return int(stream["pixel_bits"]) * 3
+        return _manifest_int(stream["pixel_bits"], field="stream.pixel_bits", source=source) * 3
     return 32
 
 
@@ -57,13 +109,20 @@ def _read_stream_csv(path: Path) -> list[tuple[int, bool]]:
         data_column = _column(reader.fieldnames, "data", "tdata")
         last_column = _column(reader.fieldnames, "last", "tlast")
         for line, row in enumerate(reader, start=2):
-            try:
-                data = int(row[data_column], 0)
-                last = _parse_bool(row[last_column])
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                raise ValueError(f"{path}:{line}: invalid stream row: {row}") from exc
+            data = _parse_int(
+                row[data_column],
+                field=data_column,
+                source=path,
+                line=line,
+            )
+            last = _parse_bool(
+                row[last_column],
+                field=last_column,
+                source=path,
+                line=line,
+            )
             if data < 0:
-                raise ValueError(f"{path}:{line}: stream data must be nonnegative")
+                raise ValueError(f"{path}:{line}: {data_column} must be nonnegative")
             rows.append((data, last))
     return rows
 
@@ -96,13 +155,14 @@ def stream_rows_from_manifest(manifest_path: Path) -> tuple[list[tuple[int, bool
     manifest_format = str(manifest.get("format", ""))
     if manifest_format not in SUPPORTED_FORMATS:
         raise ValueError(f"{manifest_path}: unsupported manifest format {manifest_format!r}")
+    validate_manifest_json(manifest_path, manifest_format)
 
     stream = manifest["stream"]
     stream_csv = _manifest_path(manifest_path, stream.get("csv"))
     if stream_csv is None:
         raise ValueError(f"{manifest_path}: missing stream CSV path")
-    expected_word_count = int(stream["word_count"])
-    input_data_bits = _input_data_bits(manifest)
+    expected_word_count = _manifest_int(stream.get("word_count"), field="stream.word_count", source=manifest_path)
+    input_data_bits = _input_data_bits(manifest, source=manifest_path)
     input_data_bytes = (input_data_bits + 7) // 8
     rows = _read_stream_csv(stream_csv)
     _validate_rows(

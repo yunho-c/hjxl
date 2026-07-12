@@ -30,17 +30,31 @@ class StageTraceRow:
     line: int
 
 
-def parse_int(value: str) -> int:
-    return int(value.strip(), 0)
+def parse_int(value: str | None, *, field: str, source: Path, line: int) -> int:
+    if value is None:
+        raise ValueError(f"{source}:{line}: {field} is required")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{source}:{line}: {field} is required")
+    try:
+        return int(stripped, 0)
+    except ValueError as exc:
+        raise ValueError(
+            f"{source}:{line}: {field} must be an integer, got {value!r}"
+        ) from exc
 
 
-def parse_bool(value: str) -> bool:
+def parse_bool(value: str | None, *, field: str, source: Path, line: int) -> bool:
+    if value is None:
+        raise ValueError(f"{source}:{line}: {field} is required")
     stripped = value.strip().lower()
+    if not stripped:
+        raise ValueError(f"{source}:{line}: {field} is required")
     if stripped in {"1", "true", "t", "yes", "y"}:
         return True
     if stripped in {"0", "false", "f", "no", "n"}:
         return False
-    raise ValueError(f"invalid boolean value {value!r}")
+    raise ValueError(f"{source}:{line}: {field} must be boolean, got {value!r}")
 
 
 def _column(fieldnames: list[str], *candidates: str) -> str:
@@ -60,20 +74,27 @@ def read_stream_csv(path: Path) -> list[StreamTraceRow]:
         data_column = _column(reader.fieldnames, "data", "tdata")
         last_column = _column(reader.fieldnames, "last", "tlast")
         for line, row in enumerate(reader, start=2):
-            try:
-                data = parse_int(row[data_column])
-                if data < 0:
-                    raise ValueError("data must be nonnegative")
-                rows.append(
-                    StreamTraceRow(
-                        data=data,
-                        last=parse_bool(row[last_column]),
-                        source=str(path),
+            data = parse_int(
+                row[data_column],
+                field=data_column,
+                source=path,
+                line=line,
+            )
+            if data < 0:
+                raise ValueError(f"{path}:{line}: {data_column} must be nonnegative")
+            rows.append(
+                StreamTraceRow(
+                    data=data,
+                    last=parse_bool(
+                        row[last_column],
+                        field=last_column,
+                        source=path,
                         line=line,
-                    )
+                    ),
+                    source=str(path),
+                    line=line,
                 )
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                raise ValueError(f"{path}:{line}: invalid stream row: {row}") from exc
+            )
     return rows
 
 

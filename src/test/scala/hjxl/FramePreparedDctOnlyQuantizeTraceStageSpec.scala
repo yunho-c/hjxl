@@ -120,6 +120,8 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     dut.io.config.fixedPointScale.poke(0.U)
     dut.io.config.fixedInvQacQ16.poke(0.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(true.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -241,6 +243,8 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
     dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(false.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -383,6 +387,8 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
     dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(true.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -536,6 +542,9 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     val observedTraceCsv = temp.resolve("observed-quant-trace.csv")
     val preparedDcCsv = temp.resolve("prepared-dc.csv")
     val preparedAcCsv = temp.resolve("prepared-ac.csv")
+    val observedPreparedJson = temp.resolve("observed-prepared-token-inputs.json")
+    val roundtripPreparedDcCsv = temp.resolve("roundtrip-prepared-dc.csv")
+    val roundtripPreparedAcCsv = temp.resolve("roundtrip-prepared-ac.csv")
     val combinedTraceCsv = temp.resolve("combined-token-trace.csv")
     val dcTokens = temp.resolve("combined-dc.npy")
     val acMetadataTokens = temp.resolve("combined-acmeta.npy")
@@ -638,7 +647,9 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
         "--dc-csv",
         preparedDcCsv.toString,
         "--ac-csv",
-        preparedAcCsv.toString
+        preparedAcCsv.toString,
+        "--prepared-json",
+        observedPreparedJson.toString
       )
     )
 
@@ -665,6 +676,31 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     preparedDc.length mustBe blocks.length * 3
     preparedAc.length mustBe blocks.length
     preparedAc.map(_.numNonzeros.sum).sum must be > 0
+
+    runTool(
+      Seq(
+        "python3",
+        "tools/hjxl_prepared_token_inputs.py",
+        "--prepared-json",
+        observedPreparedJson.toString,
+        "--dc-csv",
+        roundtripPreparedDcCsv.toString,
+        "--ac-csv",
+        roundtripPreparedAcCsv.toString
+      )
+    )
+    val observedPreparedJsonText = Files.readString(observedPreparedJson, StandardCharsets.UTF_8)
+    observedPreparedJsonText must include(
+      "\"format\": \"hjxl.fixed_dct_only_prepared_token_inputs.v1\""
+    )
+    observedPreparedJsonText must include("\"x_blocks\": 2")
+    observedPreparedJsonText must include("\"y_blocks\": 1")
+    observedPreparedJsonText must include("\"x_tiles\": 1")
+    observedPreparedJsonText must include("\"y_tiles\": 1")
+    observedPreparedJsonText must include("\"block_x\": 1")
+    observedPreparedJsonText must include("\"tile_x\": 0")
+    Files.readAllBytes(roundtripPreparedDcCsv).toSeq mustBe Files.readAllBytes(preparedDcCsv).toSeq
+    Files.readAllBytes(roundtripPreparedAcCsv).toSeq mustBe Files.readAllBytes(preparedAcCsv).toSeq
 
     val tokenTraces = collectTokenTraces(preparedDc, preparedAc)
     tokenTraces.count(_.stage == TraceStage.DcTokens) mustBe preparedDc.length
