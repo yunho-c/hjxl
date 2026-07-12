@@ -10,7 +10,10 @@ import math
 from pathlib import Path
 import struct
 
+from hjxl_abi import discovery_metadata, rgb_active_route, validate_discovery_metadata
 from hjxl_abi_generated import (
+    CONTROL_CLEAR_PROTOCOL_ERROR,
+    REGISTER_MAP,
     REGISTER_DISTANCE_Q8,
     REGISTER_FIXED_INV_QAC_Q16,
     REGISTER_FIXED_POINT_SCALE,
@@ -20,6 +23,7 @@ from hjxl_abi_generated import (
     REGISTER_FLAGS,
     REGISTER_XSIZE,
     REGISTER_YSIZE,
+    STATUS_BITS,
     TOKEN_SELECT,
     TRACE_STAGES,
 )
@@ -206,18 +210,7 @@ def write_manifest_json(
 ) -> None:
     x_tiles = (width + 63) // 64
     y_tiles = (height + 63) // 64
-    register_map = {
-        "status_control": 0x00,
-        "xsize": REGISTER_XSIZE,
-        "ysize": REGISTER_YSIZE,
-        "distance_q8": REGISTER_DISTANCE_Q8,
-        "fixed_point_scale": REGISTER_FIXED_POINT_SCALE,
-        "fixed_inv_qac_q16": REGISTER_FIXED_INV_QAC_Q16,
-        "fixed_raw_quant": REGISTER_FIXED_RAW_QUANT,
-        "flags": REGISTER_FLAGS,
-        "fixed_ytox": REGISTER_FIXED_YTOX,
-        "fixed_ytob": REGISTER_FIXED_YTOB,
-    }
+    register_map = dict(REGISTER_MAP)
     manifest = {
         "format": "hjxl.rgb_stream_manifest.v1",
         "source": {"pfm": str(pfm)},
@@ -241,17 +234,18 @@ def write_manifest_json(
             "packing": "R in low component field, then G, then B",
             "last": "asserted only on the final pixel",
         },
+        "discovery": discovery_metadata(
+            profile="rgb",
+            active_route=rgb_active_route(flags=flags, focused_route=TRACE_ROUTES[trace_route_name]),
+            width=width,
+            height=height,
+        ),
         "axi_lite": {
             "csv": str(axi_lite_csv) if axi_lite_csv is not None else None,
             "columns": ["address", "data", "strb"],
             "register_map": register_map,
-            "status_control_bits": {
-                "protocol_error": 0,
-                "busy": 1,
-                "overflow": 2,
-                "unsupported_distance": 3,
-                "clear_protocol_error_write_bit": 0,
-            },
+            "status_control_bits": dict(STATUS_BITS)
+            | {"clear_protocol_error_write_bit": CONTROL_CLEAR_PROTOCOL_ERROR},
             "config": {
                 "xsize": width,
                 "ysize": height,
@@ -427,6 +421,21 @@ def validate_manifest_json(path: Path) -> None:
             raise ValueError(f"{path}: trace_route.stage does not match trace_route.name")
         if bool(trace_route.get("focused")) != (expected_stage is not None):
             raise ValueError(f"{path}: trace_route.focused does not match trace_route.name")
+    else:
+        name = "all"
+    config = manifest["axi_lite"]["config"]
+    if "discovery" in manifest:
+        validate_discovery_metadata(
+            manifest["discovery"],
+            profile="rgb",
+            active_route=rgb_active_route(
+                flags=_json_int(config.get("flags"), path=path, field="axi_lite.config.flags"),
+                focused_route=TRACE_ROUTES[name],
+            ),
+            width=width,
+            height=height,
+            source=path,
+        )
     stream_csv = _manifest_path(path, stream["csv"])
     if stream_csv is None:
         raise ValueError(f"{path}: missing stream CSV path")

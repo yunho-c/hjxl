@@ -51,6 +51,12 @@ object HjxlAxiLiteRegister {
   val Flags = HjxlAbiGenerated.AxiLite.Register.Flags
   val FixedYtox = HjxlAbiGenerated.AxiLite.Register.FixedYtox
   val FixedYtob = HjxlAbiGenerated.AxiLite.Register.FixedYtob
+  val Identity = HjxlAbiGenerated.AxiLite.Register.Identity
+  val AbiVersion = HjxlAbiGenerated.AxiLite.Register.AbiVersion
+  val Capabilities = HjxlAbiGenerated.AxiLite.Register.Capabilities
+  val MaxFrameGeometry = HjxlAbiGenerated.AxiLite.Register.MaxFrameGeometry
+  val ActiveRoute = HjxlAbiGenerated.AxiLite.Register.ActiveRoute
+  val BuildId = HjxlAbiGenerated.AxiLite.Register.BuildId
 }
 
 object HjxlStatusControlBit {
@@ -77,6 +83,9 @@ object HjxlStatusControlBit {
   *     bit 3 enableTokenize, bits 9:8 tokenSelect
   *   - 0x20 fixedYtox, low byte interpreted as signed two's-complement CFL
   *   - 0x24 fixedYtob, low byte interpreted as signed two's-complement CFL
+  *   - 0x28 identity, 0x2c ABI version, 0x30 capabilities,
+  *     0x34 maximum frame geometry, 0x38 active route, 0x3c build ID;
+  *     all discovery registers are read-only
   *
   * AXI-Lite writes remain accepted while busy. The stream shell snapshots the
   * complete register-derived `FrameConfig` on the first accepted input beat,
@@ -93,6 +102,7 @@ class HjxlAxiLiteStreamCore(
 
   private val dataBits = HjxlAbiGenerated.AxiLite.DataBits
   private val wordAddrBits = axiAddrBits - 2
+  private val maxFrameGeometry = HjxlDiscovery.maxFrameGeometry(c)
 
   val pixelDataBits = c.pixelBits * 3
   val traceDataBits =
@@ -142,6 +152,15 @@ class HjxlAxiLiteStreamCore(
   val enableTokenize = RegInit(false.B)
   val tokenSelect = RegInit(TokenTraceSelect.Dc.U(2.W))
 
+  val configuredRoute = HjxlDiscovery.rgbConfiguredRoute(
+    traceRoute,
+    enableXyb,
+    enableDct,
+    enableQuant,
+    enableTokenize,
+    tokenSelect
+  )
+
   val distanceStatus = Module(new DistanceParamsLookup)
   distanceStatus.io.distanceQ8 := distanceQ8
 
@@ -171,6 +190,12 @@ class HjxlAxiLiteStreamCore(
   io.overflow := stream.io.overflow
   io.protocolError := stream.io.protocolError
   io.unsupportedDistance := !distanceStatus.io.supported
+
+  val routeTracker = Module(new HjxlActiveRouteTracker)
+  routeTracker.io.configuredRoute := configuredRoute
+  routeTracker.io.inputFire := io.input.fire
+  routeTracker.io.busy := stream.io.busy
+  val discoveryRoute = routeTracker.io.route
 
   val clearProtocolError = WireDefault(false.B)
   stream.io.clearProtocolError := clearProtocolError
@@ -333,6 +358,30 @@ class HjxlAxiLiteStreamCore(
     is(word(HjxlAxiLiteRegister.FixedYtob)) {
       readOkay := true.B
       readData := fixedYtob.pad(dataBits)
+    }
+    is(word(HjxlAxiLiteRegister.Identity)) {
+      readOkay := true.B
+      readData := HjxlAbiGenerated.Discovery.Identity.U(dataBits.W)
+    }
+    is(word(HjxlAxiLiteRegister.AbiVersion)) {
+      readOkay := true.B
+      readData := HjxlAbiGenerated.Discovery.AbiVersion.U(dataBits.W)
+    }
+    is(word(HjxlAxiLiteRegister.Capabilities)) {
+      readOkay := true.B
+      readData := HjxlDiscovery.RgbCapabilities.U(dataBits.W)
+    }
+    is(word(HjxlAxiLiteRegister.MaxFrameGeometry)) {
+      readOkay := true.B
+      readData := maxFrameGeometry.U(dataBits.W)
+    }
+    is(word(HjxlAxiLiteRegister.ActiveRoute)) {
+      readOkay := true.B
+      readData := discoveryRoute.pad(dataBits)
+    }
+    is(word(HjxlAxiLiteRegister.BuildId)) {
+      readOkay := true.B
+      readData := HjxlAbiGenerated.Discovery.BuildId.U(dataBits.W)
     }
   }
 

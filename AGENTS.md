@@ -392,7 +392,15 @@ Read these libjxl-tiny files before making architectural changes:
   `0x20` signed-low-byte `fixedYtox`, and `0x24` signed-low-byte `fixedYtob`
   (`enableXyb`, `enableDct`, `enableQuant`, `enableTokenize`, `tokenSelect` in
   bits 9:8). `HjxlAxiLiteStreamCoreSpec` covers register reads/writes, byte
-  strobes, decode errors, and protocol-error clearing;
+  strobes, decode errors, and protocol-error clearing. Read-only discovery
+  continues at `0x28` identity, `0x2c` ABI version,
+  `0x30` capabilities, `0x34` packed maximum frame geometry, `0x38` active
+  route, and `0x3c` contract build ID. Writes to those addresses must return
+  DECERR. Keep schema-generated bindings, manifest/header discovery metadata,
+  and RGB frame-start route latching synchronized. Use
+  `tools/hjxl_discovery_check.py` on AXI-Lite `address,data,resp` readback before
+  replay; do not treat manifest expectations alone as proof of the connected
+  bitstream's identity or capacity.
   `HjxlAxiLiteStreamElaborationSpec` guards the generated controlled-shell
   port surface and focused-route module inclusion.
 - Use `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantize'` to generate the

@@ -145,6 +145,37 @@ class HjxlAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim
     }
   }
 
+  "HjxlAxiLiteStreamCore exposes read-only discovery registers" in {
+    simulate(new HjxlAxiLiteStreamCore(config, traceRoute = TraceStage.InputPadded)) { dut =>
+      init(dut)
+
+      axiRead(dut, HjxlAxiLiteRegister.Identity) must be(
+        BigInt(HjxlAbiGenerated.Discovery.Identity) -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.AbiVersion) must be(
+        BigInt(HjxlAbiGenerated.Discovery.AbiVersion) -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.Capabilities) must be(
+        HjxlDiscovery.RgbCapabilities -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.MaxFrameGeometry) must be(
+        BigInt(0x00080008) -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.ActiveRoute) must be(
+        BigInt(TraceStage.InputPadded) -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.BuildId) must be(
+        BigInt(HjxlAbiGenerated.Discovery.BuildId) -> AxiLiteResponse.Okay
+      )
+
+      axiWrite(dut, HjxlAxiLiteRegister.Identity, 0) must be(AxiLiteResponse.Decerr)
+      axiWrite(dut, HjxlAxiLiteRegister.BuildId, 0) must be(AxiLiteResponse.Decerr)
+      axiRead(dut, HjxlAxiLiteRegister.Identity) must be(
+        BigInt(HjxlAbiGenerated.Discovery.Identity) -> AxiLiteResponse.Okay
+      )
+    }
+  }
+
   "HjxlAxiLiteStreamCore honors byte strobes" in {
     simulate(new HjxlAxiLiteStreamCore(config, traceRoute = TraceStage.InputPadded)) { dut =>
       init(dut)

@@ -263,6 +263,22 @@ class HjxlPreparedCflDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers 
       axiRead(dut, HjxlAxiLiteRegister.DistanceQ8) must be(BigInt(512) -> AxiLiteResponse.Okay)
       axiRead(dut, HjxlAxiLiteRegister.FixedYtox) must be(BigInt(0xf8) -> AxiLiteResponse.Okay)
       axiRead(dut, HjxlAxiLiteRegister.FixedYtob) must be(BigInt(9) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.Identity) must be(
+        BigInt(HjxlAbiGenerated.Discovery.Identity) -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.Capabilities) must be(
+        HjxlDiscovery.PreparedEstimatedCflCapabilities -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.MaxFrameGeometry) must be(
+        BigInt(0x00080048) -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.ActiveRoute) must be(
+        BigInt(HjxlAbiGenerated.Discovery.Route.PreparedEstimatedCfl) -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.BuildId) must be(
+        BigInt(HjxlAbiGenerated.Discovery.BuildId) -> AxiLiteResponse.Okay
+      )
+      axiWrite(dut, HjxlAxiLiteRegister.ActiveRoute, 0) must be(AxiLiteResponse.Decerr)
       axiWrite(dut, 0x40, 0) must be(AxiLiteResponse.Decerr)
       axiRead(dut, 0x40) must be(BigInt(0) -> AxiLiteResponse.Decerr)
     }

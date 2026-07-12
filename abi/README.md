@@ -4,6 +4,8 @@
 and Python:
 
 - AXI-Lite address/data geometry, register offsets, and status/control bits;
+- read-only identity/version/build, capability profiles, capacity, and route
+  discovery semantics;
 - packed trace field widths, shifts, stages, and KV260 capture word size;
 - token-route selection values;
 - direct prepared-DCT scalar offsets and the 201-word block layout.
@@ -26,6 +28,13 @@ CI runs the drift check. Existing Scala objects such as
 `HjxlAxiLiteRegister`, `HjxlStatusControlBit`, `TraceStage`,
 `TokenTraceSelect`, and `PreparedDctStreamLayout` remain public compatibility
 aliases over generated values.
+
+The ABI version is packed as `major << 16 | minor`. Increment the major version
+for an incompatible host contract and the minor version for a backward-compatible
+extension. `build_id` identifies the checked contract release and must change
+when observable register/stream semantics change without an ABI-version bump;
+it is not a Git commit hash. Capability profiles define the minimum bits a host
+must observe for the RGB, direct prepared-DCT, and estimated-CFL targets.
 
 Not every project constant belongs in this ABI. Parameterized RTL limits,
 fixture-specific values, distance lookup tables, target-variant descriptions,

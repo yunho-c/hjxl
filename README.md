@@ -725,9 +725,39 @@ replay-capture input-stream, trace-layout, and AXI-Lite expectation guards.
 | `0x1c` | flags | bit 0 `enableXyb`, bit 1 `enableDct`, bit 2 `enableQuant`, bit 3 `enableTokenize`, bits 9:8 `tokenSelect` |
 | `0x20` | `fixedYtox` | signed 8-bit scalar Y-to-X CFL override |
 | `0x24` | `fixedYtob` | signed 8-bit scalar Y-to-B CFL override |
+| `0x28` | identity | read-only ASCII `HJXL` magic (`0x484a584c`) |
+| `0x2c` | ABI version | read-only `major << 16 | minor`; currently 1.0 |
+| `0x30` | capabilities | read-only target capability mask defined in `abi/hjxl_abi.json` |
+| `0x34` | maximum frame geometry | read-only maximum height in bits 31:16 and width in bits 15:0 |
+| `0x38` | active route | read-only trace stage 0–12, direct prepared route 128, or estimated-CFL prepared route 129 |
+| `0x3c` | build ID | read-only contract build identifier; currently `0x20260712` |
 
 The AXI-Lite wrapper returns OKAY for mapped registers and DECERR for unmapped
-word addresses. Byte strobes are honored for writable configuration registers.
+word addresses or writes to read-only discovery registers. Byte strobes are
+honored for writable configuration registers. RGB active-route discovery is
+latched on the first accepted frame beat and remains stable while `busy`, even
+when AXI-Lite writes update next-frame shadow configuration.
+
+Generated manifests carry expected identity/version/build, required capability
+mask, active route, and minimum frame capacity. These values propagate through
+generated C headers, host bundles, replay plans, and replay-capture summaries;
+legacy v1 manifests without the additive `discovery` block continue to derive
+the current expectations from target and frame metadata.
+
+Before DMA replay, capture the six discovery reads as `address,data,resp` and
+validate the actual hardware against the replay plan:
+
+```sh
+python3 tools/hjxl_discovery_check.py \
+  --replay-plan-json build-codex/host/prepared-replay-plan.json \
+  --read-csv build-codex/host/prepared-discovery.csv \
+  --summary-json build-codex/host/prepared-discovery-summary.json
+```
+
+The checker requires OKAY responses and exact identity, ABI, build, and route;
+allows capability supersets; and requires the compiled maximum geometry to
+cover the replay frame. It fails with concise diagnostics before any stream
+buffer is submitted.
 
 Convert packed AXI-stream trace captures back into the StageTrace CSV shape
 used by the host tools:

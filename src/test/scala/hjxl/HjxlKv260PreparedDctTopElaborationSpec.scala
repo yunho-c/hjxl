@@ -305,6 +305,21 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
 
       dut.io.traceTkeep.expect("h7ff".U)
       axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(0) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.Identity) must be(
+        BigInt(HjxlAbiGenerated.Discovery.Identity) -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.Capabilities) must be(
+        HjxlDiscovery.PreparedDirectCapabilities -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.MaxFrameGeometry) must be(
+        BigInt(0x00080010) -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.ActiveRoute) must be(
+        BigInt(HjxlAbiGenerated.Discovery.Route.PreparedDirect) -> AxiLiteResponse.Okay
+      )
+      axiRead(dut, HjxlAxiLiteRegister.BuildId) must be(
+        BigInt(HjxlAbiGenerated.Discovery.BuildId) -> AxiLiteResponse.Okay
+      )
       axiWrite(dut, HjxlAxiLiteRegister.Xsize, 16) must be(AxiLiteResponse.Okay)
       axiWrite(dut, HjxlAxiLiteRegister.Ysize, 8) must be(AxiLiteResponse.Okay)
       axiRead(dut, HjxlAxiLiteRegister.Xsize) must be(BigInt(16) -> AxiLiteResponse.Okay)

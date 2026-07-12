@@ -40,6 +40,8 @@ from hjxl_manifest_header import (
     header_text,
     input_data_bits,
     input_keep_mask,
+    manifest_discovery_metadata,
+    register_map_metadata,
     register_writes,
     target_metadata,
     trace_route_metadata,
@@ -148,10 +150,7 @@ def _trace_metadata() -> dict:
 
 
 def _register_map_metadata(manifest: dict) -> dict:
-    return {
-        name: int(address)
-        for name, address in manifest["axi_lite"]["register_map"].items()
-    }
+    return register_map_metadata(manifest)
 
 
 def _axi_lite_metadata(write_count: int, manifest: dict | None = None) -> dict:
@@ -379,6 +378,19 @@ def validate_host_bundle(index_path: Path) -> dict:
     expected_target = target_metadata(manifest)
     if "target" in index and index["target"] != expected_target:
         raise ValueError(f"{index_path}: target metadata does not match source manifest")
+    expected_discovery = manifest_discovery_metadata(manifest)
+    if "discovery" in index:
+        try:
+            _validate_optional_metadata(
+                index["discovery"],
+                expected_discovery,
+                label="discovery",
+                source=index_path,
+            )
+        except ValueError as exc:
+            if "does not match" in str(exc):
+                raise ValueError(f"{index_path}: discovery metadata does not match source manifest") from exc
+            raise
     expected_distance = distance_metadata()
     if "distance" in index and index["distance"] != expected_distance:
         raise ValueError(f"{index_path}: distance metadata does not match RTL lookup")
@@ -535,6 +547,7 @@ def describe_host_bundle(index_path: Path) -> dict:
         "name": index["name"],
         "manifest_format": index["manifest_format"],
         "target": target_metadata(manifest),
+        "discovery": index.get("discovery", manifest_discovery_metadata(manifest)),
         "trace_route": index.get("trace_route", trace_route_metadata(manifest)),
         "frame": index.get("frame", _frame_metadata(manifest)),
         "artifacts": {
@@ -642,6 +655,8 @@ def validate_replay_plan(plan_path: Path) -> dict:
         expected.pop("trace", None)
     if "target" not in plan:
         expected.pop("target", None)
+    if "discovery" not in plan:
+        expected.pop("discovery", None)
     if "distance" not in plan:
         expected.pop("distance", None)
     if "frame" not in plan:
@@ -749,6 +764,7 @@ def write_host_bundle(
         "original_manifest": str(manifest_path),
         "manifest_format": manifest.get("format"),
         "target": target_metadata(manifest),
+        "discovery": manifest_discovery_metadata(manifest),
         "trace_route": trace_route_metadata(manifest),
         "distance": distance_metadata(),
         "frame": _frame_metadata(manifest),

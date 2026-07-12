@@ -19,6 +19,9 @@ import chisel3.util._
   * Writes while busy update the readable register bank for the next frame;
   * `HjxlPreparedDctAxiStreamCore` snapshots the complete configuration on its
   * first accepted word and holds it until the active trace stream completes.
+  * The shared read-only discovery window at 0x28..0x3c identifies the ABI,
+  * direct/estimated target capabilities, maximum compiled frame geometry,
+  * logical prepared route, and contract build.
   */
 class HjxlPreparedDctAxiLiteStreamCore(
     c: HjxlConfig = HjxlConfig(),
@@ -30,6 +33,7 @@ class HjxlPreparedDctAxiLiteStreamCore(
 
   private val dataBits = HjxlAbiGenerated.AxiLite.DataBits
   private val wordAddrBits = axiAddrBits - 2
+  private val maxFrameGeometry = HjxlDiscovery.maxFrameGeometry(c)
 
   val inputDataBits = HjxlAbiGenerated.PreparedDctStream.WordBits
   private val inputWordBytes = inputDataBits / 8
@@ -291,6 +295,36 @@ class HjxlPreparedDctAxiLiteStreamCore(
     is(word(HjxlAxiLiteRegister.FixedYtob)) {
       readOkay := true.B
       readData := fixedYtob.pad(dataBits)
+    }
+    is(word(HjxlAxiLiteRegister.Identity)) {
+      readOkay := true.B
+      readData := HjxlAbiGenerated.Discovery.Identity.U(dataBits.W)
+    }
+    is(word(HjxlAxiLiteRegister.AbiVersion)) {
+      readOkay := true.B
+      readData := HjxlAbiGenerated.Discovery.AbiVersion.U(dataBits.W)
+    }
+    is(word(HjxlAxiLiteRegister.Capabilities)) {
+      readOkay := true.B
+      val capabilities =
+        if (estimatedCfl) HjxlDiscovery.PreparedEstimatedCflCapabilities
+        else HjxlDiscovery.PreparedDirectCapabilities
+      readData := capabilities.U(dataBits.W)
+    }
+    is(word(HjxlAxiLiteRegister.MaxFrameGeometry)) {
+      readOkay := true.B
+      readData := maxFrameGeometry.U(dataBits.W)
+    }
+    is(word(HjxlAxiLiteRegister.ActiveRoute)) {
+      readOkay := true.B
+      val route =
+        if (estimatedCfl) HjxlAbiGenerated.Discovery.Route.PreparedEstimatedCfl
+        else HjxlAbiGenerated.Discovery.Route.PreparedDirect
+      readData := route.U(dataBits.W)
+    }
+    is(word(HjxlAxiLiteRegister.BuildId)) {
+      readOkay := true.B
+      readData := HjxlAbiGenerated.Discovery.BuildId.U(dataBits.W)
     }
   }
 

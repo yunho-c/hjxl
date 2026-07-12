@@ -15,6 +15,12 @@ REGISTER_MAP = {
     "flags": 28,
     "fixed_ytox": 32,
     "fixed_ytob": 36,
+    "identity": 40,
+    "abi_version": 44,
+    "capabilities": 48,
+    "max_frame_geometry": 52,
+    "active_route": 56,
+    "build_id": 60,
 }
 REGISTER_STATUS_CONTROL = 0
 REGISTER_XSIZE = 4
@@ -26,6 +32,30 @@ REGISTER_FIXED_RAW_QUANT = 24
 REGISTER_FLAGS = 28
 REGISTER_FIXED_YTOX = 32
 REGISTER_FIXED_YTOB = 36
+REGISTER_IDENTITY = 40
+REGISTER_ABI_VERSION = 44
+REGISTER_CAPABILITIES = 48
+REGISTER_MAX_FRAME_GEOMETRY = 52
+REGISTER_ACTIVE_ROUTE = 56
+REGISTER_BUILD_ID = 60
+REGISTER_ACCESS = {
+    "status_control": "rw1c",
+    "xsize": "rw",
+    "ysize": "rw",
+    "distance_q8": "rw",
+    "fixed_point_scale": "rw",
+    "fixed_inv_qac_q16": "rw",
+    "fixed_raw_quant": "rw",
+    "flags": "rw",
+    "fixed_ytox": "rw",
+    "fixed_ytob": "rw",
+    "identity": "ro",
+    "abi_version": "ro",
+    "capabilities": "ro",
+    "max_frame_geometry": "ro",
+    "active_route": "ro",
+    "build_id": "ro",
+}
 STATUS_BITS = {
     "protocol_error": 0,
     "busy": 1,
@@ -108,6 +138,43 @@ TOKEN_SELECT = {
     "dc": 0,
     "ac-metadata": 1,
     "ac-tokens": 2,
+}
+DISCOVERY_IDENTITY = 1212831820
+DISCOVERY_ABI_MAJOR = 1
+DISCOVERY_ABI_MINOR = 0
+DISCOVERY_ABI_VERSION = 65536
+DISCOVERY_BUILD_ID = 539363090
+CAPABILITY_BITS = {
+    "rgb_input": 0,
+    "prepared_dct_input": 1,
+    "estimated_cfl": 2,
+    "axi_lite": 3,
+    "axi_stream": 4,
+    "trace_output": 5,
+    "host_bitstream_assembly_required": 6,
+    "frame_config_snapshot": 7,
+    "full_word_input_keep": 8,
+    "caller_cfl": 9,
+}
+CAPABILITY_RGB_INPUT = 0
+CAPABILITY_PREPARED_DCT_INPUT = 1
+CAPABILITY_ESTIMATED_CFL = 2
+CAPABILITY_AXI_LITE = 3
+CAPABILITY_AXI_STREAM = 4
+CAPABILITY_TRACE_OUTPUT = 5
+CAPABILITY_HOST_BITSTREAM_ASSEMBLY_REQUIRED = 6
+CAPABILITY_FRAME_CONFIG_SNAPSHOT = 7
+CAPABILITY_FULL_WORD_INPUT_KEEP = 8
+CAPABILITY_CALLER_CFL = 9
+CAPABILITY_PROFILES = {
+    "rgb": 249,
+    "prepared-direct": 1018,
+    "prepared-estimated-cfl": 510,
+}
+ROUTE_IDS = {
+    "prepared-direct": 128,
+    "prepared-estimated-cfl": 129,
+    "unavailable": 255,
 }
 PREPARED_DCT_WORD_BITS = 32
 PREPARED_DCT_SCALAR_WORDS = 9

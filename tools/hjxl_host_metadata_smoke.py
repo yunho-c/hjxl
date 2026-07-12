@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import tempfile
 
+from hjxl_abi import discovery_metadata
+from hjxl_abi_generated import REGISTER_MAP, ROUTE_IDS
 from hjxl_host_bundle import (
     describe_host_bundle,
     validate_host_bundle,
@@ -94,18 +96,26 @@ EXPECTED_AXI_LITE = {
     "write_count": 9,
 }
 
-EXPECTED_REGISTER_MAP = {
-    "status_control": 0x00,
-    "xsize": 0x04,
-    "ysize": 0x08,
-    "distance_q8": 0x0C,
-    "fixed_point_scale": 0x10,
-    "fixed_inv_qac_q16": 0x14,
-    "fixed_raw_quant": 0x18,
-    "flags": 0x1C,
-    "fixed_ytox": 0x20,
-    "fixed_ytob": 0x24,
-}
+EXPECTED_REGISTER_MAP = dict(REGISTER_MAP)
+
+EXPECTED_DISCOVERY = discovery_metadata(
+    profile="prepared-direct",
+    active_route=ROUTE_IDS["prepared-direct"],
+    width=8,
+    height=8,
+)
+EXPECTED_ESTIMATED_DISCOVERY = discovery_metadata(
+    profile="prepared-estimated-cfl",
+    active_route=ROUTE_IDS["prepared-estimated-cfl"],
+    width=8,
+    height=8,
+)
+EXPECTED_RGB_DISCOVERY = discovery_metadata(
+    profile="rgb",
+    active_route=3,
+    width=2,
+    height=2,
+)
 
 EXPECTED_FRAME = {
     "xsize": 8,
@@ -305,7 +315,9 @@ def _assert_fixed_cfl_writes(plan: dict) -> None:
             )
 
 
-def _check_replay_expectations(plan: dict) -> None:
+def _check_replay_expectations(plan: dict, *, expected_discovery: dict = EXPECTED_DISCOVERY) -> None:
+    if plan.get("discovery") != expected_discovery:
+        raise AssertionError(f"unexpected discovery metadata: {plan.get('discovery')!r}")
     frame_summary = _frame_summary(plan)
     if frame_summary != EXPECTED_FRAME:
         raise AssertionError(f"unexpected frame summary: {frame_summary!r}")
@@ -947,6 +959,8 @@ def _check_rgb_bundle(temp: Path) -> None:
         "focused": True,
     }:
         raise AssertionError(f"unexpected RGB trace route metadata: {plan.get('trace_route')!r}")
+    if plan.get("discovery") != EXPECTED_RGB_DISCOVERY:
+        raise AssertionError(f"unexpected RGB discovery metadata: {plan.get('discovery')!r}")
     _assert_fixed_cfl_writes(plan)
     header_text = (bundle_dir / "rgb.h").read_text(encoding="utf-8")
     for expected in (
@@ -960,6 +974,10 @@ def _check_rgb_bundle(temp: Path) -> None:
         '#define HJXL_RGB_TRACE_ROUTE_NAME "raw-quant-field"',
         "#define HJXL_RGB_TRACE_ROUTE_STAGE 3",
         "#define HJXL_RGB_TRACE_ROUTE_FOCUSED 1u",
+        "#define HJXL_RGB_DISCOVERY_REQUIRED_CAPABILITIES 0x000000f9u",
+        "#define HJXL_RGB_DISCOVERY_ACTIVE_ROUTE 3u",
+        "#define HJXL_RGB_DISCOVERY_MIN_MAX_FRAME_WIDTH 2u",
+        "#define HJXL_RGB_DISCOVERY_MIN_MAX_FRAME_HEIGHT 2u",
     ):
         if expected not in header_text:
             raise AssertionError(f"generated RGB header missed {expected}")
@@ -1202,6 +1220,16 @@ def main() -> int:
             target_variant="direct",
         )
         validate_manifest_json(manifest_json)
+        original_manifest = json.loads(manifest_json.read_text(encoding="utf-8"))
+        invalid_discovery_manifest = copy.deepcopy(original_manifest)
+        invalid_discovery_manifest["discovery"]["identity"] = 0
+        _write_json(manifest_json, invalid_discovery_manifest)
+        _expect_error(
+            "manifest discovery identity mismatch",
+            lambda: validate_manifest_json(manifest_json),
+            "discovery.identity does not match the HJXL identity",
+        )
+        _write_json(manifest_json, original_manifest)
 
         write_host_bundle(
             manifest_path=manifest_json,
@@ -1233,6 +1261,17 @@ def main() -> int:
             '#define HJXL_PREPARED_TRACE_ROUTE_NAME "prepared-dct-quantize-token"',
             "#define HJXL_PREPARED_TRACE_ROUTE_STAGE -1",
             "#define HJXL_PREPARED_TRACE_ROUTE_FOCUSED 1u",
+            "#define HJXL_PREPARED_REG_IDENTITY 0x00000028u",
+            "#define HJXL_PREPARED_REG_IDENTITY_ACCESS_RO 1u",
+            "#define HJXL_PREPARED_REG_BUILD_ID 0x0000003cu",
+            "#define HJXL_PREPARED_DISCOVERY_IDENTITY 0x484a584cu",
+            "#define HJXL_PREPARED_DISCOVERY_ABI_VERSION 0x00010000u",
+            "#define HJXL_PREPARED_DISCOVERY_BUILD_ID 0x20260712u",
+            "#define HJXL_PREPARED_DISCOVERY_REQUIRED_CAPABILITIES 0x000003fau",
+            "#define HJXL_PREPARED_DISCOVERY_ACTIVE_ROUTE 128u",
+            "#define HJXL_PREPARED_DISCOVERY_MIN_MAX_FRAME_WIDTH 8u",
+            "#define HJXL_PREPARED_DISCOVERY_MIN_MAX_FRAME_HEIGHT 8u",
+            "#define HJXL_PREPARED_CAPABILITY_CALLER_CFL_BIT 9u",
         ):
             if expected not in prepared_header:
                 raise AssertionError(f"generated prepared header missed {expected}")
@@ -1240,6 +1279,78 @@ def main() -> int:
         _check_replay_expectations(plan)
         _write_json(replay_plan_json, plan)
         validate_replay_plan(replay_plan_json)
+
+        discovery_csv = temp / "prepared-discovery.csv"
+        discovery_summary = temp / "prepared-discovery-summary.json"
+        register_map = plan["axi_lite"]["register_map"]
+        discovery_values = {
+            "identity": EXPECTED_DISCOVERY["identity"],
+            "abi_version": EXPECTED_DISCOVERY["abi_version"],
+            "capabilities": EXPECTED_DISCOVERY["required_capabilities"],
+            "max_frame_geometry": (32 << 16) | 32,
+            "active_route": EXPECTED_DISCOVERY["active_route"],
+            "build_id": EXPECTED_DISCOVERY["build_id"],
+        }
+        discovery_csv.write_text(
+            "address,data,resp\n"
+            + "".join(
+                f"{register_map[name]},{value},0\n"
+                for name, value in discovery_values.items()
+            ),
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [
+                "python3",
+                "tools/hjxl_discovery_check.py",
+                "--replay-plan-json",
+                str(replay_plan_json),
+                "--read-csv",
+                str(discovery_csv),
+                "--summary-json",
+                str(discovery_summary),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        discovery_result = json.loads(discovery_summary.read_text(encoding="utf-8"))
+        if discovery_result.get("max_frame_width") != 32 or discovery_result.get("active_route") != 128:
+            raise AssertionError(f"unexpected discovery-check summary: {discovery_result!r}")
+
+        invalid_discovery_values = dict(discovery_values)
+        invalid_discovery_values["capabilities"] = 0
+        discovery_csv.write_text(
+            "address,data,resp\n"
+            + "".join(
+                f"{register_map[name]},{value},0\n"
+                for name, value in invalid_discovery_values.items()
+            ),
+            encoding="utf-8",
+        )
+        invalid_discovery = subprocess.run(
+            [
+                "python3",
+                "tools/hjxl_discovery_check.py",
+                "--replay-plan-json",
+                str(replay_plan_json),
+                "--read-csv",
+                str(discovery_csv),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if invalid_discovery.returncode == 0:
+            raise AssertionError("missing discovery capabilities should fail host preflight")
+        invalid_discovery_output = invalid_discovery.stdout + invalid_discovery.stderr
+        if "discovery capabilities are missing required mask" not in invalid_discovery_output:
+            raise AssertionError(
+                f"missing discovery capabilities produced the wrong diagnostic: {invalid_discovery_output}"
+            )
+        if "Traceback" in invalid_discovery_output:
+            raise AssertionError(f"discovery capability mismatch leaked a traceback: {invalid_discovery_output}")
+
         preflight_summary = temp / "prepared-preflight-summary.json"
         subprocess.run(
             [
@@ -1312,6 +1423,8 @@ def main() -> int:
         preflight = json.loads(preflight_summary.read_text(encoding="utf-8"))
         if preflight.get("format") != "hjxl.replay_preflight_summary.v1":
             raise AssertionError(f"unexpected preflight summary format: {preflight!r}")
+        if preflight.get("discovery") != EXPECTED_DISCOVERY:
+            raise AssertionError(f"preflight summary lost discovery metadata: {preflight!r}")
         artifacts = preflight.get("artifacts", {})
         if artifacts.get("source_manifest") != "prepared-manifest.json":
             raise AssertionError(f"preflight summary lost source manifest provenance: {preflight!r}")
@@ -1391,7 +1504,10 @@ def main() -> int:
             if expected not in estimated_header:
                 raise AssertionError(f"generated estimated-CFL header missed {expected}")
         _assert_stream_metadata(estimated_plan)
-        _check_replay_expectations(estimated_plan)
+        _check_replay_expectations(
+            estimated_plan,
+            expected_discovery=EXPECTED_ESTIMATED_DISCOVERY,
+        )
         _write_json(estimated_replay_plan_json, estimated_plan)
         validate_replay_plan(estimated_replay_plan_json)
         subprocess.run(

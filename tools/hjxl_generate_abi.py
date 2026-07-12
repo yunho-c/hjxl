@@ -28,6 +28,10 @@ def _load_schema() -> dict[str, object]:
         raise ValueError("AXI-Lite register offsets must be unique")
     if any(offset % (axi["data_bits"] // 8) for offset in register_offsets):
         raise ValueError("AXI-Lite register offsets must be word-aligned")
+    if any(row.get("access") not in {"ro", "rw", "rw1c"} for row in axi["registers"]):
+        raise ValueError("AXI-Lite register access must be ro, rw, or rw1c")
+    if max(register_offsets) + axi["data_bits"] // 8 > 1 << axi["addr_bits"]:
+        raise ValueError("AXI-Lite register map exceeds addr_bits")
 
     trace = schema["trace"]
     field_names = [row["name"] for row in trace["fields"]]
@@ -36,6 +40,30 @@ def _load_schema() -> dict[str, object]:
     stage_values = [row["value"] for row in trace["stages"]]
     if len(stage_values) != len(set(stage_values)):
         raise ValueError("trace stage values must be unique")
+
+    discovery = schema["discovery"]
+    for key in ("identity", "build_id"):
+        if not 0 <= discovery[key] < 1 << 32:
+            raise ValueError(f"discovery.{key} must fit in 32 bits")
+    for key in ("abi_major", "abi_minor"):
+        if not 0 <= discovery[key] < 1 << 16:
+            raise ValueError(f"discovery.{key} must fit in 16 bits")
+    capability_bits = [row["bit"] for row in discovery["capability_bits"]]
+    if len(capability_bits) != len(set(capability_bits)) or any(not 0 <= bit < 32 for bit in capability_bits):
+        raise ValueError("discovery capability bits must be unique 0..31 values")
+    capability_names = {row["name"] for row in discovery["capability_bits"]}
+    profile_names = [row["name"] for row in discovery["capability_profiles"]]
+    if len(profile_names) != len(set(profile_names)):
+        raise ValueError("discovery capability profile names must be unique")
+    for profile in discovery["capability_profiles"]:
+        unknown = set(profile["capabilities"]) - capability_names
+        if unknown:
+            raise ValueError(f"discovery capability profile {profile['name']} has unknown capabilities: {sorted(unknown)}")
+    route_ids = [row["value"] for row in discovery["route_ids"]]
+    if len(route_ids) != len(set(route_ids)) or any(not 0 <= route < 256 for route in route_ids):
+        raise ValueError("discovery route IDs must be unique byte values")
+    if set(route_ids) & set(stage_values):
+        raise ValueError("discovery route IDs must not overlap trace stage values")
 
     prepared = schema["prepared_dct_stream"]
     scalar_offsets = [row["offset"] for row in prepared["scalar_fields"]]
@@ -64,6 +92,8 @@ def _render_scala(schema: dict[str, object]) -> str:
         "    object Register {",
     ]
     lines.extend(f"      val {row['scala_name']} = {row['offset']}" for row in axi["registers"])
+    lines.extend(["    }", "", "    object RegisterAccess {"])
+    lines.extend(f'      val {row["scala_name"]} = "{row["access"]}"' for row in axi["registers"])
     lines.extend(["    }", "", "    object StatusBit {"])
     lines.extend(f"      val {row['scala_name']} = {row['bit']}" for row in axi["status_bits"])
     lines.extend(["    }", "", "    object ControlBit {"])
@@ -90,12 +120,34 @@ def _render_scala(schema: dict[str, object]) -> str:
     lines.extend(f"      val {row['scala_name']} = {row['value']}" for row in trace["stages"])
     lines.extend(["    }", "  }", "", "  object TokenSelect {"])
     lines.extend(f"    val {row['scala_name']} = {row['value']}" for row in schema["token_select"])
-    coefficient_words = prepared["channels"] * prepared["coefficients_per_channel"]
+    discovery = schema["discovery"]
+    abi_version = (discovery["abi_major"] << 16) | discovery["abi_minor"]
     lines.extend(
         [
             "  }",
             "",
-            "  object PreparedDctStream {",
+            "  object Discovery {",
+            f"    val Identity = {discovery['identity']}L",
+            f"    val AbiMajor = {discovery['abi_major']}",
+            f"    val AbiMinor = {discovery['abi_minor']}",
+            f"    val AbiVersion = {abi_version}L",
+            f"    val BuildId = {discovery['build_id']}L",
+            "",
+            "    object CapabilityBit {",
+        ]
+    )
+    lines.extend(f"      val {row['scala_name']} = {row['bit']}" for row in discovery["capability_bits"])
+    capability_by_name = {row["name"]: row["bit"] for row in discovery["capability_bits"]}
+    lines.extend(["    }", "", "    object CapabilityProfile {"])
+    for profile in discovery["capability_profiles"]:
+        profile_mask = sum(1 << capability_by_name[name] for name in profile["capabilities"])
+        lines.append(f"      val {profile['scala_name']} = {profile_mask}L")
+    lines.extend(["    }", "", "    object Route {"])
+    lines.extend(f"      val {row['scala_name']} = {row['value']}" for row in discovery["route_ids"])
+    lines.extend(["    }", "  }", "", "  object PreparedDctStream {"])
+    coefficient_words = prepared["channels"] * prepared["coefficients_per_channel"]
+    lines.extend(
+        [
             f"    val WordBits = {prepared['word_bits']}",
             f"    val ScalarWords = {prepared['scalar_words']}",
             f"    val Channels = {prepared['channels']}",
@@ -132,6 +184,9 @@ def _render_python(schema: dict[str, object]) -> str:
     lines.extend(f'    "{row["name"]}": {row["offset"]},' for row in axi["registers"])
     lines.append("}")
     lines.extend(f"REGISTER_{row['name'].upper()} = {row['offset']}" for row in axi["registers"])
+    lines.append("REGISTER_ACCESS = {")
+    lines.extend(f'    "{row["name"]}": "{row["access"]}",' for row in axi["registers"])
+    lines.append("}")
     lines.append("STATUS_BITS = {")
     lines.extend(f'    "{row["name"]}": {row["bit"]},' for row in axi["status_bits"])
     lines.append("}")
@@ -170,6 +225,32 @@ def _render_python(schema: dict[str, object]) -> str:
     )
     lines.extend(["TOKEN_SELECT = {"])
     lines.extend(f'    "{row["name"]}": {row["value"]},' for row in schema["token_select"])
+    lines.append("}")
+    discovery = schema["discovery"]
+    abi_version = (discovery["abi_major"] << 16) | discovery["abi_minor"]
+    lines.extend(
+        [
+            f"DISCOVERY_IDENTITY = {discovery['identity']}",
+            f"DISCOVERY_ABI_MAJOR = {discovery['abi_major']}",
+            f"DISCOVERY_ABI_MINOR = {discovery['abi_minor']}",
+            f"DISCOVERY_ABI_VERSION = {abi_version}",
+            f"DISCOVERY_BUILD_ID = {discovery['build_id']}",
+            "CAPABILITY_BITS = {",
+        ]
+    )
+    lines.extend(f'    "{row["name"]}": {row["bit"]},' for row in discovery["capability_bits"])
+    lines.append("}")
+    lines.extend(
+        f"CAPABILITY_{row['name'].upper()} = {row['bit']}" for row in discovery["capability_bits"]
+    )
+    capability_by_name = {row["name"]: row["bit"] for row in discovery["capability_bits"]}
+    lines.append("CAPABILITY_PROFILES = {")
+    for profile in discovery["capability_profiles"]:
+        profile_mask = sum(1 << capability_by_name[name] for name in profile["capabilities"])
+        lines.append(f'    "{profile["name"]}": {profile_mask},')
+    lines.append("}")
+    lines.append("ROUTE_IDS = {")
+    lines.extend(f'    "{row["name"]}": {row["value"]},' for row in discovery["route_ids"])
     lines.append("}")
     coefficient_words = prepared["channels"] * prepared["coefficients_per_channel"]
     lines.extend(

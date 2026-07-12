@@ -4,16 +4,22 @@
     "addr_bits": 8,
     "data_bits": 32,
     "registers": [
-      {"name": "status_control", "scala_name": "StatusControl", "offset": 0},
-      {"name": "xsize", "scala_name": "Xsize", "offset": 4},
-      {"name": "ysize", "scala_name": "Ysize", "offset": 8},
-      {"name": "distance_q8", "scala_name": "DistanceQ8", "offset": 12},
-      {"name": "fixed_point_scale", "scala_name": "FixedPointScale", "offset": 16},
-      {"name": "fixed_inv_qac_q16", "scala_name": "FixedInvQacQ16", "offset": 20},
-      {"name": "fixed_raw_quant", "scala_name": "FixedRawQuant", "offset": 24},
-      {"name": "flags", "scala_name": "Flags", "offset": 28},
-      {"name": "fixed_ytox", "scala_name": "FixedYtox", "offset": 32},
-      {"name": "fixed_ytob", "scala_name": "FixedYtob", "offset": 36}
+      {"name": "status_control", "scala_name": "StatusControl", "offset": 0, "access": "rw1c"},
+      {"name": "xsize", "scala_name": "Xsize", "offset": 4, "access": "rw"},
+      {"name": "ysize", "scala_name": "Ysize", "offset": 8, "access": "rw"},
+      {"name": "distance_q8", "scala_name": "DistanceQ8", "offset": 12, "access": "rw"},
+      {"name": "fixed_point_scale", "scala_name": "FixedPointScale", "offset": 16, "access": "rw"},
+      {"name": "fixed_inv_qac_q16", "scala_name": "FixedInvQacQ16", "offset": 20, "access": "rw"},
+      {"name": "fixed_raw_quant", "scala_name": "FixedRawQuant", "offset": 24, "access": "rw"},
+      {"name": "flags", "scala_name": "Flags", "offset": 28, "access": "rw"},
+      {"name": "fixed_ytox", "scala_name": "FixedYtox", "offset": 32, "access": "rw"},
+      {"name": "fixed_ytob", "scala_name": "FixedYtob", "offset": 36, "access": "rw"},
+      {"name": "identity", "scala_name": "Identity", "offset": 40, "access": "ro"},
+      {"name": "abi_version", "scala_name": "AbiVersion", "offset": 44, "access": "ro"},
+      {"name": "capabilities", "scala_name": "Capabilities", "offset": 48, "access": "ro"},
+      {"name": "max_frame_geometry", "scala_name": "MaxFrameGeometry", "offset": 52, "access": "ro"},
+      {"name": "active_route", "scala_name": "ActiveRoute", "offset": 56, "access": "ro"},
+      {"name": "build_id", "scala_name": "BuildId", "offset": 60, "access": "ro"}
     ],
     "status_bits": [
       {"name": "protocol_error", "scala_name": "ProtocolError", "bit": 0},
@@ -54,6 +60,46 @@
     {"name": "ac-metadata", "scala_name": "AcMetadata", "value": 1},
     {"name": "ac-tokens", "scala_name": "AcTokens", "value": 2}
   ],
+  "discovery": {
+    "identity": 1212831820,
+    "abi_major": 1,
+    "abi_minor": 0,
+    "build_id": 539363090,
+    "capability_bits": [
+      {"name": "rgb_input", "scala_name": "RgbInput", "bit": 0},
+      {"name": "prepared_dct_input", "scala_name": "PreparedDctInput", "bit": 1},
+      {"name": "estimated_cfl", "scala_name": "EstimatedCfl", "bit": 2},
+      {"name": "axi_lite", "scala_name": "AxiLite", "bit": 3},
+      {"name": "axi_stream", "scala_name": "AxiStream", "bit": 4},
+      {"name": "trace_output", "scala_name": "TraceOutput", "bit": 5},
+      {"name": "host_bitstream_assembly_required", "scala_name": "HostBitstreamAssemblyRequired", "bit": 6},
+      {"name": "frame_config_snapshot", "scala_name": "FrameConfigSnapshot", "bit": 7},
+      {"name": "full_word_input_keep", "scala_name": "FullWordInputKeep", "bit": 8},
+      {"name": "caller_cfl", "scala_name": "CallerCfl", "bit": 9}
+    ],
+    "capability_profiles": [
+      {
+        "name": "rgb",
+        "scala_name": "Rgb",
+        "capabilities": ["rgb_input", "axi_lite", "axi_stream", "trace_output", "host_bitstream_assembly_required", "frame_config_snapshot"]
+      },
+      {
+        "name": "prepared-direct",
+        "scala_name": "PreparedDirect",
+        "capabilities": ["prepared_dct_input", "axi_lite", "axi_stream", "trace_output", "host_bitstream_assembly_required", "frame_config_snapshot", "full_word_input_keep", "caller_cfl"]
+      },
+      {
+        "name": "prepared-estimated-cfl",
+        "scala_name": "PreparedEstimatedCfl",
+        "capabilities": ["prepared_dct_input", "estimated_cfl", "axi_lite", "axi_stream", "trace_output", "host_bitstream_assembly_required", "frame_config_snapshot", "full_word_input_keep"]
+      }
+    ],
+    "route_ids": [
+      {"name": "prepared-direct", "scala_name": "PreparedDirect", "value": 128},
+      {"name": "prepared-estimated-cfl", "scala_name": "PreparedEstimatedCfl", "value": 129},
+      {"name": "unavailable", "scala_name": "Unavailable", "value": 255}
+    ]
+  },
   "prepared_dct_stream": {
     "word_bits": 32,
     "scalar_words": 9,

@@ -367,7 +367,15 @@ wrappers.
   `tokenSelect` at bits 9:8). Writes honor byte strobes; unmapped word
   addresses return AXI-Lite DECERR. Writes remain legal while `busy`: reads
   immediately expose the updated shadow register bank, while the active stream
-  uses its snapshot and the new values apply to the next frame. Use
+  uses its snapshot and the new values apply to the next frame. The read-only
+  discovery window is `0x28` identity, `0x2c` ABI version, `0x30` capabilities,
+  `0x34` packed maximum frame geometry, `0x38` active route, and `0x3c` contract
+  build ID. RGB active route is latched with the frame-start configuration;
+  prepared wrappers report route IDs 128 (direct) or 129 (estimated CFL).
+  Writes to discovery registers return DECERR. `tools/hjxl_discovery_check.py`
+  validates real `address,data,resp` readback against a bundle or replay plan,
+  accepting capability supersets but requiring identity/version/build/route
+  equality and sufficient compiled frame capacity. Use
   `sbt 'runMain hjxl.ElaborateAxiLiteStream'` for the default controlled shell
   or `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
   full-AC-token controlled shell.

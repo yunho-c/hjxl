@@ -21,6 +21,31 @@ object HjxlAbiGenerated {
       val Flags = 28
       val FixedYtox = 32
       val FixedYtob = 36
+      val Identity = 40
+      val AbiVersion = 44
+      val Capabilities = 48
+      val MaxFrameGeometry = 52
+      val ActiveRoute = 56
+      val BuildId = 60
+    }
+
+    object RegisterAccess {
+      val StatusControl = "rw1c"
+      val Xsize = "rw"
+      val Ysize = "rw"
+      val DistanceQ8 = "rw"
+      val FixedPointScale = "rw"
+      val FixedInvQacQ16 = "rw"
+      val FixedRawQuant = "rw"
+      val Flags = "rw"
+      val FixedYtox = "rw"
+      val FixedYtob = "rw"
+      val Identity = "ro"
+      val AbiVersion = "ro"
+      val Capabilities = "ro"
+      val MaxFrameGeometry = "ro"
+      val ActiveRoute = "ro"
+      val BuildId = "ro"
     }
 
     object StatusBit {
@@ -69,6 +94,39 @@ object HjxlAbiGenerated {
     val Dc = 0
     val AcMetadata = 1
     val AcTokens = 2
+  }
+
+  object Discovery {
+    val Identity = 1212831820L
+    val AbiMajor = 1
+    val AbiMinor = 0
+    val AbiVersion = 65536L
+    val BuildId = 539363090L
+
+    object CapabilityBit {
+      val RgbInput = 0
+      val PreparedDctInput = 1
+      val EstimatedCfl = 2
+      val AxiLite = 3
+      val AxiStream = 4
+      val TraceOutput = 5
+      val HostBitstreamAssemblyRequired = 6
+      val FrameConfigSnapshot = 7
+      val FullWordInputKeep = 8
+      val CallerCfl = 9
+    }
+
+    object CapabilityProfile {
+      val Rgb = 249L
+      val PreparedDirect = 1018L
+      val PreparedEstimatedCfl = 510L
+    }
+
+    object Route {
+      val PreparedDirect = 128
+      val PreparedEstimatedCfl = 129
+      val Unavailable = 255
+    }
   }
 
   object PreparedDctStream {

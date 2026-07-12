@@ -9,10 +9,13 @@ import json
 from pathlib import Path
 import sys
 
+from hjxl_abi import discovery_metadata, validate_discovery_metadata
 from hjxl_abi_generated import (
+    CONTROL_CLEAR_PROTOCOL_ERROR,
     PREPARED_DCT_COEFFICIENTS_PER_CHANNEL,
     PREPARED_DCT_SCALAR_WORDS,
     PREPARED_DCT_WORDS_PER_BLOCK,
+    REGISTER_MAP,
     REGISTER_DISTANCE_Q8,
     REGISTER_FIXED_INV_QAC_Q16,
     REGISTER_FIXED_POINT_SCALE,
@@ -22,6 +25,8 @@ from hjxl_abi_generated import (
     REGISTER_FLAGS,
     REGISTER_XSIZE,
     REGISTER_YSIZE,
+    ROUTE_IDS,
+    STATUS_BITS,
     TOKEN_SELECT,
     TRACE_STAGES,
 )
@@ -642,18 +647,8 @@ def write_manifest_json(
     y_tiles = (ysize + 63) // 64
     block_count = len(fixture["blocks"])
     fraction_bits = coefficient_fraction_bits(fixture, path=prepared_json)
-    register_map = {
-        "status_control": 0x00,
-        "xsize": REGISTER_XSIZE,
-        "ysize": REGISTER_YSIZE,
-        "distance_q8": REGISTER_DISTANCE_Q8,
-        "fixed_point_scale": REGISTER_FIXED_POINT_SCALE,
-        "fixed_inv_qac_q16": REGISTER_FIXED_INV_QAC_Q16,
-        "fixed_raw_quant": REGISTER_FIXED_RAW_QUANT,
-        "flags": REGISTER_FLAGS,
-        "fixed_ytox": REGISTER_FIXED_YTOX,
-        "fixed_ytob": REGISTER_FIXED_YTOB,
-    }
+    register_map = dict(REGISTER_MAP)
+    discovery_profile = "prepared-direct" if target_variant == "direct" else "prepared-estimated-cfl"
     manifest = {
         "format": "hjxl.prepared_dct_stream_manifest.v1",
         "source": {"prepared_json": str(prepared_json)},
@@ -692,17 +687,18 @@ def write_manifest_json(
             ],
             "last": "asserted only on the final prepared-DCT word",
         },
+        "discovery": discovery_metadata(
+            profile=discovery_profile,
+            active_route=ROUTE_IDS[discovery_profile],
+            width=xsize,
+            height=ysize,
+        ),
         "axi_lite": {
             "csv": str(axi_lite_csv) if axi_lite_csv is not None else None,
             "columns": ["address", "data", "strb"],
             "register_map": register_map,
-            "status_control_bits": {
-                "protocol_error": 0,
-                "busy": 1,
-                "overflow": 2,
-                "unsupported_distance": 3,
-                "clear_protocol_error_write_bit": 0,
-            },
+            "status_control_bits": dict(STATUS_BITS)
+            | {"clear_protocol_error_write_bit": CONTROL_CLEAR_PROTOCOL_ERROR},
             "config": {
                 "xsize": xsize,
                 "ysize": ysize,
@@ -845,6 +841,17 @@ def validate_manifest_json(path: Path) -> None:
     y_blocks = _json_int(image.get("y_blocks"), path=path, field="image.y_blocks")
     if xsize <= 0 or ysize <= 0:
         raise ValueError(f"{path}: image dimensions must be positive")
+    variant = manifest.get("target", {}).get("variant", "direct")
+    discovery_profile = "prepared-direct" if variant == "direct" else "prepared-estimated-cfl"
+    if "discovery" in manifest:
+        validate_discovery_metadata(
+            manifest["discovery"],
+            profile=discovery_profile,
+            active_route=ROUTE_IDS[discovery_profile],
+            width=xsize,
+            height=ysize,
+            source=path,
+        )
     if x_blocks <= 0 or y_blocks <= 0:
         raise ValueError(f"{path}: image block grid must be positive")
     expected_blocks = x_blocks * y_blocks
