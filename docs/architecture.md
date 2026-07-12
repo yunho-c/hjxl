@@ -1000,6 +1000,10 @@ still require an environment with AMD tools installed.
 baseline for this target. Under continuous source/sink traffic, the direct
 stream currently measures 225 cycles for one zero 8x8 block, 230 cycles when
 one AC coefficient is nonzero in each channel, and 450 cycles for two zero
-blocks. See `docs/performance.md` for phase definitions and limitations. These
-numbers isolate core behavior and do not include AXI-Lite setup, DMA, memory,
-clock crossings, or physical timing.
+blocks. A parameterized 72x72 profiling elaboration additionally measures
+18,231 cycles for an 81-block/four-tile zero frame and 33,782 cycles when all
+63 AC positions in every channel and block are nonzero. See
+`docs/performance.md` for phase definitions, exact token counts, and
+limitations. These numbers isolate core behavior and do not include AXI-Lite
+setup, DMA, memory, clock crossings, or physical timing; the larger profiling
+configuration is not the frozen default KV260 elaboration.
