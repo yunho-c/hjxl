@@ -108,6 +108,8 @@ class HjxlPreparedDctAxiStreamCoreSpec extends AnyFreeSpec with Matchers with Ch
     dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
     dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(true.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -118,10 +120,22 @@ class HjxlPreparedDctAxiStreamCoreSpec extends AnyFreeSpec with Matchers with Ch
   private def pokeConfig(dut: HjxlPreparedDctAxiStreamCore): Unit = {
     dut.io.config.xsize.poke(width.U)
     dut.io.config.ysize.poke(height.U)
+    pokeSharedConfig(dut)
+  }
+
+  private def pokeConfig(dut: HjxlPreparedDctAxiStreamCore, frameWidth: Int, frameHeight: Int): Unit = {
+    dut.io.config.xsize.poke(frameWidth.U)
+    dut.io.config.ysize.poke(frameHeight.U)
+    pokeSharedConfig(dut)
+  }
+
+  private def pokeSharedConfig(dut: HjxlPreparedDctAxiStreamCore): Unit = {
     dut.io.config.distanceQ8.poke(256.U)
     dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
     dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
     dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
     dut.io.config.enableXyb.poke(false.B)
     dut.io.config.enableDct.poke(true.B)
     dut.io.config.enableQuant.poke(true.B)
@@ -269,6 +283,76 @@ class HjxlPreparedDctAxiStreamCoreSpec extends AnyFreeSpec with Matchers with Ch
     }
 
     observed.toSeq mustBe expected
+  }
+
+  "HjxlPreparedDctAxiStreamCore preserves stream partitions for exact 72px capacity" in {
+    val exactConfig = HjxlConfig(maxFrameWidth = 72, maxFrameHeight = 8)
+    val frameWidth = 72
+    val frameHeight = 8
+    val xBlocks = 9
+    val yBlocks = 1
+    val xTiles = 2
+    val yTiles = 1
+    val blocks = Seq.fill(xBlocks * yBlocks)(zeroPreparedBlock(quant = 1))
+    val expectedDcTokenCount = blocks.length * 3
+    val expectedStrategyCount = blocks.length
+    val expectedMetadataCount = xTiles * yTiles * 2 + blocks.length * 3
+    val expectedAcTokenCount = blocks.length * 3
+    val expectedTraceCount =
+      expectedDcTokenCount + expectedStrategyCount + expectedMetadataCount + expectedAcTokenCount
+    val observed = scala.collection.mutable.ArrayBuffer.empty[ExpectedTrace]
+    val traceLastValues = scala.collection.mutable.ArrayBuffer.empty[Boolean]
+
+    simulate(new HjxlPreparedDctAxiStreamCore(exactConfig)) { dut =>
+      pokeConfig(dut, frameWidth, frameHeight)
+      dut.io.input.valid.poke(false.B)
+      dut.io.input.bits.data.poke(0.U)
+      dut.io.input.bits.last.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      val words = blocks.flatMap(streamWords)
+      words.length mustBe blocks.length * PreparedDctStreamLayout.WordsPerBlock
+      for ((word, ordinal) <- words.zipWithIndex) {
+        driveStreamWord(dut, word, last = ordinal == words.length - 1, s"exact-capacity prepared stream input word $ordinal")
+      }
+      dut.io.input.valid.poke(false.B)
+      dut.io.protocolError.expect(false.B)
+
+      dut.io.trace.ready.poke(true.B)
+      for (ordinal <- 0 until expectedTraceCount) {
+        waitForTrace(dut.io.trace.valid, dut.clock, s"exact-capacity stream trace $ordinal")
+        observed += unpackTraceData(dut.io.trace.bits.data.peekValue().asBigInt)
+        traceLastValues += dut.io.trace.bits.last.peekValue().asBigInt.testBit(0)
+        dut.clock.step()
+      }
+
+      observed.take(expectedDcTokenCount).map(_.stage).forall(_ == TraceStage.DcTokens) mustBe true
+      observed
+        .slice(expectedDcTokenCount, expectedDcTokenCount + expectedStrategyCount)
+        .zipWithIndex
+        .foreach { case (trace, index) =>
+          trace.stage mustBe TraceStage.AcStrategy
+          trace.index mustBe index
+        }
+      val metadataStart = expectedDcTokenCount + expectedStrategyCount
+      val acStart = metadataStart + expectedMetadataCount
+      val metadataTraces = observed.slice(metadataStart, acStart)
+      metadataTraces.map(_.stage).forall(_ == TraceStage.AcMetadataTokens) mustBe true
+      metadataTraces.length mustBe 31
+      metadataTraces.take(4).map(_.index) mustBe Seq(2, 2, 1, 1)
+      val acTraces = observed.drop(acStart)
+      acTraces.map(_.stage).forall(_ == TraceStage.AcTokens) mustBe true
+      acTraces.map(_.group) mustBe (0 until expectedAcTokenCount)
+      traceLastValues.zipWithIndex.foreach { case (traceLast, ordinal) =>
+        withClue(s"exact-capacity stream TLAST at output ordinal $ordinal") {
+          traceLast mustBe (ordinal == expectedTraceCount - 1)
+        }
+      }
+
+      dut.io.trace.valid.expect(false.B)
+      dut.io.overflow.expect(false.B)
+    }
   }
 
   "HjxlPreparedDctAxiStreamCore stream traces assemble to libjxl-tiny codestream bytes" in {

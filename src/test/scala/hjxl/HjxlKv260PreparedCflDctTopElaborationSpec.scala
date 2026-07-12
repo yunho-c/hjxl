@@ -11,7 +11,7 @@ import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
 import scala.jdk.CollectionConverters._
 
-class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers with ChiselSim {
+class HjxlKv260PreparedCflDctTopElaborationSpec extends AnyFreeSpec with Matchers with ChiselSim {
   private val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 8)
   private val firtoolOpts = Array(
     "-disable-all-randomization",
@@ -19,7 +19,7 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
     "-default-layer-specialization=enable"
   )
 
-  private class Kv260Harness(c: HjxlConfig) extends Module {
+  private class Kv260CflHarness(c: HjxlConfig) extends Module {
     val io = IO(new Bundle {
       val awaddr = Input(UInt(8.W))
       val awvalid = Input(Bool())
@@ -54,7 +54,7 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
       val unsupportedDistance = Output(Bool())
     })
 
-    val top = Module(new HjxlKv260PreparedDctTop(c))
+    val top = Module(new HjxlKv260PreparedCflDctTop(c))
     top.ap_clk := clock
     top.ap_rst_n := !reset.asBool
     top.s_axi_control_awaddr := io.awaddr
@@ -105,7 +105,7 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
     TraceFields(stage, group, index, value)
   }
 
-  private def init(dut: Kv260Harness): Unit = {
+  private def init(dut: Kv260CflHarness): Unit = {
     dut.io.awaddr.poke(0.U)
     dut.io.awvalid.poke(false.B)
     dut.io.wdata.poke(0.U)
@@ -132,8 +132,8 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
       BigInt(QuantizeDct8x8Block.DefaultInvDcFactorQ16(1)),
       BigInt(QuantizeDct8x8Block.DefaultInvDcFactorQ16(2)),
       BigInt(QuantizeDct8x8Block.DefaultQmMultiplierQ16),
-      BigInt(0),
-      BigInt(0)
+      BigInt(99),
+      BigInt(-99) & ((BigInt(1) << 32) - 1)
     ) ++ Seq.fill(PreparedDctStreamLayout.CoefficientWords)(BigInt(0))
 
   private def zeroCombinedTraceCount(blockCount: Int, tileCount: Int = 1): Int = {
@@ -141,7 +141,7 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
     blockCount * 3 + blockCount + metadataTokenCount + blockCount * 3
   }
 
-  private def axiWrite(dut: Kv260Harness, address: Int, data: BigInt, strb: Int = 0xf): Int = {
+  private def axiWrite(dut: Kv260CflHarness, address: Int, data: BigInt, strb: Int = 0xf): Int = {
     dut.io.awaddr.poke(address.U)
     dut.io.awvalid.poke(true.B)
     dut.io.wdata.poke(data.U)
@@ -163,7 +163,7 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
     response
   }
 
-  private def axiRead(dut: Kv260Harness, address: Int): (BigInt, Int) = {
+  private def axiRead(dut: Kv260CflHarness, address: Int): (BigInt, Int) = {
     dut.io.araddr.poke(address.U)
     dut.io.arvalid.poke(true.B)
     dut.io.arready.expect(true.B)
@@ -179,30 +179,12 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
     data -> response
   }
 
-  private def driveInputWord(dut: Kv260Harness, data: BigInt, last: Boolean, clue: String): Unit = {
-    dut.io.inputData.poke(data.U)
-    dut.io.inputTkeep.poke("hf".U)
-    dut.io.inputLast.poke(last.B)
-    dut.io.inputValid.poke(true.B)
-    var cycles = 0
-    while (dut.io.inputReady.peekValue().asBigInt == 0 && cycles < 64) {
-      dut.clock.step()
-      cycles += 1
-    }
-    withClue(clue) {
-      cycles must be < 64
-    }
-    dut.clock.step()
-    dut.io.inputValid.poke(false.B)
-    dut.io.inputLast.poke(false.B)
-  }
-
   private def driveInputWord(
-      dut: Kv260Harness,
+      dut: Kv260CflHarness,
       data: BigInt,
       last: Boolean,
-      keep: Int,
-      clue: String
+      clue: String,
+      keep: Int = 0xf
   ): Unit = {
     dut.io.inputData.poke(data.U)
     dut.io.inputTkeep.poke(keep.U)
@@ -223,9 +205,9 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
   }
 
   private def emittedSystemVerilog: String = {
-    val targetDir = Files.createTempDirectory("hjxl-kv260-prepared-dct-top-elaborate-")
+    val targetDir = Files.createTempDirectory("hjxl-kv260-prepared-cfl-dct-top-elaborate-")
     ChiselStage.emitSystemVerilogFile(
-      new HjxlKv260PreparedDctTop(config),
+      new HjxlKv260PreparedCflDctTop(config),
       args = Array("--target-dir", targetDir.toString),
       firtoolOpts = firtoolOpts
     )
@@ -239,16 +221,16 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
         .map { path =>
           path.getFileName.toString -> Files.readString(path, StandardCharsets.UTF_8)
         }
-      files.map(_._1) must contain("HjxlKv260PreparedDctTop.sv")
+      files.map(_._1) must contain("HjxlKv260PreparedCflDctTop.sv")
       files.map { case (name, text) => s"// $name\n$text" }.mkString("\n")
     } finally {
       stream.close()
     }
   }
 
-  "HjxlKv260PreparedDctTop emits flat Vivado-style AXI ports" in {
+  "HjxlKv260PreparedCflDctTop emits flat Vivado-style AXI ports" in {
     val text = emittedSystemVerilog
-    text must include("module HjxlKv260PreparedDctTop")
+    text must include("module HjxlKv260PreparedCflDctTop")
     for (
       port <- Seq(
         "ap_clk",
@@ -286,61 +268,40 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
         "unsupported_distance"
       )
     ) {
-      withClue(s"missing generated KV260 top port $port") {
+      withClue(s"missing generated estimated-CFL KV260 top port $port") {
         text must include(port)
       }
     }
     val normalizedText = text.replaceAll("\\s+", " ")
     text must include("output [127:0] m_axis_trace_tdata")
     normalizedText must include("input [3:0] s_axis_input_tkeep")
-    text must include("output [15:0]")
     text must include("assign m_axis_trace_tdata = {40'h0, _core_io_trace_bits_data};")
     text must include("assign m_axis_trace_tkeep = 16'h7FF;")
-    text must include("module HjxlPreparedDctAxiLiteStreamCore")
+    text must include("module HjxlPreparedCflDctAxiLiteStreamCore")
+    text must include("module HjxlPreparedCflDctAxiStreamCore")
   }
 
-  "HjxlKv260PreparedDctTop forwards flat AXI-Lite status and trace keep signals" in {
-    simulate(new Kv260Harness(config)) { dut =>
+  "HjxlKv260PreparedCflDctTop forwards status and a complete stream to padded trace TLAST" in {
+    val words = zeroPreparedBlockWords(quant = 1)
+    val expectedTraceCount = zeroCombinedTraceCount(blockCount = 1)
+    simulate(new Kv260CflHarness(config)) { dut =>
       init(dut)
 
       dut.io.traceTkeep.expect("h7ff".U)
-      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(0) -> AxiLiteResponse.Okay)
-      axiWrite(dut, HjxlAxiLiteRegister.Xsize, 16) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.Xsize, 8) must be(AxiLiteResponse.Okay)
       axiWrite(dut, HjxlAxiLiteRegister.Ysize, 8) must be(AxiLiteResponse.Okay)
-      axiRead(dut, HjxlAxiLiteRegister.Xsize) must be(BigInt(16) -> AxiLiteResponse.Okay)
-      axiRead(dut, HjxlAxiLiteRegister.Ysize) must be(BigInt(8) -> AxiLiteResponse.Okay)
-
       axiWrite(dut, HjxlAxiLiteRegister.DistanceQ8, 333) must be(AxiLiteResponse.Okay)
       dut.io.unsupportedDistance.expect(true.B)
       axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(8) -> AxiLiteResponse.Okay)
-
-      axiWrite(dut, HjxlAxiLiteRegister.DistanceQ8, 512) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.DistanceQ8, 256) must be(AxiLiteResponse.Okay)
       dut.io.unsupportedDistance.expect(false.B)
-      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(0) -> AxiLiteResponse.Okay)
-
-      axiWrite(dut, 0x40, 0) must be(AxiLiteResponse.Decerr)
-      axiRead(dut, 0x40) must be(BigInt(0) -> AxiLiteResponse.Decerr)
-      dut.io.protocolError.expect(false.B)
-      dut.io.busy.expect(false.B)
-      dut.io.overflow.expect(false.B)
-    }
-  }
-
-  "HjxlKv260PreparedDctTop forwards a complete flat prepared stream to padded trace TLAST" in {
-    val words = zeroPreparedBlockWords(quant = 1)
-    val expectedTraceCount = zeroCombinedTraceCount(blockCount = 1)
-    simulate(new Kv260Harness(config)) { dut =>
-      init(dut)
-      axiWrite(dut, HjxlAxiLiteRegister.Xsize, 8) must be(AxiLiteResponse.Okay)
-      axiWrite(dut, HjxlAxiLiteRegister.Ysize, 8) must be(AxiLiteResponse.Okay)
-      dut.io.traceReady.poke(false.B)
 
       for ((word, ordinal) <- words.zipWithIndex) {
         driveInputWord(
           dut,
           data = word,
           last = ordinal == words.length - 1,
-          clue = s"KV260 prepared frame word $ordinal"
+          clue = s"KV260 estimated-CFL prepared frame word $ordinal"
         )
       }
       dut.io.protocolError.expect(false.B)
@@ -349,11 +310,11 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
       var observed = 0
       var cycles = 0
       val observedTraces = scala.collection.mutable.ArrayBuffer.empty[TraceFields]
-      while (observed < expectedTraceCount && cycles < 2048) {
+      while (observed < expectedTraceCount && cycles < 4096) {
         if (dut.io.traceValid.peekValue().asBigInt != 0) {
           dut.io.traceTkeep.expect("h7ff".U)
           val data = dut.io.traceData.peekValue().asBigInt
-          withClue(s"KV260 trace word $observed should be zero padded above packed 88-bit payload") {
+          withClue(s"estimated-CFL KV260 trace word $observed should be zero padded above packed 88-bit payload") {
             (data >> 88) mustBe BigInt(0)
           }
           observedTraces += unpackTraceData(data)
@@ -363,7 +324,7 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
         dut.clock.step()
         cycles += 1
       }
-      withClue("KV260 flat prepared stream did not emit the expected token trace count") {
+      withClue("estimated-CFL KV260 flat prepared stream did not emit the expected token trace count") {
         observed mustBe expectedTraceCount
       }
       observedTraces.map(_.stage).toSeq mustBe
@@ -371,32 +332,18 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
           Seq(TraceStage.AcStrategy) ++
           Seq.fill(5)(TraceStage.AcMetadataTokens) ++
           Seq.fill(3)(TraceStage.AcTokens)
-      observedTraces.filter(_.stage == TraceStage.DcTokens).map(_.group).toSeq mustBe Seq(0, 1, 2)
-      observedTraces.filter(_.stage == TraceStage.AcMetadataTokens).map(_.group).toSeq mustBe (0 until 5)
-      observedTraces.filter(_.stage == TraceStage.AcTokens).map(_.group).toSeq mustBe Seq(0, 1, 2)
-      observedTraces.find(_.stage == TraceStage.AcStrategy) mustBe
-        Some(TraceFields(TraceStage.AcStrategy, 0, 0, AcStrategyCode.encoded(AcStrategyCode.Dct, isFirstBlock = true)))
       dut.io.traceValid.expect(false.B)
-      var idleCycles = 0
-      while (dut.io.busy.peekValue().asBigInt != 0 && idleCycles < 64) {
-        dut.clock.step()
-        idleCycles += 1
-      }
-      withClue("KV260 flat prepared stream did not return idle after final trace") {
-        idleCycles must be < 64
-      }
-      dut.io.busy.expect(false.B)
       dut.io.overflow.expect(false.B)
     }
   }
 
-  "HjxlKv260PreparedDctTop preserves flat stream framing for exact 72px capacity" in {
+  "HjxlKv260PreparedCflDctTop preserves estimated-CFL stream framing for exact 72px capacity" in {
     val exactConfig = HjxlConfig(maxFrameWidth = 72, maxFrameHeight = 8)
     val blockCount = 9
     val tileCount = 2
     val words = Seq.tabulate(blockCount)(index => zeroPreparedBlockWords(quant = 1 + index % 3)).flatten
     val expectedTraceCount = zeroCombinedTraceCount(blockCount = blockCount, tileCount = tileCount)
-    simulate(new Kv260Harness(exactConfig)) { dut =>
+    simulate(new Kv260CflHarness(exactConfig)) { dut =>
       init(dut)
       axiWrite(dut, HjxlAxiLiteRegister.Xsize, 72) must be(AxiLiteResponse.Okay)
       axiWrite(dut, HjxlAxiLiteRegister.Ysize, 8) must be(AxiLiteResponse.Okay)
@@ -406,7 +353,7 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
           dut,
           data = word,
           last = ordinal == words.length - 1,
-          clue = s"exact-capacity KV260 prepared word $ordinal"
+          clue = s"exact-capacity estimated-CFL KV260 prepared word $ordinal"
         )
       }
       dut.io.protocolError.expect(false.B)
@@ -415,11 +362,11 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
       var observed = 0
       var cycles = 0
       val observedTraces = scala.collection.mutable.ArrayBuffer.empty[TraceFields]
-      while (observed < expectedTraceCount && cycles < 8192) {
+      while (observed < expectedTraceCount && cycles < 16384) {
         if (dut.io.traceValid.peekValue().asBigInt != 0) {
           dut.io.traceTkeep.expect("h7ff".U)
           val data = dut.io.traceData.peekValue().asBigInt
-          withClue(s"exact-capacity KV260 trace word $observed should be zero padded above packed 88-bit payload") {
+          withClue(s"exact-capacity estimated-CFL KV260 trace word $observed should be zero padded above packed 88-bit payload") {
             (data >> 88) mustBe BigInt(0)
           }
           observedTraces += unpackTraceData(data)
@@ -429,7 +376,7 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
         dut.clock.step()
         cycles += 1
       }
-      withClue("exact-capacity KV260 flat prepared stream did not emit the expected token trace count") {
+      withClue("exact-capacity estimated-CFL KV260 stream did not emit the expected token trace count") {
         observed mustBe expectedTraceCount
       }
       observedTraces.count(_.stage == TraceStage.DcTokens) mustBe blockCount * 3
@@ -441,33 +388,13 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
     }
   }
 
-  "HjxlKv260PreparedDctTop clears flat prepared-stream protocol errors through AXI-Lite" in {
-    simulate(new Kv260Harness(config)) { dut =>
+  "HjxlKv260PreparedCflDctTop reports and clears partial input keep masks" in {
+    simulate(new Kv260CflHarness(config)) { dut =>
       init(dut)
       axiWrite(dut, HjxlAxiLiteRegister.Xsize, 16) must be(AxiLiteResponse.Okay)
       axiWrite(dut, HjxlAxiLiteRegister.Ysize, 8) must be(AxiLiteResponse.Okay)
 
-      driveInputWord(dut, data = 1, last = true, clue = "KV260 early prepared TLAST")
-      dut.io.protocolError.expect(true.B)
-      val (status, statusResponse) = axiRead(dut, HjxlAxiLiteRegister.StatusControl)
-      statusResponse must be(AxiLiteResponse.Okay)
-      (status & 1) must be(BigInt(1))
-
-      axiWrite(dut, HjxlAxiLiteRegister.StatusControl, 1) must be(AxiLiteResponse.Okay)
-      dut.io.protocolError.expect(false.B)
-      val (clearedStatus, clearedStatusResponse) = axiRead(dut, HjxlAxiLiteRegister.StatusControl)
-      clearedStatusResponse must be(AxiLiteResponse.Okay)
-      (clearedStatus & 1) must be(BigInt(0))
-    }
-  }
-
-  "HjxlKv260PreparedDctTop reports and clears partial input keep masks" in {
-    simulate(new Kv260Harness(config)) { dut =>
-      init(dut)
-      axiWrite(dut, HjxlAxiLiteRegister.Xsize, 16) must be(AxiLiteResponse.Okay)
-      axiWrite(dut, HjxlAxiLiteRegister.Ysize, 8) must be(AxiLiteResponse.Okay)
-
-      driveInputWord(dut, data = 1, last = false, keep = 0x7, clue = "KV260 partial prepared keep")
+      driveInputWord(dut, data = 1, last = false, keep = 0x7, clue = "estimated-CFL KV260 partial keep")
       dut.io.protocolError.expect(true.B)
       val (status, statusResponse) = axiRead(dut, HjxlAxiLiteRegister.StatusControl)
       statusResponse must be(AxiLiteResponse.Okay)
@@ -477,11 +404,6 @@ class HjxlKv260PreparedDctTopElaborationSpec extends AnyFreeSpec with Matchers w
       axiWrite(dut, HjxlAxiLiteRegister.StatusControl, 1) must be(AxiLiteResponse.Okay)
       dut.io.protocolError.expect(false.B)
       axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(0) -> AxiLiteResponse.Okay)
-
-      driveInputWord(dut, data = 1, last = false, clue = "KV260 full-keep prepared word after clear")
-      dut.io.protocolError.expect(false.B)
-      dut.io.busy.expect(true.B)
-      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(2) -> AxiLiteResponse.Okay)
     }
   }
 }

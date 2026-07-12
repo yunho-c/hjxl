@@ -160,6 +160,102 @@ object ElaborateKv260PreparedDctTop extends App {
   )
 }
 
+object ElaborateKv260PreparedCflDctTop extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlKv260PreparedCflDctTop(),
+    args = Array("--target-dir", "generated-kv260-prepared-cfl-dct-top"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateCflTileCoefficientTrace extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new CflTileCoefficientTraceStage(),
+    args = Array("--target-dir", "generated-cfl-tile-coefficient-trace"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaboratePreparedCflMapTrace extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FramePreparedCflMapTraceStage(),
+    args = Array("--target-dir", "generated-prepared-cfl-map-trace"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaboratePreparedCflDctOnlyQuantize extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FramePreparedCflDctOnlyQuantizeTraceStage(),
+    args = Array("--target-dir", "generated-prepared-cfl-dct-only-quantize"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaboratePreparedCflDctOnlyQuantizeTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FramePreparedCflDctOnlyQuantizeTokenTraceStage(),
+    args = Array("--target-dir", "generated-prepared-cfl-dct-only-quantize-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaboratePreparedCflDctAxiStream extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlPreparedCflDctAxiStreamCore(),
+    args = Array("--target-dir", "generated-prepared-cfl-dct-axi-stream"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaboratePreparedCflDctAxiLiteStream extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlPreparedCflDctAxiLiteStreamCore(),
+    args = Array("--target-dir", "generated-prepared-cfl-dct-axi-lite-stream"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaboratePreparedCflAcMetadataTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FramePreparedCflAcMetadataTokenTraceStage(),
+    args = Array("--target-dir", "generated-prepared-cfl-ac-metadata-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaboratePreparedAcMetadataTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedAcMetadataTokenTraceStage(),

@@ -13,23 +13,28 @@ import chisel3.util._
   * status bit 0 is protocol error, bit 1 is busy, bit 2 is overflow, and bit 3
   * reports unsupported distance fallback. The remaining `FrameConfig` fields
   * are preserved for a uniform top-level interface and future prepared-path
-  * experiments.
+  * experiments. The input stream is a full-word 32-bit payload stream; a beat
+  * with an input keep mask other than 0xF is consumed by this wrapper and
+  * reported as a protocol error without advancing the prepared-word parser.
   */
 class HjxlPreparedDctAxiLiteStreamCore(
     c: HjxlConfig = HjxlConfig(),
-    axiAddrBits: Int = 8
+    axiAddrBits: Int = 8,
+    estimatedCfl: Boolean = false
 ) extends Module {
-  require(axiAddrBits >= 5, "axiAddrBits must address the complete register map")
+  require(axiAddrBits >= 6, "axiAddrBits must address the complete register map")
   require(c.coordBits <= 32, "AXI-Lite xsize/ysize registers are 32 bits")
 
   private val dataBits = 32
   private val wordAddrBits = axiAddrBits - 2
 
   val inputDataBits = 32
+  private val inputWordBytes = inputDataBits / 8
   val traceDataBits = 8 + c.groupBits + 32 + c.traceValueBits
 
   val io = IO(new Bundle {
     val control = new AxiLiteSlave(axiAddrBits, dataBits)
+    val inputKeep = Input(UInt(inputWordBytes.W))
     val input = Flipped(Decoupled(new AxiStreamWord(inputDataBits)))
     val trace = Decoupled(new AxiStreamWord(traceDataBits))
     val busy = Output(Bool())
@@ -64,6 +69,8 @@ class HjxlPreparedDctAxiLiteStreamCore(
   val fixedPointScale = RegInit(0.U(16.W))
   val fixedInvQacQ16 = RegInit(0.U(32.W))
   val fixedRawQuant = RegInit(0.U(8.W))
+  val fixedYtox = RegInit(0.U(8.W))
+  val fixedYtob = RegInit(0.U(8.W))
   val enableXyb = RegInit(false.B)
   val enableDct = RegInit(true.B)
   val enableQuant = RegInit(true.B)
@@ -73,33 +80,54 @@ class HjxlPreparedDctAxiLiteStreamCore(
   val distanceStatus = Module(new DistanceParamsLookup)
   distanceStatus.io.distanceQ8 := distanceQ8
 
-  val stream = Module(new HjxlPreparedDctAxiStreamCore(c))
-  stream.io.config.xsize := xsize
-  stream.io.config.ysize := ysize
-  stream.io.config.distanceQ8 := distanceQ8
-  stream.io.config.fixedPointScale := fixedPointScale
-  stream.io.config.fixedInvQacQ16 := fixedInvQacQ16
-  stream.io.config.fixedRawQuant := fixedRawQuant
-  stream.io.config.enableXyb := enableXyb
-  stream.io.config.enableDct := enableDct
-  stream.io.config.enableQuant := enableQuant
-  stream.io.config.enableTokenize := enableTokenize
-  stream.io.config.tokenSelect := tokenSelect
+  val streamIo =
+    if (estimatedCfl) {
+      val stream = Module(new HjxlPreparedCflDctAxiStreamCore(c))
+      stream.io
+    } else {
+      val stream = Module(new HjxlPreparedDctAxiStreamCore(c))
+      stream.io
+    }
+  val inputKeepError = RegInit(false.B)
+  val inputKeepFull = io.inputKeep === ((BigInt(1) << inputWordBytes) - 1).U(inputWordBytes.W)
 
-  stream.io.input.valid := io.input.valid
-  io.input.ready := stream.io.input.ready
-  stream.io.input.bits := io.input.bits
+  streamIo.config.xsize := xsize
+  streamIo.config.ysize := ysize
+  streamIo.config.distanceQ8 := distanceQ8
+  streamIo.config.fixedPointScale := fixedPointScale
+  streamIo.config.fixedInvQacQ16 := fixedInvQacQ16
+  streamIo.config.fixedRawQuant := fixedRawQuant
+  streamIo.config.fixedYtox := fixedYtox.asSInt
+  streamIo.config.fixedYtob := fixedYtob.asSInt
+  streamIo.config.enableXyb := enableXyb
+  streamIo.config.enableDct := enableDct
+  streamIo.config.enableQuant := enableQuant
+  streamIo.config.enableTokenize := enableTokenize
+  streamIo.config.tokenSelect := tokenSelect
 
-  io.trace.valid := stream.io.trace.valid
-  stream.io.trace.ready := io.trace.ready
-  io.trace.bits := stream.io.trace.bits
-  io.busy := stream.io.busy
-  io.overflow := stream.io.overflow
-  io.protocolError := stream.io.protocolError
+  streamIo.input.valid := io.input.valid && inputKeepFull
+  io.input.ready := Mux(inputKeepFull, streamIo.input.ready, true.B)
+  streamIo.input.bits := io.input.bits
+
+  io.trace.valid := streamIo.trace.valid
+  streamIo.trace.ready := io.trace.ready
+  io.trace.bits := streamIo.trace.bits
+  val protocolErrorStatus = streamIo.protocolError || inputKeepError
+  io.busy := streamIo.busy
+  io.overflow := streamIo.overflow
+  io.protocolError := protocolErrorStatus
   io.unsupportedDistance := !distanceStatus.io.supported
 
   val clearProtocolError = WireDefault(false.B)
-  stream.io.clearProtocolError := clearProtocolError
+  streamIo.clearProtocolError := clearProtocolError
+
+  when(clearProtocolError) {
+    inputKeepError := false.B
+  }
+
+  when(io.input.fire && !inputKeepFull) {
+    inputKeepError := true.B
+  }
 
   val awPending = RegInit(false.B)
   val awAddr = Reg(UInt(axiAddrBits.W))
@@ -183,6 +211,14 @@ class HjxlPreparedDctAxiLiteStreamCore(
         enableTokenize := mergedFlags(3)
         tokenSelect := mergedFlags(9, 8)
       }
+      is(word(HjxlAxiLiteRegister.FixedYtox)) {
+        writeOkay := true.B
+        fixedYtox := mergeWrite(fixedYtox.pad(dataBits), wData, wStrb)(7, 0)
+      }
+      is(word(HjxlAxiLiteRegister.FixedYtob)) {
+        writeOkay := true.B
+        fixedYtob := mergeWrite(fixedYtob.pad(dataBits), wData, wStrb)(7, 0)
+      }
     }
 
     bResp := Mux(writeOkay, AxiLiteResponse.Okay.U, AxiLiteResponse.Decerr.U)
@@ -211,9 +247,9 @@ class HjxlPreparedDctAxiLiteStreamCore(
       readData := Cat(
         0.U((dataBits - 4).W),
         io.unsupportedDistance,
-        stream.io.overflow,
-        stream.io.busy,
-        stream.io.protocolError
+        streamIo.overflow,
+        streamIo.busy,
+        protocolErrorStatus
       )
     }
     is(word(HjxlAxiLiteRegister.Xsize)) {
@@ -244,6 +280,14 @@ class HjxlPreparedDctAxiLiteStreamCore(
       readOkay := true.B
       readData := flagsWord(enableXyb, enableDct, enableQuant, enableTokenize, tokenSelect)
     }
+    is(word(HjxlAxiLiteRegister.FixedYtox)) {
+      readOkay := true.B
+      readData := fixedYtox.pad(dataBits)
+    }
+    is(word(HjxlAxiLiteRegister.FixedYtob)) {
+      readOkay := true.B
+      readData := fixedYtob.pad(dataBits)
+    }
   }
 
   when(io.control.ar.fire) {
@@ -252,3 +296,15 @@ class HjxlPreparedDctAxiLiteStreamCore(
     rResp := Mux(readOkay, AxiLiteResponse.Okay.U, AxiLiteResponse.Decerr.U)
   }
 }
+
+/** AXI4-Lite controlled wrapper around `HjxlPreparedCflDctAxiStreamCore`.
+  *
+  * This preserves the prepared-DCT AXI-Lite register map and stream ABI, but
+  * uses the estimated-CFL prepared stream shell internally. Incoming `ytox` and
+  * `ytob` words remain part of the input stream for compatibility; tile CFL
+  * maps are estimated from prepared coefficients before tokenization.
+  */
+class HjxlPreparedCflDctAxiLiteStreamCore(
+    c: HjxlConfig = HjxlConfig(),
+    axiAddrBits: Int = 8
+) extends HjxlPreparedDctAxiLiteStreamCore(c, axiAddrBits, estimatedCfl = true)

@@ -81,6 +81,7 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
     dut.io.control.ar.bits.addr.poke(0.U)
     dut.io.control.r.ready.poke(false.B)
     dut.io.input.valid.poke(false.B)
+    dut.io.inputKeep.poke("hf".U)
     dut.io.input.bits.data.poke(0.U)
     dut.io.input.bits.last.poke(false.B)
     dut.io.trace.ready.poke(false.B)
@@ -134,9 +135,11 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
       dut: HjxlPreparedDctAxiLiteStreamCore,
       data: BigInt,
       last: Boolean,
-      clue: String
+      clue: String,
+      keep: Int = 0xf
   ): Unit = {
     dut.io.input.valid.poke(true.B)
+    dut.io.inputKeep.poke(keep.U)
     dut.io.input.bits.data.poke(data.U)
     dut.io.input.bits.last.poke(last.B)
     var cycles = 0
@@ -163,8 +166,8 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
       BigInt(0)
     ) ++ Seq.fill(PreparedDctStreamLayout.CoefficientWords)(BigInt(0))
 
-  private def zeroCombinedTraceCount(blockCount: Int): Int = {
-    val metadataTokenCount = 1 * 1 * 2 + blockCount * 3
+  private def zeroCombinedTraceCount(blockCount: Int, tileCount: Int = 1): Int = {
+    val metadataTokenCount = tileCount * 2 + blockCount * 3
     blockCount * 3 + blockCount + metadataTokenCount + blockCount * 3
   }
 
@@ -179,6 +182,8 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
       axiWrite(dut, HjxlAxiLiteRegister.FixedInvQacQ16, 0x56789abcL) must be(AxiLiteResponse.Okay)
       axiWrite(dut, HjxlAxiLiteRegister.FixedRawQuant, 7) must be(AxiLiteResponse.Okay)
       axiWrite(dut, HjxlAxiLiteRegister.Flags, 0x20e) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtox, 0xf8) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtob, 9) must be(AxiLiteResponse.Okay)
 
       axiRead(dut, HjxlAxiLiteRegister.Xsize) must be(BigInt(16) -> AxiLiteResponse.Okay)
       axiRead(dut, HjxlAxiLiteRegister.Ysize) must be(BigInt(8) -> AxiLiteResponse.Okay)
@@ -187,8 +192,26 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
       axiRead(dut, HjxlAxiLiteRegister.FixedInvQacQ16) must be(BigInt(0x56789abcL) -> AxiLiteResponse.Okay)
       axiRead(dut, HjxlAxiLiteRegister.FixedRawQuant) must be(BigInt(7) -> AxiLiteResponse.Okay)
       axiRead(dut, HjxlAxiLiteRegister.Flags) must be(BigInt(0x20e) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtox) must be(BigInt(0xf8) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtob) must be(BigInt(9) -> AxiLiteResponse.Okay)
       axiWrite(dut, 0x40, 0) must be(AxiLiteResponse.Decerr)
       axiRead(dut, 0x40) must be(BigInt(0) -> AxiLiteResponse.Decerr)
+    }
+  }
+
+  "HjxlPreparedDctAxiLiteStreamCore honors byte strobes on signed CFL registers" in {
+    simulate(new HjxlPreparedDctAxiLiteStreamCore(config)) { dut =>
+      init(dut)
+
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtox, 0x0000f800, strb = 0xe) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtob, 0x00000900, strb = 0xe) must be(AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtox) must be(BigInt(0) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtob) must be(BigInt(0) -> AxiLiteResponse.Okay)
+
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtox, 0xf8, strb = 0x1) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.FixedYtob, 0x09, strb = 0x1) must be(AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtox) must be(BigInt(0xf8) -> AxiLiteResponse.Okay)
+      axiRead(dut, HjxlAxiLiteRegister.FixedYtob) must be(BigInt(0x09) -> AxiLiteResponse.Okay)
     }
   }
 
@@ -214,6 +237,41 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
           cycles += 1
         }
         withClue(s"controlled trace $ordinal") {
+          cycles must be < 512
+        }
+        dut.io.trace.bits.last.expect((ordinal == expectedTraceCount - 1).B)
+        dut.clock.step()
+      }
+      dut.io.trace.valid.expect(false.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
+  "HjxlPreparedDctAxiLiteStreamCore preserves stream framing for exact 72px capacity" in {
+    val exactConfig = HjxlConfig(maxFrameWidth = 72, maxFrameHeight = 8)
+    val blockCount = 9
+    val tileCount = 2
+    val words = Seq.tabulate(blockCount)(index => zeroPreparedBlockWords(quant = 1 + index % 3)).flatten
+    val expectedTraceCount = zeroCombinedTraceCount(blockCount = blockCount, tileCount = tileCount)
+    simulate(new HjxlPreparedDctAxiLiteStreamCore(exactConfig)) { dut =>
+      init(dut)
+      axiWrite(dut, HjxlAxiLiteRegister.Xsize, 72) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.Ysize, 8) must be(AxiLiteResponse.Okay)
+
+      for ((word, ordinal) <- words.zipWithIndex) {
+        driveStreamWord(dut, word, last = ordinal == words.length - 1, s"exact-capacity controlled prepared word $ordinal")
+      }
+      dut.io.input.valid.poke(false.B)
+      dut.io.protocolError.expect(false.B)
+
+      dut.io.trace.ready.poke(true.B)
+      for (ordinal <- 0 until expectedTraceCount) {
+        var cycles = 0
+        while (dut.io.trace.valid.peekValue().asBigInt == 0 && cycles < 512) {
+          dut.clock.step()
+          cycles += 1
+        }
+        withClue(s"exact-capacity controlled trace $ordinal") {
           cycles must be < 512
         }
         dut.io.trace.bits.last.expect((ordinal == expectedTraceCount - 1).B)
@@ -415,6 +473,50 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
     }
   }
 
+  "HjxlPreparedDctAxiLiteStreamCore reports and clears invalid input keep masks" in {
+    val words = zeroPreparedBlockWords(quant = 1)
+    val expectedTraceCount = zeroCombinedTraceCount(blockCount = 1)
+    simulate(new HjxlPreparedDctAxiLiteStreamCore(config)) { dut =>
+      init(dut)
+      axiWrite(dut, HjxlAxiLiteRegister.Xsize, 8) must be(AxiLiteResponse.Okay)
+      axiWrite(dut, HjxlAxiLiteRegister.Ysize, 8) must be(AxiLiteResponse.Okay)
+
+      driveStreamWord(dut, data = 1, last = false, clue = "partial prepared keep", keep = 0x7)
+      dut.io.input.valid.poke(false.B)
+      dut.io.protocolError.expect(true.B)
+      val (status, statusResp) = axiRead(dut, HjxlAxiLiteRegister.StatusControl)
+      statusResp must be(AxiLiteResponse.Okay)
+      (status & 1) must be(BigInt(1))
+      dut.io.busy.expect(false.B)
+
+      axiWrite(dut, HjxlAxiLiteRegister.StatusControl, 1) must be(AxiLiteResponse.Okay)
+      dut.io.protocolError.expect(false.B)
+      axiRead(dut, HjxlAxiLiteRegister.StatusControl) must be(BigInt(0) -> AxiLiteResponse.Okay)
+
+      for ((word, ordinal) <- words.zipWithIndex) {
+        driveStreamWord(dut, word, last = ordinal == words.length - 1, s"post-keep-error prepared word $ordinal")
+      }
+      dut.io.input.valid.poke(false.B)
+      dut.io.protocolError.expect(false.B)
+
+      dut.io.trace.ready.poke(true.B)
+      for (ordinal <- 0 until expectedTraceCount) {
+        var cycles = 0
+        while (dut.io.trace.valid.peekValue().asBigInt == 0 && cycles < 512) {
+          dut.clock.step()
+          cycles += 1
+        }
+        withClue(s"post-keep-error controlled trace $ordinal") {
+          cycles must be < 512
+        }
+        dut.io.trace.bits.last.expect((ordinal == expectedTraceCount - 1).B)
+        dut.clock.step()
+      }
+      dut.io.trace.valid.expect(false.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
   "HjxlPreparedDctAxiLiteStreamCore emits the controlled prepared stream shell" in {
     val targetDir = Files.createTempDirectory("hjxl-prepared-dct-axi-lite-stream-elaborate-")
     ChiselStage.emitSystemVerilogFile(
@@ -444,6 +546,7 @@ class HjxlPreparedDctAxiLiteStreamCoreSpec extends AnyFreeSpec with Matchers wit
           "io_control_b_valid",
           "io_control_ar_ready",
           "io_control_r_valid",
+          "io_inputKeep",
           "io_input_ready",
           "io_input_valid",
           "io_input_bits_data",

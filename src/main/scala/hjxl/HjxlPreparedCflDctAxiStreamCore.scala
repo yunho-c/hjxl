@@ -5,41 +5,16 @@ package hjxl
 import chisel3._
 import chisel3.util._
 
-object PreparedDctStreamLayout {
-  val ScalarWords = 9
-  val CoefficientWords = 3 * HjxlConstants.BlockDim * HjxlConstants.BlockDim
-  val WordsPerBlock = ScalarWords + CoefficientWords
-
-  val Quant = 0
-  val ScaleQ16 = 1
-  val InvQacQ16 = 2
-  val InvDcFactorQ16Base = 3
-  val XQmMultiplierQ16 = 6
-  val Ytox = 7
-  val Ytob = 8
-  val CoefficientBase = ScalarWords
-}
-
-class HjxlPreparedDctAxiStreamCoreIO(c: HjxlConfig, inputDataBits: Int, traceDataBits: Int) extends Bundle {
-  val config = Input(new FrameConfig(c))
-  val clearProtocolError = Input(Bool())
-  val input = Flipped(Decoupled(new AxiStreamWord(inputDataBits)))
-  val trace = Decoupled(new AxiStreamWord(traceDataBits))
-  val busy = Output(Bool())
-  val overflow = Output(Bool())
-  val protocolError = Output(Bool())
-}
-
-/** AXI4-Stream-shaped prepared-DCT quantize-to-token shell.
+/** AXI4-Stream-shaped prepared-DCT token shell with internal CFL estimation.
   *
-  * Input is one 32-bit stream word sequence per prepared all-DCT raster block:
-  * quant, scaleQ16, invQacQ16, invDcFactorQ16[0..2], xQmMultiplierQ16, ytox,
-  * ytob, then 64 X coefficients, 64 Y coefficients, and 64 B coefficients.
-  * Coefficients and signed 8-bit CFL values are two's-complement encoded in
-  * the low bits of each word. Output packs `StageTrace` rows as
-  * `{value,index,group,stage}`, matching `HjxlAxiStreamCore`.
+  * This shell uses the same packed input/output contract as
+  * `HjxlPreparedDctAxiStreamCore`, but routes prepared raster blocks through
+  * `FramePreparedCflDctOnlyQuantizeTokenTraceStage`. Input `ytox`/`ytob` words
+  * are accepted to preserve the stream layout, but the wrapped stage estimates
+  * tile CFL maps from the prepared coefficients and uses those maps for
+  * quantization and AC metadata tokenization.
   */
-class HjxlPreparedDctAxiStreamCore(c: HjxlConfig = HjxlConfig()) extends Module {
+class HjxlPreparedCflDctAxiStreamCore(c: HjxlConfig = HjxlConfig()) extends Module {
   require(c.traceValueBits <= 32, "prepared-DCT stream coefficients are 32-bit words")
 
   private val blockDim = HjxlConstants.BlockDim
@@ -48,7 +23,6 @@ class HjxlPreparedDctAxiStreamCore(c: HjxlConfig = HjxlConfig()) extends Module 
   private val maxYBlocks = c.maxFrameHeight / blockDim
   private val maxBlocks = maxXBlocks * maxYBlocks
   private val blockCountBits = log2Ceil(maxBlocks + 1)
-  private val blockIndexBits = math.max(1, log2Ceil(maxBlocks))
   private val wordIndexBits = log2Ceil(PreparedDctStreamLayout.WordsPerBlock)
   private val widthBits = log2Ceil(c.maxFrameWidth + 1)
   private val heightBits = log2Ceil(c.maxFrameHeight + 1)
@@ -64,7 +38,7 @@ class HjxlPreparedDctAxiStreamCore(c: HjxlConfig = HjxlConfig()) extends Module 
   private def signWord(value: UInt): SInt =
     value(c.traceValueBits - 1, 0).asSInt
 
-  val stage = Module(new FramePreparedDctOnlyQuantizeTokenTraceStage(c))
+  val stage = Module(new FramePreparedCflDctOnlyQuantizeTokenTraceStage(c))
 
   val latchedConfig = Reg(new FrameConfig(c))
   val frameActive = RegInit(false.B)

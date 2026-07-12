@@ -9,17 +9,21 @@ import chisel3._
   * This wrapper keeps the tested `HjxlPreparedDctAxiLiteStreamCore` behavior,
   * but exposes flat AXI-style port names for block-design integration. The
   * reset is active-low to match the common `ap_clk` / `ap_rst_n` convention.
-  * Trace output TDATA is padded to `traceBusBytes`; TKEEP marks the low bytes
-  * that contain the packed `{value,index,group,stage}` trace word.
+  * The prepared-DCT input stream is a sequence of full 32-bit words; partial
+  * input TKEEP masks are consumed and reported as protocol errors. Trace output
+  * TDATA is padded to `traceBusBytes`; TKEEP marks the low bytes that contain
+  * the packed `{value,index,group,stage}` trace word.
   */
 class HjxlKv260PreparedDctTop(
     c: HjxlConfig = HjxlConfig(),
     axiAddrBits: Int = 8,
-    traceBusBytes: Int = 16
+    traceBusBytes: Int = 16,
+    estimatedCfl: Boolean = false
 ) extends RawModule {
   private val controlDataBits = 32
   private val controlStrobeBits = controlDataBits / 8
   private val inputDataBits = 32
+  private val inputWordBytes = inputDataBits / 8
   private val traceDataBits = 8 + c.groupBits + 32 + c.traceValueBits
   private val traceWordBytes = (traceDataBits + 7) / 8
   private val traceBusBits = traceBusBytes * 8
@@ -47,6 +51,7 @@ class HjxlKv260PreparedDctTop(
   val s_axi_control_rready = IO(Input(Bool()))
 
   val s_axis_input_tdata = IO(Input(UInt(inputDataBits.W)))
+  val s_axis_input_tkeep = IO(Input(UInt(inputWordBytes.W)))
   val s_axis_input_tvalid = IO(Input(Bool()))
   val s_axis_input_tready = IO(Output(Bool()))
   val s_axis_input_tlast = IO(Input(Bool()))
@@ -63,7 +68,12 @@ class HjxlKv260PreparedDctTop(
   val unsupported_distance = IO(Output(Bool()))
 
   withClockAndReset(ap_clk, !ap_rst_n) {
-    val core = Module(new HjxlPreparedDctAxiLiteStreamCore(c, axiAddrBits))
+    val core =
+      if (estimatedCfl) {
+        Module(new HjxlPreparedCflDctAxiLiteStreamCore(c, axiAddrBits))
+      } else {
+        Module(new HjxlPreparedDctAxiLiteStreamCore(c, axiAddrBits))
+      }
 
     core.io.control.aw.bits.addr := s_axi_control_awaddr
     core.io.control.aw.valid := s_axi_control_awvalid
@@ -89,6 +99,7 @@ class HjxlKv260PreparedDctTop(
 
     core.io.input.bits.data := s_axis_input_tdata
     core.io.input.bits.last := s_axis_input_tlast
+    core.io.inputKeep := s_axis_input_tkeep
     core.io.input.valid := s_axis_input_tvalid
     s_axis_input_tready := core.io.input.ready
 
@@ -104,3 +115,15 @@ class HjxlKv260PreparedDctTop(
     unsupported_distance := core.io.unsupportedDistance
   }
 }
+
+/** Vivado-friendly top around the estimated-CFL prepared-DCT controlled core.
+  *
+  * The flat port surface and stream packing match `HjxlKv260PreparedDctTop`,
+  * but the internal controlled shell estimates tile CFL maps from prepared DCT
+  * coefficients before quantization and tokenization.
+  */
+class HjxlKv260PreparedCflDctTop(
+    c: HjxlConfig = HjxlConfig(),
+    axiAddrBits: Int = 8,
+    traceBusBytes: Int = 16
+) extends HjxlKv260PreparedDctTop(c, axiAddrBits, traceBusBytes, estimatedCfl = true)
