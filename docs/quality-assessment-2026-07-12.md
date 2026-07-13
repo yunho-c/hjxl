@@ -22,9 +22,11 @@ frame schedulers buffer complete bounded frames or coefficient planes in
 `Reg(Vec(...))`; several arithmetic paths contain wide combinational products
 or division; the default frame bound is only 32x32; and there are no synthesis,
 utilization, timing, clock-rate, throughput, power, Vivado-project, bitstream,
-or board-run results. Adaptive quantization is absent from RTL, the RGB path
-uses approximate XYB and fixed all-8x8-DCT behavior, entropy coding and
-bitstream assembly remain software-only, and the most parity-ready hardware
+or board-run results. The RGB path uses approximate XYB and fixed all-8x8-DCT
+behavior. A standalone prepared-AQ boundary exactly converts real libjxl-tiny
+AQ maps from Q24 into raw-quant traces, but the image-dependent AQ-map
+heuristics and integration remain software-only. Entropy coding and bitstream
+assembly also remain software-only, and the most parity-ready hardware
 interface starts after the host has already computed prepared DCT blocks.
 
 The current working tree also needs to be treated as an engineering risk in its
@@ -376,7 +378,7 @@ Recommended documentation split:
 | Frame padding | Implemented | Exact small-frame and edge-padding tests | Scalable storage architecture |
 | RGB to XYB | Approximate Q8 to Q12 implementation | Directed tolerance tests and frame traces | Accuracy tuning, range analysis, synthesis feasibility, end-to-end parity |
 | 8x8 DCT | Approximate fixed-point implementation | Primitive and frame tests | Timing/resource architecture and rectangular transforms |
-| Adaptive quantization | Not implemented in RTL | Software oracle export exists | Full AQ algorithm, buffering, maps, integration |
+| Adaptive quantization | Final prepared Q24 AQ-map to raw-quant conversion implemented; image heuristics remain software-only | Exact multi-pattern/distance oracle, clamp, ordering, backpressure, control-lifetime, and elaboration tests | Contrast/erosion/HF/color/gamma pipeline, RGB integration, and downstream map plumbing |
 | Chroma from luma | Implemented substantially for **prepared DCT** estimated-CFL paths | Primitive, multi-tile, quantization, metadata, stream, and wrapper tests | RGB-path integration, physical implementation quality, broader fixtures |
 | AC strategy | Fixed ordinary 8x8 DCT only | Exact map shape/order tests | 16x8/8x16 search, first-block semantics across strategies, scheduling |
 | Distance parameters | Six Q8 lookup points plus explicit fallback | Exact RTL/host lockstep tests | General supported range or a clearly frozen discrete API |
@@ -495,6 +497,10 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
     implement AQ, integrate prepared-CFL logic with the RGB DCT path, then add
     rectangular AC strategy. Do not use final codestream differences as the
     first diagnostic.
+    **Started 2026-07-12:** the Q24 prepared-AQ conversion seam now matches
+    libjxl-tiny raw-quant bytes exactly across deterministic patterns and
+    distances. The upstream image heuristics and pipeline integration remain
+    open.
 13. **Expand oracle diversity.** Add several deterministic patterns, signed and
     near-saturation values, supported distances, non-block/tile-aligned sizes,
     multi-tile 2D images, and at least a few small real-image crops. Validate
@@ -519,11 +525,16 @@ The following local checks were run against the current working tree:
 
 - `git diff --check` — passed.
 - `python3 -m py_compile tools/*.py` — passed.
+- `python3 tools/hjxl_generate_abi.py --check` — passed.
 - `python3 tools/hjxl_host_metadata_smoke.py` — passed.
-- `HJXL_REPO_ROOT=$PWD sbt test` — passed: 51 suites completed, 185 tests
-  succeeded, 0 failed/canceled/ignored/pending, in 21 minutes 17 seconds.
-- `HJXL_REPO_ROOT=$PWD ./mill --no-server hjxl.test.compile` — passed, confirming
-  the current source and test tree also compile through the second build definition.
+- `sbt test` — passed: 56 suites completed, 199 tests succeeded, 0
+  failed/canceled/ignored/pending, in 15 minutes 47 seconds.
+- `HJXL_REPO_ROOT=$PWD ./mill hjxl.compile` and focused Mill execution of
+  `AdaptiveQuantizationSpec`/`AdaptiveQuantizationElaborationSpec` — passed,
+  confirming the new source and tests through the second build definition.
+- `sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'` followed by
+  `tclsh fpga/vivado/synth.tcl --preflight-only` — passed with the expected 19
+  generated RTL files. This is a source/constraint preflight, not synthesis.
 - Tool availability — Java, sbt, and Verilator 5.048 were found; Vivado, Vitis,
   and Yosys were not found.
 

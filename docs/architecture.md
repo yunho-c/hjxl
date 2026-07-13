@@ -237,6 +237,17 @@ wrappers.
   signed. `HjxlCore` exposes it only as the focused
   `traceRoute = TraceStage.RawQuantField` route today, keeping the default
   all-route behavior on the existing AC-strategy metadata path.
+- `AqMapToRawQuant` is the first fixed-point boundary for real adaptive-
+  quantization data. It multiplies an unsigned Q24 AQ-map sample by the
+  unsigned Q24 inverse global AC scale, rounds to the nearest integer, and
+  clamps the result to libjxl-tiny's adjusted raw-quant range `[1, 255]`.
+  `FramePreparedAqRawQuantTraceStage` accepts one prepared AQ sample per padded
+  8x8 raster block, snapshots frame geometry and inverse scale on the first
+  accepted block, buffers one trace beat for ready/valid stability, and emits
+  `RawQuantField` traces with `traceLast` on the final block. This stage moves
+  only the final AQ-map conversion into RTL: contrast measurement, fuzzy
+  erosion, HF/color/gamma modulation, and AQ-map production remain host work,
+  and the stage is not yet integrated into the RGB or prepared-token tops.
 - `FrameCflMapTraceStage` emits the current fixed scalar CFL maps for a padded
   frame: one Y-to-X or Y-to-B value per 64x64 tile. `HjxlCore` exposes these as
   focused `TraceStage.YtoxMap` and `TraceStage.YtobMap` routes today, giving
@@ -547,11 +558,12 @@ wrappers.
   DC/strategy/metadata/AC trace stream.
 - `PreparedTokenElaborationSpec` guards the generated trace port surface for
   prepared DC, AC-metadata, AC, and combined token tops.
-- Full frame-level quantized-block parity remains open: AQ/CFL map plumbing,
-  distance parameter generation, dynamic reciprocal scaling, rectangular
-  strategy scheduling, and comparison against `tools/hjxl_reference.py`
-  DCT-only whole-frame artifacts are still separate work. Full token-to-codestream
-  parity also still needs entropy table optimization and bitstream assembly.
+- Full frame-level quantized-block parity remains open: upstream AQ-map
+  generation and AQ/CFL map plumbing, distance parameter generation, dynamic
+  reciprocal scaling, rectangular strategy scheduling, and RGB-path comparison
+  against `tools/hjxl_reference.py` DCT-only whole-frame artifacts are still
+  separate work. Full token-to-codestream parity also still needs entropy table
+  optimization and bitstream assembly.
 - `CflCoefficientSampleWeight`/`CflWeightedSumAccumulator`/
   `CflMultiplierEstimator`/`CflCoefficientSumAccumulator`/
   `CflTileCoefficientEstimator`/`CflTileCoefficientTraceStage` cover only
@@ -579,6 +591,12 @@ wrappers.
   maps for small whole-frame fixtures. These are oracle artifacts for the future
   adaptive-quantization/strategy implementation, not claims about current RTL
   parity.
+- `tools/hjxl_reference.py --dct-only-aq-map-q24-csv ...` exports the
+  all-DCT AQ map and inverse global AC scale as unsigned Q24 values alongside
+  libjxl-tiny's reference raw-quant bytes and the same fixed-point conversion
+  computed in software. Use it as the exact oracle for
+  `FramePreparedAqRawQuantTraceStage`; it does not imply that the upstream AQ
+  image heuristics exist in RTL.
 - `tools/hjxl_reference.py --dct-only-quantized-ac-npy ...`,
   `--dct-only-num-nonzeros-npy ...`, `--dct-only-num-nonzeros-map-npy ...`, and
   `--dct-only-quant-dc-npy ...` write libjxl-tiny quantization outputs while

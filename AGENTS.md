@@ -279,6 +279,15 @@ Read these libjxl-tiny files before making architectural changes:
   values above 127 remain positive metadata values. It is available as a
   focused `HjxlCore` route with `traceRoute = TraceStage.RawQuantField`; do not
   describe it as AQ parity.
+- `AqMapToRawQuant` converts unsigned Q24 prepared AQ-map and inverse-global-
+  scale values into libjxl-tiny adjusted raw-quant bytes with nearest rounding
+  and a `[1, 255]` clamp. `FramePreparedAqRawQuantTraceStage` streams one such
+  prepared AQ value per padded raster block, snapshots frame geometry and scale
+  on the first accepted block, and emits backpressure-safe `RawQuantField`
+  traces with `traceLast`. It is a real fixed-point AQ seam, not a full AQ
+  implementation: contrast, erosion, HF/color/gamma modulation, and AQ-map
+  generation remain software-only, and this stage is not wired into the RGB or
+  prepared-token tops.
 - `FrameCflMapTraceStage` emits fixed scalar Y-to-X or Y-to-B CFL values, one
   record per 64x64 tile. It is available through focused `HjxlCore` routes
   `TraceStage.YtoxMap` and `TraceStage.YtobMap`; do not describe it as
@@ -548,6 +557,9 @@ Read these libjxl-tiny files before making architectural changes:
   padded 8x8 block. It is a focused trace route for the current fixed
   quantization metadata shape, not an adaptive-quantization implementation. The
   raw-quant byte is zero-extended into `StageTrace.value`.
+- Use `sbt 'runMain hjxl.ElaboratePreparedAqRawQuant'` to generate the
+  standalone prepared AQ-map to raw-quant trace boundary. It writes
+  `generated-prepared-aq-raw-quant/`; keep the generated directory out of git.
 - `FrameCflMapTraceStage` emits fixed scalar CFL map traces for focused Y-to-X
   and Y-to-B routes. It establishes the per-64x64-tile trace shape used by
   libjxl-tiny metadata for RGB-input fixed-map routes; prepared-DCT
@@ -562,11 +574,15 @@ Read these libjxl-tiny files before making architectural changes:
   CFL, or transform-strategy RTL; do not compare those outputs against the
   current default AC-strategy trace as if they were equivalent.
 - The same helper can export all-DCT quantization oracle outputs with
-  `--dct-only-raw-quant-field-npy`, `--dct-only-ytox-map-npy`,
+  `--dct-only-raw-quant-field-npy`, `--dct-only-aq-map-q24-csv`,
+  `--dct-only-ytox-map-npy`,
   `--dct-only-ytob-map-npy`, `--dct-only-quantized-ac-npy`,
   `--dct-only-num-nonzeros-npy`, `--dct-only-num-nonzeros-map-npy`, and
   `--dct-only-quant-dc-npy`. Prefer these artifacts when validating the current
   DCT-only quantization path before adaptive rectangular strategy search exists.
+  The AQ CSV contains unsigned Q24 AQ-map and inverse-global-scale inputs plus
+  reference and fixed-converted raw-quant bytes; use it for the standalone
+  prepared AQ trace seam, not as evidence that upstream AQ heuristics are RTL.
 - `--dct-only-ac-metadata-tokens-npy` exports libjxl-tiny AC-metadata tokens
   for the default all-DCT strategy using prepared raw-quant and CFL maps. Use
   this oracle for `FramePreparedAcMetadataTokenTraceStage` instead of comparing

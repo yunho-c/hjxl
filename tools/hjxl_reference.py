@@ -9,6 +9,7 @@ educational Python port.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import os
@@ -195,6 +196,7 @@ def dct_only_quant_outputs_from_python_port(image, distance: float):
     x_tiles = _ceil_div(xsize, TILE_DIM)
     y_tiles = _ceil_div(ysize, TILE_DIM)
 
+    aq_map = np.empty((y_blocks, x_blocks), dtype=np.float32)
     raw_quant_field = np.empty((y_blocks, x_blocks), dtype=np.uint8)
     ac_strategy = np.full((y_blocks, x_blocks), np.uint8((DCT << 1) | 1))
     ytox_map = np.zeros((y_tiles, x_tiles), dtype=np.int8)
@@ -218,6 +220,7 @@ def dct_only_quant_outputs_from_python_port(image, distance: float):
                 block_width=tile_blocks_x,
                 block_height=tile_blocks_y,
             )
+            aq_map[by0 : by0 + tile_blocks_y, bx0 : bx0 + tile_blocks_x] = aq.aq_map
             raw_quant_field[by0 : by0 + tile_blocks_y, bx0 : bx0 + tile_blocks_x] = (
                 aq.raw_quant_field
             )
@@ -243,7 +246,16 @@ def dct_only_quant_outputs_from_python_port(image, distance: float):
             num_nonzeros_map[:, by : by + 1, bx : bx + 1] = block.num_nonzeros_map
             quant_dc[:, by : by + 1, bx : bx + 1] = block.block_quant_dc
 
-    return raw_quant_field, ytox_map, ytob_map, quantized_ac, num_nonzeros, num_nonzeros_map, quant_dc
+    return (
+        raw_quant_field,
+        ytox_map,
+        ytob_map,
+        quantized_ac,
+        num_nonzeros,
+        num_nonzeros_map,
+        quant_dc,
+        aq_map,
+    )
 
 
 def dct_only_ac_metadata_tokens_from_python_port(image, distance: float):
@@ -253,11 +265,82 @@ def dct_only_ac_metadata_tokens_from_python_port(image, distance: float):
     from jxl_tiny.ac_strategy import DCT  # pylint: disable=import-outside-toplevel
     from jxl_tiny.tokenization import ac_metadata_tokens  # pylint: disable=import-outside-toplevel
 
-    raw_quant_field, ytox_map, ytob_map, _, _, _, _ = dct_only_quant_outputs_from_python_port(
-        image, distance
-    )
+    (
+        raw_quant_field,
+        ytox_map,
+        ytob_map,
+        _,
+        _,
+        _,
+        _,
+        _,
+    ) = dct_only_quant_outputs_from_python_port(image, distance)
     ac_strategy = np.full(raw_quant_field.shape, np.uint8((DCT << 1) | 1))
     return ac_metadata_tokens(ytox_map, ytob_map, ac_strategy, raw_quant_field)
+
+
+def inverse_global_ac_scale_from_python_port(distance: float) -> float:
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.adaptive_quantization import inverse_global_ac_scale  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.encoder import _effective_distance  # pylint: disable=import-outside-toplevel
+
+    return float(inverse_global_ac_scale(_effective_distance(distance)))
+
+
+def write_dct_only_aq_map_q24_csv(
+    path: Path,
+    aq_map,
+    raw_quant_field,
+    inv_global_scale: float,
+) -> None:
+    """Write the fixed-point seam between AQ heuristics and raw quant bytes."""
+    np = _load_numpy()
+    fraction_bits = 24
+    scale = 1 << fraction_bits
+    aq_q24 = np.rint(np.asarray(aq_map, dtype=np.float64) * scale).astype(np.int64)
+    inv_scale_q24 = int(round(inv_global_scale * scale))
+    if np.any(aq_q24 < 0) or np.any(aq_q24 > np.iinfo(np.uint32).max):
+        raise ValueError("adaptive quantization Q24 map does not fit uint32")
+    if inv_scale_q24 < 0 or inv_scale_q24 > np.iinfo(np.uint32).max:
+        raise ValueError("inverse global AC scale Q24 does not fit uint32")
+    fixed_raw = np.empty(aq_q24.shape, dtype=np.uint8)
+    rounding_bias = 1 << (2 * fraction_bits - 1)
+    for block_y in range(aq_q24.shape[0]):
+        for block_x in range(aq_q24.shape[1]):
+            product = int(aq_q24[block_y, block_x]) * inv_scale_q24
+            rounded = (product + rounding_bias) >> (2 * fraction_bits)
+            fixed_raw[block_y, block_x] = min(255, max(1, rounded))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "block",
+                "block_x",
+                "block_y",
+                "aq_map_q24",
+                "inv_global_scale_q24",
+                "reference_raw_quant",
+                "fixed_raw_quant",
+            )
+        )
+        block = 0
+        for block_y in range(aq_q24.shape[0]):
+            for block_x in range(aq_q24.shape[1]):
+                writer.writerow(
+                    (
+                        block,
+                        block_x,
+                        block_y,
+                        int(aq_q24[block_y, block_x]),
+                        inv_scale_q24,
+                        int(raw_quant_field[block_y, block_x]),
+                        int(fixed_raw[block_y, block_x]),
+                    )
+                )
+                block += 1
 
 
 def dct_only_token_outputs_from_python_port(image, distance: float):
@@ -830,6 +913,11 @@ def main() -> int:
         help="optional adjusted raw quant field for the default all-DCT strategy",
     )
     parser.add_argument(
+        "--dct-only-aq-map-q24-csv",
+        type=Path,
+        help="optional Q24 AQ-map to raw-quant conversion fixture for the default all-DCT strategy",
+    )
+    parser.add_argument(
         "--dct-only-ytox-map-npy",
         type=Path,
         help="optional Y-to-X CFL map for the default all-DCT strategy",
@@ -1128,37 +1216,45 @@ def main() -> int:
     if args.dct_only_raw_quant_field_npy is not None:
         np = _load_numpy()
         args.dct_only_raw_quant_field_npy.parent.mkdir(parents=True, exist_ok=True)
-        raw_quant_field, _, _, _, _, _, _ = get_dct_only_quant_outputs()
+        raw_quant_field, _, _, _, _, _, _, _ = get_dct_only_quant_outputs()
         np.save(args.dct_only_raw_quant_field_npy, raw_quant_field)
+    if args.dct_only_aq_map_q24_csv is not None:
+        raw_quant_field, _, _, _, _, _, _, aq_map = get_dct_only_quant_outputs()
+        write_dct_only_aq_map_q24_csv(
+            args.dct_only_aq_map_q24_csv,
+            aq_map,
+            raw_quant_field,
+            inverse_global_ac_scale_from_python_port(args.distance),
+        )
     if args.dct_only_ytox_map_npy is not None:
         np = _load_numpy()
         args.dct_only_ytox_map_npy.parent.mkdir(parents=True, exist_ok=True)
-        _, ytox_map, _, _, _, _, _ = get_dct_only_quant_outputs()
+        _, ytox_map, _, _, _, _, _, _ = get_dct_only_quant_outputs()
         np.save(args.dct_only_ytox_map_npy, ytox_map)
     if args.dct_only_ytob_map_npy is not None:
         np = _load_numpy()
         args.dct_only_ytob_map_npy.parent.mkdir(parents=True, exist_ok=True)
-        _, _, ytob_map, _, _, _, _ = get_dct_only_quant_outputs()
+        _, _, ytob_map, _, _, _, _, _ = get_dct_only_quant_outputs()
         np.save(args.dct_only_ytob_map_npy, ytob_map)
     if args.dct_only_quantized_ac_npy is not None:
         np = _load_numpy()
         args.dct_only_quantized_ac_npy.parent.mkdir(parents=True, exist_ok=True)
-        _, _, _, quantized_ac, _, _, _ = get_dct_only_quant_outputs()
+        _, _, _, quantized_ac, _, _, _, _ = get_dct_only_quant_outputs()
         np.save(args.dct_only_quantized_ac_npy, quantized_ac)
     if args.dct_only_num_nonzeros_npy is not None:
         np = _load_numpy()
         args.dct_only_num_nonzeros_npy.parent.mkdir(parents=True, exist_ok=True)
-        _, _, _, _, num_nonzeros, _, _ = get_dct_only_quant_outputs()
+        _, _, _, _, num_nonzeros, _, _, _ = get_dct_only_quant_outputs()
         np.save(args.dct_only_num_nonzeros_npy, num_nonzeros)
     if args.dct_only_num_nonzeros_map_npy is not None:
         np = _load_numpy()
         args.dct_only_num_nonzeros_map_npy.parent.mkdir(parents=True, exist_ok=True)
-        _, _, _, _, _, num_nonzeros_map, _ = get_dct_only_quant_outputs()
+        _, _, _, _, _, num_nonzeros_map, _, _ = get_dct_only_quant_outputs()
         np.save(args.dct_only_num_nonzeros_map_npy, num_nonzeros_map)
     if args.dct_only_quant_dc_npy is not None:
         np = _load_numpy()
         args.dct_only_quant_dc_npy.parent.mkdir(parents=True, exist_ok=True)
-        _, _, _, _, _, _, quant_dc = get_dct_only_quant_outputs()
+        _, _, _, _, _, _, quant_dc, _ = get_dct_only_quant_outputs()
         np.save(args.dct_only_quant_dc_npy, quant_dc)
     if args.dct_only_ac_metadata_tokens_npy is not None:
         np = _load_numpy()

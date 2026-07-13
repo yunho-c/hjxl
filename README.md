@@ -36,7 +36,14 @@ tokenSelect=AcMetadata` are set, or the current all-DCT AC strategy map when
 only `enableQuant` is set. A focused `traceRoute = TraceStage.RawQuantField`
 core can also emit the current fixed raw-quant field, one adjusted raw-quant
 value per padded 8x8 block, so the quant-metadata trace shape exists before
-adaptive quantization hardware does. Focused `TraceStage.YtoxMap` and
+adaptive quantization hardware does. `AqMapToRawQuant` and
+`FramePreparedAqRawQuantTraceStage` now form the first real adaptive-
+quantization seam: the host supplies libjxl-tiny's image-dependent AQ map and
+inverse global AC scale as unsigned Q24 values, and RTL performs the exact
+nearest-integer conversion, `[1, 255]` clamp, raster trace ordering, and frame
+delimiter. The upstream contrast, erosion, HF, color, and gamma AQ heuristics
+remain software-only, and this standalone prepared stage is not yet connected
+to the RGB core or prepared-DCT token wrapper. Focused `TraceStage.YtoxMap` and
 `TraceStage.YtobMap` routes emit the current fixed scalar CFL tile maps, one
 record per 64x64 tile. Later stages will replace the fixed quantization
 defaults with adaptive quantization/CFL metadata, entropy coding, and bitstream
@@ -324,6 +331,7 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --ytox-map-npy build-codex/fixtures/gradient-17x9-ytox.npy \
   --ytob-map-npy build-codex/fixtures/gradient-17x9-ytob.npy \
   --dct-only-raw-quant-field-npy build-codex/fixtures/gradient-17x9-dct-only-raw-qf.npy \
+  --dct-only-aq-map-q24-csv build-codex/fixtures/gradient-17x9-dct-only-aq-q24.csv \
   --dct-only-ytox-map-npy build-codex/fixtures/gradient-17x9-dct-only-ytox.npy \
   --dct-only-ytob-map-npy build-codex/fixtures/gradient-17x9-dct-only-ytob.npy \
   --dct-only-quantized-ac-npy build-codex/fixtures/gradient-17x9-dct-only-qac.npy \
@@ -353,6 +361,12 @@ Set `LIBJXL_TINY` if the reference checkout is not at
 The fixed all-DCT oracle flags default to raw quant 5 and zero CFL maps;
 `--fixed-ytox` and `--fixed-ytob` may override the scalar Y-to-X/Y-to-B CFL map
 values with signed 8-bit integers.
+
+The `--dct-only-aq-map-q24-csv` artifact records each real all-DCT AQ-map
+sample, the frame-level inverse global AC scale, libjxl-tiny's raw-quant byte,
+and the independently fixed-point-converted byte. Both fixed-point inputs use
+unsigned Q24. `AdaptiveQuantizationSpec` exercises these rows through
+`FramePreparedAqRawQuantTraceStage` and requires exact byte parity.
 
 Assemble a frame and bare codestream from precomputed logical token arrays:
 
@@ -1027,6 +1041,13 @@ counts, signed-32 coefficients, block/tile geometry, and optional AC block
 `block_x`/`block_y` and `tile_x`/`tile_y` coordinates before writing simulator
 CSVs. Floating-point JSON numbers are rejected for integer fields instead of
 being truncated.
+
+`AdaptiveQuantizationSpec` checks the prepared AQ seam independently of the
+still-software image heuristics. It validates Q24 multiplication, nearest
+rounding, low/high clamping, exact `RawQuantField` traces from multiple
+libjxl-tiny patterns and distances, output stability under backpressure,
+frame-control snapshots, invalid geometry, and standalone SystemVerilog
+elaboration.
 
 `FramePreparedDctOnlyQuantizeTraceStageSpec` checks the prepared-DCT quantizer
 scheduler against libjxl-tiny prepared-block fixtures with exact quantized
