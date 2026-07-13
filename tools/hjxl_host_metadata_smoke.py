@@ -11,8 +11,13 @@ import shutil
 import subprocess
 import tempfile
 
-from hjxl_abi import discovery_metadata
-from hjxl_abi_generated import REGISTER_MAP, ROUTE_IDS
+from hjxl_abi import discovery_metadata, rgb_active_route
+from hjxl_abi_generated import (
+    DISCOVERY_ABI_VERSION,
+    REGISTER_MAP,
+    ROUTE_IDS,
+    TRACE_STAGES,
+)
 from hjxl_host_bundle import (
     describe_host_bundle,
     validate_host_bundle,
@@ -1164,6 +1169,16 @@ def _check_rgb_bundle(temp: Path) -> None:
 
 
 def main() -> int:
+    aq_flags = rgb_flags_word(
+        enable_xyb=True,
+        enable_dct=False,
+        enable_quant=True,
+        enable_tokenize=False,
+        token_select=RGB_TOKEN_SELECT["aq-contrast"],
+    )
+    if rgb_active_route(flags=aq_flags, focused_route=None) != TRACE_STAGES["aq-contrast"]:
+        raise AssertionError("RGB host route selection missed the AQ contrast stage")
+
     with tempfile.TemporaryDirectory(prefix="hjxl-host-metadata-smoke-") as temp_name:
         temp = Path(temp_name)
         fixture_path = temp / "prepared-blocks.json"
@@ -1265,7 +1280,7 @@ def main() -> int:
             "#define HJXL_PREPARED_REG_IDENTITY_ACCESS_RO 1u",
             "#define HJXL_PREPARED_REG_BUILD_ID 0x0000003cu",
             "#define HJXL_PREPARED_DISCOVERY_IDENTITY 0x484a584cu",
-            "#define HJXL_PREPARED_DISCOVERY_ABI_VERSION 0x00010000u",
+            f"#define HJXL_PREPARED_DISCOVERY_ABI_VERSION 0x{DISCOVERY_ABI_VERSION:08x}u",
             "#define HJXL_PREPARED_DISCOVERY_BUILD_ID 0x20260712u",
             "#define HJXL_PREPARED_DISCOVERY_REQUIRED_CAPABILITIES 0x000003fau",
             "#define HJXL_PREPARED_DISCOVERY_ACTIVE_ROUTE 128u",

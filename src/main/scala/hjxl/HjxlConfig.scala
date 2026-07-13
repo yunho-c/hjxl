@@ -48,12 +48,14 @@ object TraceStage {
   val DcTokens = HjxlAbiGenerated.Trace.Stage.DcTokens
   val AcMetadataTokens = HjxlAbiGenerated.Trace.Stage.AcMetadataTokens
   val AcTokens = HjxlAbiGenerated.Trace.Stage.AcTokens
+  val AqContrast = HjxlAbiGenerated.Trace.Stage.AqContrast
 }
 
 object TokenTraceSelect {
   val Dc = HjxlAbiGenerated.TokenSelect.Dc
   val AcMetadata = HjxlAbiGenerated.TokenSelect.AcMetadata
   val AcTokens = HjxlAbiGenerated.TokenSelect.AcTokens
+  val AqContrast = HjxlAbiGenerated.TokenSelect.AqContrast
   val AcNonzero = AcTokens
 }
 

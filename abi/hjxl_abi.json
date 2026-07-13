@@ -52,18 +52,20 @@
       {"name": "num-nonzeros", "scala_name": "NumNonzeros", "value": 9},
       {"name": "dc-tokens", "scala_name": "DcTokens", "value": 10},
       {"name": "ac-metadata-tokens", "scala_name": "AcMetadataTokens", "value": 11},
-      {"name": "ac-tokens", "scala_name": "AcTokens", "value": 12}
+      {"name": "ac-tokens", "scala_name": "AcTokens", "value": 12},
+      {"name": "aq-contrast", "scala_name": "AqContrast", "value": 13}
     ]
   },
   "token_select": [
     {"name": "dc", "scala_name": "Dc", "value": 0},
     {"name": "ac-metadata", "scala_name": "AcMetadata", "value": 1},
-    {"name": "ac-tokens", "scala_name": "AcTokens", "value": 2}
+    {"name": "ac-tokens", "scala_name": "AcTokens", "value": 2},
+    {"name": "aq-contrast", "scala_name": "AqContrast", "value": 3}
   ],
   "discovery": {
     "identity": 1212831820,
     "abi_major": 1,
-    "abi_minor": 0,
+    "abi_minor": 1,
     "build_id": 539363090,
     "capability_bits": [
       {"name": "rgb_input", "scala_name": "RgbInput", "bit": 0},

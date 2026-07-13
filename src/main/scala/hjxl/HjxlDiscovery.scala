@@ -46,9 +46,13 @@ object HjxlDiscovery {
         enableQuant && enableTokenize && tokenSelect === TokenTraceSelect.AcMetadata.U
       val useQuantizedAc = enableDct && enableQuant && !useDcTokens && !useAcMetadata
       val useRawDct = enableDct && !useQuantizedAc && !useDcTokens && !useAcMetadata
-      val useAcStrategy = enableQuant && !enableTokenize && !enableDct
+      val useAqContrast =
+        enableXyb && enableQuant && !enableTokenize && !enableDct &&
+          tokenSelect === TokenTraceSelect.AqContrast.U
+      val useAcStrategy = enableQuant && !enableTokenize && !enableDct && !useAqContrast
       val useXyb =
-        enableXyb && !useRawDct && !useQuantizedAc && !useDcTokens && !useAcMetadata && !useAcStrategy
+        enableXyb && !useRawDct && !useQuantizedAc && !useDcTokens &&
+          !useAcMetadata && !useAcStrategy && !useAqContrast
 
       MuxCase(
         TraceStage.InputPadded.U,
@@ -57,6 +61,7 @@ object HjxlDiscovery {
           useAcMetadata -> TraceStage.AcMetadataTokens.U,
           useQuantizedAc -> TraceStage.QuantizedAc.U,
           useRawDct -> TraceStage.RawDct8x8.U,
+          useAqContrast -> TraceStage.AqContrast.U,
           useAcStrategy -> TraceStage.AcStrategy.U,
           useXyb -> TraceStage.Xyb.U
         )

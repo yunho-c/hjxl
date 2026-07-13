@@ -27,13 +27,18 @@ baseline.
 
 Current RTL status: the top-level buffers a small RGB frame and emits one of
 several trace streams: libjxl-tiny-compatible `input_padded`, padded
-channel-first XYB when `enableXyb` is set, raster 8x8-block raw scaled-DCT
+channel-first XYB when only `enableXyb` is set, raster 8x8-block raw scaled-DCT
 coefficients when `enableDct` is set, fixed-parameter DCT-only quantized block
 records when `enableDct && enableQuant` are set, DC residual tokens when
 `enableDct && enableQuant && enableTokenize && tokenSelect=Dc` are set, fixed
 AC-metadata tokens when `enableQuant && enableTokenize &&
 tokenSelect=AcMetadata` are set, or the current all-DCT AC strategy map when
-only `enableQuant` is set. A focused `traceRoute = TraceStage.RawQuantField`
+only `enableQuant` is set. When `enableXyb && enableQuant` are set without DCT
+or tokenization and `tokenSelect=AqContrast`, the RGB core emits the first
+image-dependent adaptive-quantization seam: global quarter-resolution
+`AqContrast` cells corresponding
+to libjxl-tiny's pre-erosion contrast grid. A focused
+`traceRoute = TraceStage.RawQuantField`
 core can also emit the current fixed raw-quant field, one adjusted raw-quant
 value per padded 8x8 block, so the quant-metadata trace shape exists before
 adaptive quantization hardware does. `AqMapToRawQuant` and
@@ -41,9 +46,12 @@ adaptive quantization hardware does. `AqMapToRawQuant` and
 quantization seam: the host supplies libjxl-tiny's image-dependent AQ map and
 inverse global AC scale as unsigned Q24 values, and RTL performs the exact
 nearest-integer conversion, `[1, 255]` clamp, raster trace ordering, and frame
-delimiter. The upstream contrast, erosion, HF, color, and gamma AQ heuristics
-remain software-only, and this standalone prepared stage is not yet connected
-to the RGB core or prepared-DCT token wrapper. Focused `TraceStage.YtoxMap` and
+delimiter. `FrameAqContrastTraceStage` now owns the upstream RGB-to-XYB/local-
+contrast pass, using a piecewise Q16 gamma-ratio approximation and integer
+square root before emitting one Q16 value per 4x4 padded-pixel cell. Fuzzy
+erosion and the HF, color, gamma, mask, and final AQ-map plumbing remain open;
+the prepared final-conversion seam is not yet connected downstream of this
+contrast grid. Focused `TraceStage.YtoxMap` and
 `TraceStage.YtobMap` routes emit the current fixed scalar CFL tile maps, one
 record per 64x64 tile. Later stages will replace the fixed quantization
 defaults with adaptive quantization/CFL metadata, entropy coding, and bitstream
@@ -254,6 +262,14 @@ Generate the current top-level SystemVerilog:
 sbt 'runMain hjxl.Elaborate'
 ```
 
+Generate the standalone RGB-input AQ contrast trace top and prepared final-AQ
+conversion top:
+
+```sh
+sbt 'runMain hjxl.ElaborateAqContrast'
+sbt 'runMain hjxl.ElaboratePreparedAqRawQuant'
+```
+
 Generate the standalone full AC-token trace top-level:
 
 ```sh
@@ -328,6 +344,7 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --input-padded-npy build-codex/fixtures/gradient-17x9-input-padded.npy \
   --xyb-npy build-codex/fixtures/gradient-17x9-xyb.npy \
   --xyb-q12-csv build-codex/fixtures/gradient-17x9-xyb-q12.csv \
+  --aq-contrast-q16-csv build-codex/fixtures/gradient-17x9-aq-contrast-q16.csv \
   --dct8x8-npy build-codex/fixtures/gradient-17x9-dct8x8.npy \
   --default-ac-strategy-npy build-codex/fixtures/gradient-17x9-ac-strategy.npy \
   --raw-quant-field-npy build-codex/fixtures/gradient-17x9-raw-qf.npy \
@@ -372,6 +389,17 @@ libjxl-tiny's signed Q12 XYB results. `RgbToXybApproxSpec` requires the RTL to
 stay within two Q12 units on gradient, checkerboard, and random fixtures. It
 also checks every normalization boundary and a deterministic 100,000-vector
 full signed-16/Q8 sweep against an independent formula with a five-unit bound.
+
+The `--aq-contrast-q16-csv` artifact records libjxl-tiny's global quarter-
+resolution pre-erosion contrast cells in Q16, both from its native float32 XYB
+and from XYB rounded to Q12. The exporter first checks its reconstructed native
+grid exactly against the `pre_erosion` array passed into libjxl-tiny's real
+fuzzy-erosion call. `AqContrastSpec` checks the gamma-table seams,
+integer square root, saturation, fixed-point pixel model, 4x4 traversal,
+frame-control lifetime, backpressure, and five RGB fixture families. The
+RGB-connected frame output stays within two percent of the native libjxl-tiny
+cell values; this is an intermediate AQ seam, not a final AQ-map or raw-quant
+parity claim.
 
 The `--dct-only-aq-map-q24-csv` artifact records each real all-DCT AQ-map
 sample, the frame-level inverse global AC scale, libjxl-tiny's raw-quant byte,
@@ -431,9 +459,9 @@ lookup entry. Output trace words are packed as
 `{value,index,group,stage}`, with
 `stage` in the low eight bits. Output `last` is asserted on the final trace
 word for each current route: padded input, XYB, raw DCT, quantized traces, DC
-tokens, AC-metadata tokens, AC strategy, and the variable-length full AC-token
-route all expose a scheduler `traceLast` sideband that the stream wrapper
-carries to TLAST.
+tokens, AC-metadata tokens, AC strategy, AQ contrast, and the variable-length
+full AC-token route all expose a scheduler `traceLast` sideband that the stream
+wrapper carries to TLAST.
 
 Convert a linear RGB PFM into an input stream CSV for `HjxlAxiStreamCore` or
 `HjxlAxiLiteStreamCore` simulation/DMA bring-up:
@@ -456,7 +484,9 @@ using padded-input route defaults unless route flags such as `--enable-xyb` or
 `--enable-dct` are supplied. `--trace-route` records the compile-time
 `HjxlCore(traceRoute = ...)` elaboration intent separately from those runtime
 flags; use focused names such as `raw-quant-field`, `ytox-map`, `ytob-map`, or
-`ac-tokens` when generating artifacts for a focused top. Prepared-DCT manifests
+`ac-tokens` when generating artifacts for a focused top. An AQ-contrast replay
+uses `--enable-xyb --enable-quant --token-select aq-contrast` and either the
+all-route shell or `--trace-route aq-contrast`. Prepared-DCT manifests
 record `prepared-dct-quantize-token` for the direct prepared stream boundary,
 with no `TraceStage` id. `--manifest-json`
 records the source PFM, image size, stream packing, generated file paths,
@@ -469,7 +499,8 @@ RTL's 8-bit raw quant field.
 stream CSV, through RTL padded-input trace emission, and back through
 `tools/hjxl_stream_trace.py`. It also covers focused raw-quant and CFL metadata
 trace captures feeding into `tools/hjxl_trace_tokens.py` metadata-grid outputs
-and `tools/hjxl_compare_tokens.py` fixed-oracle comparison.
+and `tools/hjxl_compare_tokens.py` fixed-oracle comparison. The selected AQ
+route has a packed stage/index/value and final-TLAST regression at this shell.
 `HjxlAxiLiteStreamCoreSpec` covers the same input stream after
 programming the DUT from the generated AXI-Lite CSV.
 
@@ -753,14 +784,14 @@ replay-capture input-stream, trace-layout, and AXI-Lite expectation guards.
 | `0x10` | `fixedPointScale` | explicit AC scale override, zero selects lookup |
 | `0x14` | `fixedInvQacQ16` | explicit reciprocal AC scale |
 | `0x18` | `fixedRawQuant` | raw-quant override, zero selects default |
-| `0x1c` | flags | bit 0 `enableXyb`, bit 1 `enableDct`, bit 2 `enableQuant`, bit 3 `enableTokenize`, bits 9:8 `tokenSelect` |
+| `0x1c` | flags | bit 0 `enableXyb`, bit 1 `enableDct`, bit 2 `enableQuant`, bit 3 `enableTokenize`, bits 9:8 `tokenSelect` (`Dc=0`, `AcMetadata=1`, `AcTokens=2`, `AqContrast=3`) |
 | `0x20` | `fixedYtox` | signed 8-bit scalar Y-to-X CFL override |
 | `0x24` | `fixedYtob` | signed 8-bit scalar Y-to-B CFL override |
 | `0x28` | identity | read-only ASCII `HJXL` magic (`0x484a584c`) |
-| `0x2c` | ABI version | read-only `major << 16 | minor`; currently 1.0 |
+| `0x2c` | ABI version | read-only `major << 16 | minor`; currently 1.1 |
 | `0x30` | capabilities | read-only target capability mask defined in `abi/hjxl_abi.json` |
 | `0x34` | maximum frame geometry | read-only maximum height in bits 31:16 and width in bits 15:0 |
-| `0x38` | active route | read-only trace stage 0–12, direct prepared route 128, or estimated-CFL prepared route 129 |
+| `0x38` | active route | read-only trace stage 0–13, direct prepared route 128, or estimated-CFL prepared route 129 |
 | `0x3c` | build ID | read-only contract build identifier; currently `0x20260712` |
 
 The AXI-Lite wrapper returns OKAY for mapped registers and DECERR for unmapped
@@ -1058,6 +1089,13 @@ It covers normalized cube-root scale transitions, signed-matrix ordering,
 high-dynamic-range inputs that exceeded the former LUT range, independent
 libjxl-tiny Q8-to-Q12 CSV fixtures, ready/valid flow control, and the broad
 signed input sweep described above.
+
+`AqContrastSpec` locks the next RGB-path boundary. It checks the Q12-to-Q16
+gamma-ratio interpolation and integer-square-root primitives, exact hardware
+agreement with the bit model, a broad smooth-neighborhood formula comparison,
+global 4x4 cell traversal, output stability under backpressure, first-beat
+frame snapshots, invalid geometry, five libjxl-tiny fixture families, and a
+65x1 cross-tile traversal that exercises the carry-safe 72-pixel padded width.
 
 `AdaptiveQuantizationSpec` checks the prepared AQ seam independently of the
 still-software image heuristics. It validates Q24 multiplication, nearest

@@ -172,7 +172,24 @@ Read these libjxl-tiny files before making architectural changes:
 - `FrameXybTraceStage` buffers and pads the frame, reuses `RgbToXybApprox`, and
   emits channel-first XYB trace samples. Its `traceLast` output marks the final
   padded B-channel sample. `HjxlCore` selects this stage when
-  `FrameConfig.enableXyb` is true.
+  `FrameConfig.enableXyb` is true without a downstream AQ/DCT route.
+- `AqGammaRatioQ16`, `UnsignedIntegerSquareRoot`, and `AqContrastPixel`
+  implement the first image-dependent AQ arithmetic seam. They consume Q12
+  X/Y neighborhoods and emit positive Q16 masking contributions. The gamma
+  approximation is piecewise around its steep near-zero region, and the
+  masking square root is an explicit bounded integer datapath rather than a
+  variable divider or floating-point operator.
+- `FrameAqContrastTraceStage` converts each accepted RGB pixel once, buffers
+  Q12 X/Y, and schedules one `AqContrastPixel` across global 4x4 cells of the
+  padded frame. It emits row-major `TraceStage.AqContrast` Q16 pre-erosion
+  values. `HjxlCore` selects it for `enableXyb && enableQuant` with
+  `tokenSelect = TokenTraceSelect.AqContrast` when DCT and tokenization are
+  disabled; the default token selector preserves the existing AC-strategy
+  route. It snapshots geometry on the first accepted beat;
+  later control changes apply to the next frame. The global grid deliberately
+  avoids duplicate 4-pixel tile halos. Fuzzy erosion, per-block HF/color/gamma
+  modulation, and connection to `FramePreparedAqRawQuantTraceStage` remain
+  separate work; do not describe this trace as final AQ-map or raw-quant parity.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive. It should be reused for
   the future 8x8 transform stage instead of writing a separate transform shape
   from scratch.
@@ -394,7 +411,9 @@ Read these libjxl-tiny files before making architectural changes:
   packed RTL output and feeds it to `tools/hjxl_stream_trace.py`; it also
   checks focused raw-quant/CFL metadata captures through
   `tools/hjxl_trace_tokens.py` metadata-grid extraction and
-  `tools/hjxl_compare_tokens.py` fixed-oracle comparison.
+  `tools/hjxl_compare_tokens.py` fixed-oracle comparison, plus packed
+  `AqContrast` stage/index/value fields and final TLAST for the selected AQ
+  route.
 - Use `sbt 'runMain hjxl.ElaborateAxiLiteStream'` for the default AXI-Lite
   controlled stream wrapper and
   `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
@@ -576,6 +595,13 @@ Read these libjxl-tiny files before making architectural changes:
   beside libjxl-tiny signed-Q12 XYB values. Keep the gradient, checkerboard, and
   random oracle cases in `RgbToXybApproxSpec` when changing matrix precision,
   clamping, normalization, or the cube-root table.
+- `tools/hjxl_reference.py --aq-contrast-q16-csv ...` exports the global
+  quarter-resolution pre-erosion contrast grid from native float32 XYB and XYB
+  rounded to Q12, and checks the reconstructed native grid exactly against the
+  array consumed by libjxl-tiny's real fuzzy-erosion call. Keep the constant,
+  gradient, checkerboard, impulse, and random cases plus the 65x1 cross-tile/
+  carry-width case in `AqContrastSpec`; the current RGB-connected bound is two
+  percent.
 - `tools/hjxl_reference.py` can export real libjxl-tiny quant metadata with
   `--raw-quant-field-npy`, `--libjxl-ac-strategy-npy`, `--ytox-map-npy`, and
   `--ytob-map-npy`. Use those artifacts as the oracle before implementing AQ,
@@ -997,11 +1023,13 @@ Read these libjxl-tiny files before making architectural changes:
   focused regression for the northwest tile-neighbor branch.
 - `HjxlCore` currently exposes padded-input, XYB, raw-DCT, fixed-parameter
   quantized-DCT, fixed-parameter DC-token, fixed AC-metadata-token, or default
-  AC-strategy trace streams. `FrameConfig.tokenSelect` chooses token substreams:
-  `Dc`, `AcMetadata`, or `AcTokens`; the full AC-token stream is available only
-  in the focused `traceRoute = TraceStage.AcTokens` core elaboration or through
-  `HjxlAcTokenCore`, while the AC nonzero-only stream remains a standalone
-  trace stage.
+  AC-strategy and AQ-contrast trace streams. `FrameConfig.tokenSelect` chooses
+  `Dc`, `AcMetadata`, or `AcTokens` for token routes; the reserved
+  `AqContrast` value selects the RGB contrast extension when XYB and
+  quantization are enabled without DCT/tokenization. The full AC-token stream
+  is available only in the focused `traceRoute = TraceStage.AcTokens` core
+  elaboration or through `HjxlAcTokenCore`, while the AC nonzero-only stream
+  remains a standalone trace stage.
   `HjxlCore(traceRoute = ...)` can restrict elaboration to one compile-time
   trace route while preserving the same public IO and runtime config contract
   for that route. Use this form in focused tests; compiling the all-route shell
@@ -1018,8 +1046,10 @@ Read these libjxl-tiny files before making architectural changes:
   DC-token frame trace; `enableDct && enableQuant` selects the quantized-DCT
   frame trace; `enableDct` alone selects raw DCT;
   `enableQuant && enableTokenize && tokenSelect=AcMetadata` selects AC metadata
-  tokens; `enableQuant` alone selects AC strategy metadata. Do not describe it
-  as an encoder yet; these are traceable pipeline slices.
+  tokens; `enableXyb && enableQuant && tokenSelect=AqContrast` without DCT or
+  tokenization selects the AQ contrast grid; `enableQuant` alone selects AC
+  strategy metadata. Do not describe it as an encoder yet; these are traceable
+  pipeline slices.
 
 ## Verification Commands
 

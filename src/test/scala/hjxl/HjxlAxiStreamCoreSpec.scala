@@ -412,6 +412,43 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
+  "HjxlAxiStreamCore packs the selected AQ contrast grid and final TLAST" in {
+    simulate(new HjxlAxiStreamCore(config, traceRoute = TraceStage.AqContrast)) { dut =>
+      pokeConfig(dut, width = 1, height = 1)
+      dut.io.config.enableXyb.poke(true.B)
+      dut.io.config.enableQuant.poke(true.B)
+      dut.io.config.tokenSelect.poke(TokenTraceSelect.AqContrast.U)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+
+      drivePixel(dut, rgb(10, 20, 30), last = true)
+      dut.io.input.valid.poke(false.B)
+      dut.io.protocolError.expect(false.B)
+
+      for (cell <- 0 until 4) {
+        var waitCycles = 0
+        while (dut.io.trace.valid.peekValue().asBigInt == 0 && waitCycles < 24) {
+          dut.clock.step()
+          waitCycles += 1
+        }
+        withClue(s"AQ contrast stream cell $cell") {
+          waitCycles must be < 24
+          val (stage, group, index, value) =
+            unpackTraceData(dut.io.trace.bits.data.peekValue().asBigInt)
+          stage must be(TraceStage.AqContrast)
+          group must be(0)
+          index must be(cell)
+          value must be >= 0
+          dut.io.trace.bits.last.expect((cell == 3).B)
+        }
+        dut.clock.step()
+      }
+      dut.io.trace.valid.expect(false.B)
+      dut.io.busy.expect(false.B)
+    }
+  }
+
   "HjxlAxiStreamCore metadata trace routes feed host metadata-grid extraction" in {
     requireNumpy()
 

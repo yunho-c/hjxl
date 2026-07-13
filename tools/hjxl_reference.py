@@ -150,6 +150,152 @@ def write_xyb_q12_csv(path: Path, image) -> None:
                 raster += 1
 
 
+def aq_contrast_pre_erosion_from_xyb(xyb):
+    """Return libjxl-tiny's global quarter-resolution pre-erosion grid."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.adaptive_quantization import (  # pylint: disable=import-outside-toplevel
+        _masking_sqrt,
+        _ratio_cubic_root_to_simple_gamma,
+    )
+
+    source = np.asarray(xyb, dtype=np.float32)
+    if source.ndim != 3 or source.shape[0] != 3:
+        raise ValueError("expected channel-first XYB image with shape (3, y, x)")
+    if source.shape[1] % 4 != 0 or source.shape[2] % 4 != 0:
+        raise ValueError("AQ contrast input dimensions must be multiples of four")
+
+    height = source.shape[1]
+    width = source.shape[2]
+    contributions = np.empty((height, width), dtype=np.float32)
+    match_gamma_offset = np.float32(0.019)
+    x_multiplier = np.float32(23.426802998210313)
+    for y in range(height):
+        up = y - 1 if y > 0 else y
+        down = y + 1 if y + 1 < height else y
+        for x in range(width):
+            left = x - 1 if x > 0 else x
+            right = x + 1 if x + 1 < width else x
+            base_y = np.float32(
+                np.float32(0.25)
+                * np.float32(
+                    source[1, down, x]
+                    + source[1, up, x]
+                    + source[1, y, left]
+                    + source[1, y, right]
+                )
+            )
+            gamma = _ratio_cubic_root_to_simple_gamma(
+                np.float32(source[1, y, x] + match_gamma_offset)
+            )
+            difference_y = np.float32(
+                gamma * np.float32(source[1, y, x] - base_y)
+            )
+            difference_y = np.float32(difference_y * difference_y)
+            base_x = np.float32(
+                np.float32(0.25)
+                * np.float32(
+                    source[0, down, x]
+                    + source[0, up, x]
+                    + source[0, y, left]
+                    + source[0, y, right]
+                )
+            )
+            difference_x = np.float32(
+                gamma * np.float32(source[0, y, x] - base_x)
+            )
+            difference_x = np.float32(difference_x * difference_x)
+            difference = np.float32(difference_y + np.float32(x_multiplier * difference_x))
+            contributions[y, x] = _masking_sqrt(difference)
+
+    cells = np.empty((height // 4, width // 4), dtype=np.float32)
+    for cell_y in range(height // 4):
+        for cell_x in range(width // 4):
+            columns = []
+            for local_x in range(4):
+                column = np.float32(contributions[cell_y * 4, cell_x * 4 + local_x])
+                for local_y in range(1, 4):
+                    column = np.float32(
+                        column
+                        + contributions[cell_y * 4 + local_y, cell_x * 4 + local_x]
+                    )
+                columns.append(column)
+            total = np.float32(columns[0] + columns[1] + columns[2] + columns[3])
+            cells[cell_y, cell_x] = np.float32(np.float32(0.25) * total)
+    return cells
+
+
+def write_aq_contrast_q16_csv(path: Path, image) -> None:
+    """Write the first image-dependent AQ contrast seam in signed Q16."""
+    np = _load_numpy()
+    xyb = xyb_from_python_port(image)
+    reference = aq_contrast_pre_erosion_from_xyb(xyb)
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny import adaptive_quantization  # pylint: disable=import-outside-toplevel
+
+    captured_pre_erosion = None
+    original_fuzzy_erosion = adaptive_quantization._fuzzy_erosion
+
+    def capture_fuzzy_erosion(pre_erosion, *args, **kwargs):
+        nonlocal captured_pre_erosion
+        captured_pre_erosion = np.array(pre_erosion, dtype=np.float32, copy=True)
+        return original_fuzzy_erosion(pre_erosion, *args, **kwargs)
+
+    adaptive_quantization._fuzzy_erosion = capture_fuzzy_erosion
+    try:
+        adaptive_quantization.compute_adaptive_quantization(xyb, distance=1.0)
+    finally:
+        adaptive_quantization._fuzzy_erosion = original_fuzzy_erosion
+    if captured_pre_erosion is None or not np.array_equal(reference, captured_pre_erosion):
+        raise RuntimeError(
+            "AQ contrast reconstruction does not match libjxl-tiny pre_erosion input"
+        )
+
+    quantized_xyb = (
+        np.rint(np.asarray(xyb, dtype=np.float64) * (1 << 12)).astype(np.float32)
+        / np.float32(1 << 12)
+    )
+    quantized_reference = aq_contrast_pre_erosion_from_xyb(quantized_xyb)
+    reference_q16 = np.rint(reference.astype(np.float64) * (1 << 16)).astype(np.int64)
+    quantized_reference_q16 = np.rint(
+        quantized_reference.astype(np.float64) * (1 << 16)
+    ).astype(np.int64)
+    if np.any(reference_q16 < 0) or np.any(reference_q16 > np.iinfo(np.int32).max):
+        raise ValueError("AQ contrast Q16 fixture does not fit signed 32-bit")
+    if np.any(quantized_reference_q16 < 0) or np.any(
+        quantized_reference_q16 > np.iinfo(np.int32).max
+    ):
+        raise ValueError("quantized-XYB AQ contrast Q16 fixture does not fit signed 32-bit")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "cell",
+                "cell_x",
+                "cell_y",
+                "pre_erosion_q16",
+                "quantized_xyb_pre_erosion_q16",
+            )
+        )
+        cell = 0
+        for cell_y in range(reference_q16.shape[0]):
+            for cell_x in range(reference_q16.shape[1]):
+                writer.writerow(
+                    (
+                        cell,
+                        cell_x,
+                        cell_y,
+                        int(reference_q16[cell_y, cell_x]),
+                        int(quantized_reference_q16[cell_y, cell_x]),
+                    )
+                )
+                cell += 1
+
+
 def dct8x8_from_python_port(image):
     np = _load_numpy()
     root = _libjxl_tiny_root()
@@ -939,6 +1085,11 @@ def main() -> int:
         help="optional signed-Q8 RGB to signed-Q12 XYB fixed-point fixture",
     )
     parser.add_argument(
+        "--aq-contrast-q16-csv",
+        type=Path,
+        help="optional quarter-resolution AQ pre-erosion Q16 fixture",
+    )
+    parser.add_argument(
         "--dct8x8-npy",
         type=Path,
         help="optional libjxl-tiny raster 8x8 XYB DCT blocks NumPy output path",
@@ -1240,6 +1391,8 @@ def main() -> int:
         np.save(args.xyb_npy, xyb_from_python_port(image))
     if args.xyb_q12_csv is not None:
         write_xyb_q12_csv(args.xyb_q12_csv, image)
+    if args.aq_contrast_q16_csv is not None:
+        write_aq_contrast_q16_csv(args.aq_contrast_q16_csv, image)
     if args.dct8x8_npy is not None:
         np = _load_numpy()
         args.dct8x8_npy.parent.mkdir(parents=True, exist_ok=True)

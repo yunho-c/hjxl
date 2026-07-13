@@ -48,6 +48,12 @@ class HjxlDiscoverySpec extends AnyFreeSpec with Matchers with ChiselSim {
     simulate(new HjxlRouteDiscoveryHarness) { dut =>
       expectRoute(dut, RouteConfig(), TraceStage.InputPadded)
       expectRoute(dut, RouteConfig(xyb = true), TraceStage.Xyb)
+      expectRoute(dut, RouteConfig(xyb = true, quant = true), TraceStage.AcStrategy)
+      expectRoute(
+        dut,
+        RouteConfig(xyb = true, quant = true, tokenSelect = TokenTraceSelect.AqContrast),
+        TraceStage.AqContrast
+      )
       expectRoute(dut, RouteConfig(dct = true), TraceStage.RawDct8x8)
       expectRoute(dut, RouteConfig(dct = true, quant = true), TraceStage.QuantizedAc)
       expectRoute(

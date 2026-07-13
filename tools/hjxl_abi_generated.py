@@ -105,6 +105,7 @@ TRACE_STAGES = {
     "dc-tokens": 10,
     "ac-metadata-tokens": 11,
     "ac-tokens": 12,
+    "aq-contrast": 13,
 }
 TRACE_STAGES_BY_SCALA_NAME = {
     "InputPadded": 0,
@@ -120,6 +121,7 @@ TRACE_STAGES_BY_SCALA_NAME = {
     "DcTokens": 10,
     "AcMetadataTokens": 11,
     "AcTokens": 12,
+    "AqContrast": 13,
 }
 TRACE_STAGE_INPUTPADDED = 0
 TRACE_STAGE_XYB = 1
@@ -134,15 +136,17 @@ TRACE_STAGE_NUMNONZEROS = 9
 TRACE_STAGE_DCTOKENS = 10
 TRACE_STAGE_ACMETADATATOKENS = 11
 TRACE_STAGE_ACTOKENS = 12
+TRACE_STAGE_AQCONTRAST = 13
 TOKEN_SELECT = {
     "dc": 0,
     "ac-metadata": 1,
     "ac-tokens": 2,
+    "aq-contrast": 3,
 }
 DISCOVERY_IDENTITY = 1212831820
 DISCOVERY_ABI_MAJOR = 1
-DISCOVERY_ABI_MINOR = 0
-DISCOVERY_ABI_VERSION = 65536
+DISCOVERY_ABI_MINOR = 1
+DISCOVERY_ABI_VERSION = 65537
 DISCOVERY_BUILD_ID = 539363090
 CAPABILITY_BITS = {
     "rgb_input": 0,

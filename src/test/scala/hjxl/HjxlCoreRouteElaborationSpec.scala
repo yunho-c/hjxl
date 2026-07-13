@@ -64,7 +64,21 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must include("io_traceLast")
     text must include("io_busy")
     text must include("io_overflow")
+    text must include("module FrameAqContrastTraceStage")
     text must not include "module FrameDctOnlyAcTokenTraceStage"
+  }
+
+  "HjxlCore focused AQ-contrast route elaborates only the image contrast scheduler" in {
+    val files = emittedSystemVerilog(TraceStage.AqContrast)
+    val text = combinedText(files)
+    text must include("module HjxlCore")
+    text must include("module FrameAqContrastTraceStage")
+    text must include("module AqContrastPixel")
+    text must include("module UnsignedIntegerSquareRoot")
+    text must include("io_trace_bits_stage")
+    text must include("io_traceLast")
+    text must not include "module FrameDct8x8TraceStage"
+    text must not include "module FrameRawQuantFieldTraceStage"
   }
 
   "HjxlCore focused raw-quant route elaborates the raw quant-field scheduler" in {

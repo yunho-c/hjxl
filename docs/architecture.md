@@ -32,9 +32,10 @@ Internal Chisel modules should use `Decoupled` streams. The first public-facing
 contract is intentionally simple:
 
 - `FrameConfig` carries image size, distance, fixed-point scale, and feature
-  flags. `tokenSelect` chooses which logical token substream a token trace
-  emits at the top level: `Dc`, `AcMetadata`, or `AcTokens`. The full AC-token
-  route is only instantiated when the core is elaborated with
+  flags. `tokenSelect` chooses `Dc`, `AcMetadata`, or `AcTokens` for token
+  traces; the reserved value `AqContrast` selects the RGB contrast extension
+  when XYB and quantization are enabled without DCT/tokenization. The full
+  AC-token route is only instantiated when the core is elaborated with
   `traceRoute = TraceStage.AcTokens`.
 - `RgbPixel` carries fixed-point linear RGB samples and image coordinates.
 - `StageTrace` carries a stage id, group id, element index, and value.
@@ -89,7 +90,10 @@ owned by the host tools for now.
   `FrameDctOnlyQuantizeTraceStage`; when `enableTokenize` is also true, it
   uses `tokenSelect` to route into `FrameDctOnlyDcTokenTraceStage`,
   or `FrameDctOnlyAcMetadataTokenTraceStage`. When only `enableQuant` is true,
-  it routes into `FrameAcStrategyTraceStage`.
+  it routes into `FrameAcStrategyTraceStage`. When XYB and quantization are
+  enabled without DCT/tokenization, `tokenSelect=AqContrast` instead routes the
+  global pre-erosion contrast grid; the default selector still routes AC
+  strategy.
   The optional compile-time `traceRoute` constructor argument restricts
   elaboration to one route for focused simulation while keeping the same public
   IO shape. Use it for tests and route-specific experiments; the default
@@ -108,6 +112,27 @@ owned by the host tools for now.
   fixed-point oracle: three fixture families stay within two Q12 units, and a
   deterministic 100,000-vector full signed-16/Q8 model sweep is bounded to five
   units. `--xyb-npy ...` remains the floating-point array export.
+- `AqGammaRatioQ16`, `UnsignedIntegerSquareRoot`, and `AqContrastPixel` form
+  the first image-dependent adaptive-quantization arithmetic boundary. The
+  gamma ratio uses exact Q12 entries through the steep near-zero region,
+  interpolates a coarser table through 1.0, and uses a bounded linear HDR tail;
+  the masking expression uses fixed-point squares plus a 74-bit integer square
+  root. `FrameAqContrastTraceStage` converts incoming RGB once, stores Q12 X/Y,
+  and schedules one shared contrast datapath across global 4x4 padded-pixel
+  cells. It emits positive Q16 `AqContrast` rows with raster cell ordinal in
+  `trace.index`. The all-route RGB core selects this extension only when
+  `enableXyb && enableQuant`, `tokenSelect=AqContrast`, and DCT/tokenization are
+  disabled, preserving the previous default-selector AC-strategy route.
+  Keeping a global grid avoids duplicating 4-pixel tile halos;
+  the future fuzzy-erosion scheduler will address neighboring cells per tile.
+  `tools/hjxl_reference.py --aq-contrast-q16-csv ...` exports the matching
+  native-float and Q12-input libjxl-tiny oracle values; the exporter checks its
+  native reconstruction exactly against the `pre_erosion` array consumed by
+  the full reference AQ function. Five RGB fixture families are bounded to two
+  percent at this seam, and a 65x1 regression
+  proves that the global cell grid and carry-safe 72-pixel padding cross a
+  64-pixel tile boundary correctly. This is not yet the eroded,
+  per-block-modulated AQ map.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny's
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`; unsupported values currently
@@ -545,7 +570,8 @@ wrappers.
   so the Chisel packing and host decoder stay aligned. It also verifies focused
   raw-quant/CFL metadata route captures through direct
   `tools/hjxl_trace_tokens.py` metadata-grid extraction and
-  `tools/hjxl_compare_tokens.py` fixed-oracle comparison. Full AC-token TLAST
+  `tools/hjxl_compare_tokens.py` fixed-oracle comparison, and checks packed
+  `AqContrast` stage/index/value fields with final TLAST. Full AC-token TLAST
   alignment is covered at the token-stage and frame-scheduler levels because
   the focused AXI AC-token simulation is expensive.
 - `HjxlAxiStreamElaborationSpec` guards the generated stream-shell port surface

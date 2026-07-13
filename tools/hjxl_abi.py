@@ -38,8 +38,17 @@ def rgb_active_route(*, flags: int, focused_route: int | None) -> int:
     use_metadata = enable_quant and enable_tokenize and token_select == TOKEN_SELECT["ac-metadata"]
     use_quant = enable_dct and enable_quant and not use_dc and not use_metadata
     use_dct = enable_dct and not use_quant and not use_dc and not use_metadata
-    use_strategy = enable_quant and not enable_tokenize and not enable_dct
-    use_xyb = enable_xyb and not any((use_dct, use_quant, use_dc, use_metadata, use_strategy))
+    use_aq_contrast = (
+        enable_xyb
+        and enable_quant
+        and not enable_tokenize
+        and not enable_dct
+        and token_select == TOKEN_SELECT["aq-contrast"]
+    )
+    use_strategy = enable_quant and not enable_tokenize and not enable_dct and not use_aq_contrast
+    use_xyb = enable_xyb and not any(
+        (use_dct, use_quant, use_dc, use_metadata, use_aq_contrast, use_strategy)
+    )
     if use_dc:
         return TRACE_STAGES["dc-tokens"]
     if use_metadata:
@@ -48,6 +57,8 @@ def rgb_active_route(*, flags: int, focused_route: int | None) -> int:
         return TRACE_STAGES["quantized-ac"]
     if use_dct:
         return TRACE_STAGES["raw-dct8x8"]
+    if use_aq_contrast:
+        return TRACE_STAGES["aq-contrast"]
     if use_strategy:
         return TRACE_STAGES["ac-strategy"]
     if use_xyb:

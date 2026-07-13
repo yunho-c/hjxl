@@ -139,6 +139,34 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
+  "HjxlCore routes XYB plus quantization to the AQ contrast grid" in {
+    simulate(new HjxlCore(config, traceRoute = TraceStage.AqContrast)) { dut =>
+      pokeConfig(
+        dut,
+        enableXyb = true,
+        enableQuant = true,
+        tokenSelect = TokenTraceSelect.AqContrast
+      )
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      driveOnePixel(dut)
+      dut.io.trace.ready.poke(true.B)
+      for (cell <- 0 until 4) {
+        waitForTraceValid(dut)
+        dut.io.trace.bits.stage.expect(TraceStage.AqContrast.U)
+        dut.io.trace.bits.group.expect(0.U)
+        dut.io.trace.bits.index.expect(cell.U)
+        dut.io.traceLast.expect((cell == 3).B)
+        dut.clock.step()
+      }
+      dut.io.trace.valid.expect(false.B)
+      dut.io.busy.expect(false.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
   "HjxlCore routes to AC strategy trace when quantization metadata is enabled" in {
     simulate(new HjxlCore(config, traceRoute = TraceStage.AcStrategy)) { dut =>
       pokeConfig(dut, enableXyb = true, enableQuant = true)

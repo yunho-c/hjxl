@@ -124,6 +124,18 @@ object ElaboratePreparedAqRawQuant extends App {
   )
 }
 
+object ElaborateAqContrast extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqContrastTraceStage(),
+    args = Array("--target-dir", "generated-aq-contrast"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaboratePreparedDctOnlyQuantizeTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedDctOnlyQuantizeTokenTraceStage(),

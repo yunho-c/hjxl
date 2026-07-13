@@ -21,16 +21,18 @@ for observability and simulation, not for a useful KV260 implementation. Most
 frame schedulers buffer complete bounded frames or coefficient planes in
 `Reg(Vec(...))`; several arithmetic paths contain wide combinational products
 or division; the default frame bound is only 32x32; and there are no synthesis,
-utilization, timing, clock-rate, throughput, power, Vivado-project, bitstream,
-or board-run results. The RGB path uses approximate XYB and fixed all-8x8-DCT
+utilization, timing, clock-rate, throughput, power, bitstream, or board-run
+results. The RGB path uses approximate XYB and fixed all-8x8-DCT
 behavior. A standalone prepared-AQ boundary exactly converts real libjxl-tiny
-AQ maps from Q24 into raw-quant traces, but the image-dependent AQ-map
-heuristics and integration remain software-only. Entropy coding and bitstream
+AQ maps from Q24 into raw-quant traces, and the RGB core now implements the
+first image-dependent quarter-resolution contrast/pre-erosion grid. Fuzzy
+erosion, the remaining mask/HF/color/gamma modulations, and their connection to
+the prepared final-conversion boundary remain open. Entropy coding and bitstream
 assembly also remain software-only, and the most parity-ready hardware
 interface starts after the host has already computed prepared DCT blocks.
 
-The current working tree also needs to be treated as an engineering risk in its
-own right. At the start of this review, before this report was added, it
+At the start of this review, the working tree was an engineering risk in its
+own right. Before this report was added, it
 contained 64 modified and 22 untracked paths, with roughly 10,500 inserted and
 1,500 deleted lines relative to `main`. Much of the most advanced estimated-CFL
 work exists only in that uncommitted state. Local validation is valuable, but a
@@ -52,7 +54,7 @@ validated commits `bbee6a1` (fixed quantization metadata routes), `fec2527`
 | Documentation content | **Comprehensive and candid, but overgrown and repetitive** |
 | Completeness versus the stated `libjxl-tiny` target | **Partial** |
 | FPGA implementation readiness | **Early** |
-| Release/reproducibility readiness of this snapshot | **Weak because of the large uncommitted delta** |
+| Release/reproducibility readiness | **Moderate: committed validation and generated contracts, but no releases or physical artifacts** |
 
 As an indicative score, the project is about **6.5/10 overall today**: closer
 to 8/10 as a correctness-oriented RTL exploration environment, but closer to
@@ -61,8 +63,9 @@ separate code quality from product completeness.
 
 ## Scope and method
 
-This assessment covers the current checkout, including its uncommitted files,
-not only commit `06f6886` on `main`. The review included:
+The original 2026-07-12 assessment covered the complete working checkout, not
+only the then-current `main`. Dated follow-ups in this document record the
+validated changes committed since that snapshot. The review included:
 
 - the complete repository inventory, Git history, worktree state, build files,
   CI workflow, ignore rules, README, architecture document, and agent guide;
@@ -82,10 +85,10 @@ Snapshot size is approximately:
 
 | Area | Files | Lines |
 | --- | ---: | ---: |
-| Main HJXL Scala/Chisel | 44 | 7,527 |
-| Scala tests | 52 | 17,314 |
-| Python host/oracle tools | 14 | 9,675 |
-| `README.md` + `docs/architecture.md` + `AGENTS.md` | 3 | 2,958 |
+| Main HJXL Scala/Chisel | 48 | 8,766 |
+| Scala tests | 57 | 19,092 |
+| Python host/oracle tools | 18 | 10,960 |
+| `README.md` + `docs/architecture.md` + `AGENTS.md` | 3 | 3,319 |
 
 The test-to-RTL ratio is a strength, but these counts also reveal where
 complexity has moved: host tooling and test harnesses are now materially larger
@@ -150,26 +153,26 @@ than the RTL implementation.
    are unknown. They should not be assumed to meet KV260 timing merely because
    Verilator accepts them.
 
-4. **Control-plane selection is too implicit.** `HjxlCore` combines compile-time
-   `traceRoute` selection with a priority tree derived from runtime feature
-   flags. Some metadata routes are intentionally meaningful only in focused
-   elaborations. This works, but it is difficult to reason about and easy for a
-   host to misconfigure. A single explicit runtime route enum, plus a capability
-   register describing the elaborated route, would be clearer.
+4. **Control-plane selection remains overloaded.** `HjxlCore` combines compile-
+   time `traceRoute` selection with a priority tree derived from runtime feature
+   flags. Discovery now reports the frame-stable active route, and the new AQ
+   extension uses an explicit previously reserved selector so older flag words
+   retain their behavior. Even so, a single explicit runtime route enum would
+   be clearer than interpreting feature flags as both pipeline controls and
+   route selection.
 
-5. **Configuration lifetime is not enforced.** AXI-Lite registers remain
-   writable while a frame is busy, while top-level route selection and some
-   stage inputs are driven from live configuration. Several inner schedulers
-   latch relevant values, but the public contract does not consistently reject,
-   defer, or snapshot mid-frame writes. The host is implicitly expected to
-   configure only while idle. That rule should be enforced in RTL or made an
-   explicit protocol error.
+5. **Configuration lifetime is now transactional but implicit.** Stream shells
+   snapshot the complete configuration on the first accepted frame beat, keep
+   it stable through the final accepted trace, and treat AXI-Lite writes while
+   busy as next-frame shadow values. This closes the former mid-frame drift
+   risk. An explicit start/commit command may still be preferable once a DMA
+   driver needs deterministic coordination across control and stream channels.
 
-6. **There is not yet a versioned hardware discovery contract.** Host manifests
-   have format strings and extensive metadata, but the hardware register map
-   exposes no ABI version, build ID, feature bitmap, maximum dimensions, or
-   stream-layout version. Those become important as direct and estimated-CFL
-   variants diverge while retaining a compatible 201-word input shape.
+6. **A versioned discovery contract now exists, but compatibility policy is
+   still informal.** Read-only registers expose ABI version, build ID,
+   capabilities, maximum dimensions, and frame-stable active route, with Scala
+   and Python constants generated from `abi/hjxl_abi.json`. The repository still
+   needs a concise public compatibility policy and generated ABI reference.
 
 ## RTL implementation quality
 
@@ -197,7 +200,7 @@ than the RTL implementation.
 
 ### Weaknesses and risks
 
-- The package is flat: 44 HJXL source files and 52 test files all live in one
+- The package is flat: 48 HJXL source files and 57 test files all live in one
   namespace/directory. The naming remains navigable today, but the many
   `FrameDctOnly*`, `FramePrepared*`, `FramePreparedCfl*`, stream, controlled-
   stream, and KV260 variants are beginning to form a combinatorial wrapper
@@ -207,8 +210,8 @@ than the RTL implementation.
   extraction of `CflTileGeometry` is a good example of the refactoring pattern
   that should continue for frame geometry, capacity checking, config latching,
   trace emission, and prepared-block storage.
-- `HjxlCore` is almost 300 lines largely because every route repeats wiring and
-  mux participation. `Elaborate.scala` is another near-mechanical 293-line
+- `HjxlCore` is more than 300 lines largely because every route repeats wiring
+  and mux participation. `Elaborate.scala` is another near-mechanical 317-line
   matrix. These are maintainable only while every new route is changed in all
   required places.
 - There are no in-RTL assertions in the main sources for protocol invariants;
@@ -229,7 +232,7 @@ Verification is the project’s strongest quality dimension.
 
 ### Strong evidence
 
-- The current tree has roughly 17.3k lines of Scala tests for 7.5k lines of
+- The current tree has roughly 19.1k lines of Scala tests for 8.8k lines of
   RTL, plus extensive validation inside the Python tools.
 - Tests span small arithmetic primitives, frame traversal, exact 72-pixel
   capacity boundaries, two-dimensional 72x72 CFL tile ordering, route
@@ -271,7 +274,7 @@ Verification is the project’s strongest quality dimension.
   build-definition consistency check but expensive. A shared fast gate plus a
   scheduled second-build/full-oracle job would likely give better feedback
   latency. On this machine, the single `sbt test` run for this assessment took
-  21 minutes 17 seconds, with many separate Verilator models built by the
+  9 minutes 22 seconds, with many separate Verilator models built by the
   simulator-backed suites.
 - No Vivado simulation, synthesis, implementation, timing, or board test exists.
   Generated-port checks prove interface shape, not AXI protocol certification
@@ -289,7 +292,7 @@ Python/NumPy coercion bugs.
 
 The maintainability picture is less strong:
 
-- Python tooling is about 9.7k lines with no `pyproject.toml`, package layout,
+- Python tooling is about 11.0k lines with no `pyproject.toml`, package layout,
   dependency lock, formatter, linter configuration, type checker, or Python
   test runner. Tests are largely driven indirectly from Scala subprocesses.
 - `hjxl_replay_capture.py` and `hjxl_host_metadata_smoke.py` are each roughly
@@ -314,8 +317,8 @@ versions and CI prerequisites are easy to find.
 
 The information architecture is poor, however:
 
-- The README is 1,007 lines, the architecture document 963 lines, and the agent
-  guide 988 lines. All three repeat long inventories of nearly every module,
+- The README is 1,170 lines, the architecture document 1,070 lines, and the agent
+  guide 1,079 lines. All three repeat long inventories of nearly every module,
   elaborator, tool, format, and regression.
 - The README has only a handful of top-level sections, so it functions as a
   changelog/reference dump rather than an onboarding document.
@@ -359,8 +362,9 @@ Recommended documentation split:
   summary have since resolved this immediate issue.
 - The history contains 23 commits from July 3–4, 2026, then a very large
   uncommitted development wave. The project has no tags or releases.
-- CI has no formatter, lint, warnings-as-errors, coverage, generated-contract
-  drift gate, synthesis smoke, or artifact publication.
+- CI has no formatter, lint, warnings-as-errors, coverage, synthesis smoke, or
+  artifact publication. Generated ABI drift is checked, which is an important
+  exception.
 - GitHub Actions are version-tag pinned rather than commit-SHA pinned. That is
   common, but weaker supply-chain reproducibility.
 - The broad template-derived `.gitignore` works but contains substantial
@@ -378,7 +382,7 @@ Recommended documentation split:
 | Frame padding | Implemented | Exact small-frame and edge-padding tests | Scalable storage architecture |
 | RGB to XYB | Range-normalized Q8 to Q12 approximation with signed Q26 matrix and Q24 absorbance | Exact normalization-boundary/model tests, three libjxl-tiny fixture families within two Q12 units, 100k full signed-range sweep within five, and frame/downstream regressions | Synthesis feasibility, broader real-image evidence, and end-to-end parity |
 | 8x8 DCT | Approximate fixed-point implementation | Primitive and frame tests | Timing/resource architecture and rectangular transforms |
-| Adaptive quantization | Final prepared Q24 AQ-map to raw-quant conversion implemented; image heuristics remain software-only | Exact multi-pattern/distance oracle, clamp, ordering, backpressure, control-lifetime, and elaboration tests | Contrast/erosion/HF/color/gamma pipeline, RGB integration, and downstream map plumbing |
+| Adaptive quantization | RGB-connected quarter-resolution contrast/pre-erosion grid and final prepared Q24 AQ-map-to-raw-quant conversion implemented | Gamma/sqrt/model boundaries, five RGB oracle families within two percent, 65x1 cross-tile/carry-safe traversal, backpressure/control and packed-AXI/TLAST tests, plus exact prepared final-conversion parity | Fuzzy erosion, mask/HF/color/gamma modulations, per-block AQ-map assembly, and downstream map plumbing; synthesis feasibility of the current combinational square root and register-backed neighborhood reads is unproven |
 | Chroma from luma | Implemented substantially for **prepared DCT** estimated-CFL paths | Primitive, multi-tile, quantization, metadata, stream, and wrapper tests | RGB-path integration, physical implementation quality, broader fixtures |
 | AC strategy | Fixed ordinary 8x8 DCT only | Exact map shape/order tests | 16x8/8x16 search, first-block semantics across strategies, scheduling |
 | Distance parameters | Six Q8 lookup points plus explicit fallback | Exact RTL/host lockstep tests | General supported range or a clearly frozen discrete API |
@@ -387,7 +391,7 @@ Recommended documentation split:
 | Entropy optimization/coding | Host-only through `libjxl-tiny` | Byte-parity assembly tests | Native host library or RTL implementation, depending final partition |
 | JXL frame/codestream assembly | Host-only | Exact bytes for constrained fixtures | Standalone production integration and broader decoder validation |
 | AXI-stream/AXI-Lite shells | Implemented and simulated with transactional config and discovery registers | Port, handshake, register, framing, error, discovery-readback, and mid-frame shadow-write tests | AXI protocol checker and physical integration |
-| KV260 top-level shape | Generated and simulated as a flat wrapper | SystemVerilog surface and functional wrapper tests | Vivado project/Tcl/XDC, PS/DMA integration, clock/reset proof |
+| KV260 top-level shape | Generated and simulated as a flat wrapper | SystemVerilog surface, functional wrapper tests, and non-Vivado source/constraint preflight | Vivado synthesis/implementation, PS/DMA integration, and clock/reset proof |
 | Synthesis/timing/utilization | Not demonstrated | None | Synthesis, reports, timing closure, resource budget |
 | Bitstream and board execution | Not demonstrated | None | XSA/bitstream, driver, DMA capture, decoded-image validation |
 | Performance/power | Direct prepared path characterized in simulation for sparse and maximum-density multi-tile frames | Exact phase/stall/stage-count cycle regression and 200 MHz projections | Synthesized clock, DMA overlap, end-to-end fps, and power |
@@ -504,7 +508,13 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
     **XYB follow-up 2026-07-13:** signed mixing now clamps after bias like the
     reference, Q24 absorbance plus normalized cube-root interpolation removes
     the former range saturation, and independent fixtures lock the Q12 error
-    bound. AQ contrast-map integration remains the next earliest mismatch.
+    bound.
+    **AQ contrast follow-up 2026-07-13:** the RGB core now computes the global
+    quarter-resolution Q16 pre-erosion contrast grid with a shared fixed-point
+    datapath, and five libjxl-tiny fixture families bound the cell error to two
+    percent. An explicit selector preserves the prior default-selector route,
+    and a 65x1 regression crosses the 64-pixel tile boundary at a carry-safe
+    72-pixel padded width. Fuzzy erosion is now the next earliest mismatch.
 13. **Expand oracle diversity.** Add several deterministic patterns, signed and
     near-saturation values, supported distances, non-block/tile-aligned sizes,
     multi-tile 2D images, and at least a few small real-image crops. Validate
@@ -531,11 +541,16 @@ The following local checks were run against the current working tree:
 - `python3 -m py_compile tools/*.py` — passed.
 - `python3 tools/hjxl_generate_abi.py --check` — passed.
 - `python3 tools/hjxl_host_metadata_smoke.py` — passed.
-- `sbt test` — passed: 56 suites completed, 202 tests succeeded, 0
-  failed/canceled/ignored/pending, in 7 minutes 53 seconds.
+- `sbt test` — passed: 57 suites completed, 210 tests succeeded, 0
+  failed/canceled/ignored/pending, in 9 minutes 22 seconds.
+- After adding the exact oracle-reconstruction guard, focused
+  `sbt 'testOnly hjxl.AqContrastSpec'` — passed: 5 tests succeeded.
 - `HJXL_REPO_ROOT=$PWD ./mill hjxl.compile` and focused Mill execution of the
-  seven changed RGB-to-XYB/downstream suites — passed: 23 tests succeeded,
-  confirming the new source and tests through the second build definition.
+  five changed AQ/core/stream suites — passed: 34 tests succeeded, confirming
+  the new source and tests through the second build definition.
+- `sbt 'runMain hjxl.ElaborateAqContrast'` — passed and emitted six
+  SystemVerilog files totaling 11,427 lines. This proves elaboration only; it
+  does not establish timing or resource feasibility.
 - `sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'` followed by
   `tclsh fpga/vivado/synth.tcl --preflight-only` — passed with the expected 19
   generated RTL files. This is a source/constraint preflight, not synthesis.
