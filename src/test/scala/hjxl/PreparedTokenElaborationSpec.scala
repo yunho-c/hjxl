@@ -17,7 +17,7 @@ class PreparedTokenElaborationSpec extends AnyFreeSpec with Matchers {
     "-default-layer-specialization=enable"
   )
 
-  private def emittedSystemVerilog(moduleName: String, generator: => chisel3.RawModule): String = {
+  private def emittedSystemVerilogFiles(generator: => chisel3.RawModule): Map[String, String] = {
     val targetDir = Files.createTempDirectory("hjxl-prepared-token-elaborate-")
     ChiselStage.emitSystemVerilogFile(
       generator,
@@ -31,11 +31,15 @@ class PreparedTokenElaborationSpec extends AnyFreeSpec with Matchers {
         .asScala
         .filter(path => Files.isRegularFile(path) && path.getFileName.toString.endsWith(".sv"))
         .toVector
-      val module = files.find(_.getFileName.toString == s"$moduleName.sv").getOrElse(fail(s"missing $moduleName.sv"))
-      Files.readString(module, StandardCharsets.UTF_8)
+      files.map(path => path.getFileName.toString -> Files.readString(path, StandardCharsets.UTF_8)).toMap
     } finally {
       stream.close()
     }
+  }
+
+  private def emittedSystemVerilog(moduleName: String, generator: => chisel3.RawModule): String = {
+    val files = emittedSystemVerilogFiles(generator)
+    files.getOrElse(s"$moduleName.sv", fail(s"missing $moduleName.sv"))
   }
 
   private def expectTracePorts(moduleName: String, systemVerilog: String): Unit = {
@@ -75,5 +79,20 @@ class PreparedTokenElaborationSpec extends AnyFreeSpec with Matchers {
       "FramePreparedTokenTraceStage",
       emittedSystemVerilog("FramePreparedTokenTraceStage", new FramePreparedTokenTraceStage(config))
     )
+  }
+
+  "prepared AC frame coefficients emit as a narrow synchronous memory" in {
+    val files = emittedSystemVerilogFiles(new FramePreparedAcTokenTraceStage(config))
+    val maxBlocks =
+      (config.maxFrameWidth / HjxlConstants.BlockDim) *
+        (config.maxFrameHeight / HjxlConstants.BlockDim)
+    val memoryDepth = maxBlocks * HjxlConstants.BlockDim * HjxlConstants.BlockDim
+    val memoryName = s"coefficientMemory_${memoryDepth}x96"
+    val memory = files.getOrElse(s"$memoryName.sv", fail(s"missing $memoryName.sv"))
+
+    memory must include(s"module $memoryName")
+    memory must include(s"reg [95:0] Memory[0:${memoryDepth - 1}]")
+    memory must include("always @(posedge W0_clk)")
+    files("FramePreparedAcTokenTraceStage.sv") must include("PreparedAcCoefficientFrameStore coefficientStore")
   }
 }

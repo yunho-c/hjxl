@@ -321,6 +321,17 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
     xTiles * yTiles * 2 + xBlocks * yBlocks * 3
   }
 
+  private def waitForReady(ready: Bool, clock: Clock, clue: String): Unit = {
+    var cycles = 0
+    while (ready.peekValue().asBigInt == 0 && cycles < blockSize + 2) {
+      clock.step()
+      cycles += 1
+    }
+    withClue(clue) {
+      cycles must be < blockSize + 2
+    }
+  }
+
   private def collectTokenTraces(
       dcSamples: Seq[Int],
       acBlocks: Seq[PreparedAcBlock]
@@ -349,6 +360,7 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
             dut.io.acInput.bits.quantized(channel)(i).poke(block.quantized(channel)(i).S)
           }
         }
+        waitForReady(dut.io.acInput.ready, dut.clock, "prepared-token AC input")
         dut.io.acInput.ready.expect(true.B)
         dut.clock.step()
       }
@@ -413,6 +425,7 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
         dut.io.input.bits.coefficients(channel)(i).poke(block.coefficients(channel)(i).S)
       }
     }
+    waitForReady(dut.io.input.ready, dut.clock, "combined prepared-DCT input")
     dut.io.input.ready.expect(true.B)
     dut.clock.step()
     dut.io.input.valid.poke(false.B)
@@ -864,7 +877,6 @@ class FramePreparedDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matche
       dut.clock.step()
 
       driveCombinedInput(dut, blocks.head)
-      dut.io.input.ready.expect(true.B)
       driveCombinedInput(dut, blocks(1))
       dut.io.input.ready.expect(false.B)
       dut.io.busy.expect(true.B)

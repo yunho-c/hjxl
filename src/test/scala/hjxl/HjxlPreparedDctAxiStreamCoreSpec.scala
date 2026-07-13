@@ -170,6 +170,7 @@ class HjxlPreparedDctAxiStreamCoreSpec extends AnyFreeSpec with Matchers with Ch
       for (block <- blocks) {
         dut.io.input.valid.poke(true.B)
         pokeBlock(dut, block)
+        waitForReady(dut.io.input.ready, dut.clock, "direct prepared-DCT block input")
         dut.io.input.ready.expect(true.B)
         dut.clock.step()
       }
@@ -226,6 +227,17 @@ class HjxlPreparedDctAxiStreamCoreSpec extends AnyFreeSpec with Matchers with Ch
     }
     withClue(clue) {
       cycles must be < 512
+    }
+  }
+
+  private def waitForReady(ready: Bool, clock: Clock, clue: String): Unit = {
+    var cycles = 0
+    while (ready.peekValue().asBigInt == 0 && cycles < blockSize + 2) {
+      clock.step()
+      cycles += 1
+    }
+    withClue(clue) {
+      cycles must be < blockSize + 2
     }
   }
 

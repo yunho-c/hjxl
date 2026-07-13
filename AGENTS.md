@@ -342,9 +342,12 @@ Read these libjxl-tiny files before making architectural changes:
   X/Y/B ordinary-DCT block in libjxl-tiny channel order: Y, X, then B. It still
   expects caller-provided predicted nonzero counts and first token ordinal.
 - `FramePreparedAcTokenTraceStage` is the exact prepared-frame AC scheduler.
-  Feed it complete quantized AC blocks in raster order. It buffers X/Y/B
-  quantized AC coefficients and nonzero counts, predicts nonzero counts from
-  west/north block history, and emits the full all-DCT `AcTokens` stream.
+  Feed it complete quantized AC blocks in raster order. It serializes each
+  block into `PreparedAcCoefficientFrameStore`, whose `SyncReadMem` holds one
+  96-bit X/Y/B coefficient triplet per address, while small register planes
+  retain nonzero counts for west/north prediction. It prefetches the next block
+  during current-block token emission. Preserve this narrow memory shape and
+  Decoupled input stalls; do not expand the frame back into a wide `Reg(Vec)`.
 - `FramePreparedTokenTraceStage` is the combined exact prepared-token boundary.
   Feed it prepared quantized DC samples first, then prepared quantized AC blocks.
   It emits DC tokens, AC strategy traces, AC metadata tokens, and AC tokens in a

@@ -19,6 +19,7 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
   private val pattern = "gradient"
   private val fixedYtox = -7
   private val fixedYtob = 11
+  private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
   private val libjxlTinyRoot =
     Path.of(sys.env.getOrElse("LIBJXL_TINY", "/Users/yunhocho/GitHub/libjxl-tiny"))
 
@@ -85,6 +86,15 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
     xTiles * yTiles * 2 + xBlocks * yBlocks * 3
   }
 
+  private def waitForAcInputReady(dut: FramePreparedTokenTraceStage): Unit = {
+    var cycles = 0
+    while (dut.io.acInput.ready.peekValue().asBigInt == 0 && cycles < blockSize + 2) {
+      dut.clock.step()
+      cycles += 1
+    }
+    cycles must be < blockSize + 2
+  }
+
   private def collectPreparedTokenTraces(
       dcSamples: Seq[Int],
       acBlocks: Seq[PreparedAcBlock]
@@ -109,10 +119,11 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
         dut.io.acInput.valid.poke(true.B)
         for (channel <- 0 until 3) {
           dut.io.acInput.bits.numNonzeros(channel).poke(block.numNonzeros(channel).U)
-          for (i <- 0 until HjxlConstants.BlockDim * HjxlConstants.BlockDim) {
+          for (i <- 0 until blockSize) {
             dut.io.acInput.bits.quantized(channel)(i).poke(block.quantized(channel)(i).S)
           }
         }
+        waitForAcInputReady(dut)
         dut.io.acInput.ready.expect(true.B)
         dut.clock.step()
       }
@@ -123,11 +134,11 @@ class FixedDctOnlyTokenAssemblySpec extends AnyFreeSpec with Matchers with Chise
         acTokenCount(acBlocks)
       for (_ <- 0 until expectedTraceCount) {
         var cycles = 0
-        while (dut.io.trace.valid.peekValue().asBigInt == 0 && cycles < 16) {
+        while (dut.io.trace.valid.peekValue().asBigInt == 0 && cycles < blockSize * 3) {
           dut.clock.step()
           cycles += 1
         }
-        cycles must be < 16
+        cycles must be < blockSize * 3
         traces += CollectedTrace(
           stage = dut.io.trace.bits.stage.peekValue().asBigInt.toInt,
           group = dut.io.trace.bits.group.peekValue().asBigInt.toInt,

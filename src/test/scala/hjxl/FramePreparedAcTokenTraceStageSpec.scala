@@ -104,20 +104,20 @@ class FramePreparedAcTokenTraceStageSpec extends AnyFreeSpec with Matchers with 
 
   private def waitForTraceValid(dut: FramePreparedAcTokenTraceStage): Unit = {
     var cycles = 0
-    while (dut.io.trace.valid.peekValue().asBigInt == 0 && cycles < 16) {
+    while (dut.io.trace.valid.peekValue().asBigInt == 0 && cycles < blockSize * 3) {
       dut.clock.step()
       cycles += 1
     }
-    cycles must be < 16
+    cycles must be < blockSize * 3
   }
 
   private def waitForInputReady(dut: FramePreparedAcTokenTraceStage): Unit = {
     var cycles = 0
-    while (dut.io.input.ready.peekValue().asBigInt == 0 && cycles < 16) {
+    while (dut.io.input.ready.peekValue().asBigInt == 0 && cycles < blockSize + 2) {
       dut.clock.step()
       cycles += 1
     }
-    cycles must be < 16
+    cycles must be < blockSize + 2
   }
 
   "FramePreparedAcTokenTraceStage tokenizes prepared AC blocks with frame nonzero prediction" in {
@@ -174,6 +174,7 @@ class FramePreparedAcTokenTraceStageSpec extends AnyFreeSpec with Matchers with 
             dut.io.input.bits.quantized(channel)(i).poke(block.quantized(channel)(i).S)
           }
         }
+        waitForInputReady(dut)
         dut.io.input.ready.expect(true.B)
         dut.clock.step()
       }
@@ -222,6 +223,7 @@ class FramePreparedAcTokenTraceStageSpec extends AnyFreeSpec with Matchers with 
             dut.io.input.bits.quantized(channel)(i).poke(block.quantized(channel)(i).S)
           }
         }
+        waitForInputReady(dut)
         dut.io.input.ready.expect(true.B)
         dut.clock.step()
       }

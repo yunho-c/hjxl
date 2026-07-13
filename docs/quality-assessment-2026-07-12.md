@@ -384,11 +384,11 @@ Recommended documentation split:
 | DC/AC metadata/AC logical tokens | Strong for prepared all-DCT paths | Exact context/value/order tests and codestream reconstruction | Full adaptive RGB path and non-DCT strategies |
 | Entropy optimization/coding | Host-only through `libjxl-tiny` | Byte-parity assembly tests | Native host library or RTL implementation, depending final partition |
 | JXL frame/codestream assembly | Host-only | Exact bytes for constrained fixtures | Standalone production integration and broader decoder validation |
-| AXI-stream/AXI-Lite shells | Implemented and simulated | Port, handshake, register, framing, and error tests | Protocol checker, version/capability registers, config-lifetime rule |
+| AXI-stream/AXI-Lite shells | Implemented and simulated with transactional config and discovery registers | Port, handshake, register, framing, error, discovery-readback, and mid-frame shadow-write tests | AXI protocol checker and physical integration |
 | KV260 top-level shape | Generated and simulated as a flat wrapper | SystemVerilog surface and functional wrapper tests | Vivado project/Tcl/XDC, PS/DMA integration, clock/reset proof |
 | Synthesis/timing/utilization | Not demonstrated | None | Synthesis, reports, timing closure, resource budget |
 | Bitstream and board execution | Not demonstrated | None | XSA/bitstream, driver, DMA capture, decoded-image validation |
-| Performance/power | Not characterized | None | Cycle model, initiation interval, bandwidth, fps, power |
+| Performance/power | Direct prepared path characterized in simulation for sparse and maximum-density multi-tile frames | Exact phase/stall/stage-count cycle regression and 200 MHz projections | Synthesized clock, DMA overlap, end-to-end fps, and power |
 
 The practical conclusion is that the project has demonstrated a credible
 **logical token accelerator boundary** for host-prepared all-DCT data. It has
@@ -436,9 +436,13 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
    stage no longer duplicates full-frame quantized AC/nonzero and metadata
    arrays already owned by its downstream schedulers. Atomic streaming removes
    6,192 register bits per configured block (99,072 bits at the frozen 32x32
-   default) and shortens pre-output feed latency. The owning schedulers still
-   use whole-frame `Reg(Vec(...))` storage, so RAM inference and true pipeline
-   overlap remain open.
+   default) and shortens pre-output feed latency. The owning AC scheduler now
+   serializes its frame coefficient plane into a 96-bit-wide `SyncReadMem`; the
+   default generated RTL contains one 1024x96 memory instead of another 98,304
+   frame-scaled coefficient register bits, and read prefetch overlaps dense
+   token emission. Small nonzero/DC/metadata register planes and other frame
+   schedulers still need conversion, and Vivado must confirm BRAM inference,
+   utilization, timing, and the sparse-content latency tradeoff.
 6. **Create an explicit throughput model.** Record cycles per input word, block,
    tile, token, and frame; initiation interval; worst-case token expansion;
    input/output bandwidth; and target clock. Add counters or a simulation

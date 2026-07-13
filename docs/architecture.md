@@ -312,9 +312,16 @@ wrappers.
   coefficients, and the first token ordinal.
 - `FramePreparedAcTokenTraceStage` schedules complete prepared quantized AC
   blocks through that exact all-DCT token boundary. It accepts blocks in raster
-  order, buffers their X/Y/B quantized AC coefficients and nonzero counts,
-  predicts nonzero counts from west/north block history, and emits the full
-  `AcTokens` stream.
+  order and stores frame-scaled coefficients in
+  `PreparedAcCoefficientFrameStore`, a `SyncReadMem` organized as one 96-bit
+  X/Y/B coefficient triplet per address. A single block register serializes 64
+  writes and reconstructs 64 reads; the generated default module is a
+  1024x96 synchronous memory rather than a 16-block wide register array.
+  Nonzero counts remain in a small register plane for west/north prediction.
+  The scheduler prefetches the next block while the current block emits tokens,
+  then emits the full `AcTokens` stream. The 64-cycle write drain fits beneath
+  the 201-word packed prepared-block arrival interval, so this change does not
+  add packed-stream input stalls.
 - `FramePreparedTokenTraceStage` combines the exact prepared DC and AC token
   schedulers with fixed all-DCT AC strategy and AC-metadata trace generation.
   Its input boundary is prepared quantized DC samples plus prepared quantized AC
@@ -1001,10 +1008,10 @@ still require an environment with AMD tools installed.
 
 `HjxlPreparedDctThroughputSpec` provides the complementary simulation-cycle
 baseline for this target. Under continuous source/sink traffic, the direct
-stream currently measures 223 cycles for one zero 8x8 block, 228 cycles when
-one AC coefficient is nonzero in each channel, and 446 cycles for two zero
+stream currently measures 342 cycles for one zero 8x8 block, 347 cycles when
+one AC coefficient is nonzero in each channel, and 611 cycles for two zero
 blocks. A parameterized 72x72 profiling elaboration additionally measures
-18,069 cycles for an 81-block/four-tile zero frame and 33,620 cycles when all
+22,493 cycles for an 81-block/four-tile zero frame and 33,620 cycles when all
 63 AC positions in every channel and block are nonzero. See
 `docs/performance.md` for phase definitions, exact token counts, and
 limitations. These numbers isolate core behavior and do not include AXI-Lite

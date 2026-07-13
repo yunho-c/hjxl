@@ -138,7 +138,11 @@ with those coefficient tokens for one prepared block/channel.
 `DctOnlyAcBlockTokenTraceStage` sequences the prepared Y/X/B channel streams
 for one all-DCT block. `FramePreparedAcTokenTraceStage` schedules complete
 prepared quantized AC blocks through that exact token boundary, predicting
-nonzero counts from west/north block history. `FramePreparedTokenTraceStage`
+nonzero counts from west/north block history. Its frame-scaled coefficient
+store is a serialized 96-bit-wide synchronous memory: each address holds the
+X/Y/B triplet for one coefficient position, while one-block buffering adapts
+the structured input and token interfaces. Read prefetch overlaps the next
+block load with current token emission. `FramePreparedTokenTraceStage`
 combines the exact prepared DC and AC schedulers with fixed all-DCT AC
 strategy/metadata trace generation using `FrameConfig.fixedRawQuant`,
 `fixedYtox`, and `fixedYtob`, producing the four logical trace streams consumed

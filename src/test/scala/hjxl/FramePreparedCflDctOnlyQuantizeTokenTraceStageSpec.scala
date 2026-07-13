@@ -213,6 +213,14 @@ class FramePreparedCflDctOnlyQuantizeTokenTraceStageSpec extends AnyFreeSpec wit
         val tile = blockTile(width, ordinal)
         dut.io.input.valid.poke(true.B)
         pokeInputBits(dut.io.input.bits, block, ytox(tile), ytob(tile))
+        var cycles = 0
+        while (dut.io.input.ready.peekValue().asBigInt == 0 && cycles < blockSize + 2) {
+          dut.clock.step()
+          cycles += 1
+        }
+        withClue(s"direct prepared block $ordinal input readiness") {
+          cycles must be < blockSize + 2
+        }
         dut.io.input.ready.expect(true.B)
         dut.clock.step()
       }

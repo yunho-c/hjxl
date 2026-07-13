@@ -36,10 +36,10 @@ explanation.
 
 | Case | Blocks | Tiles | Input words | Input span | Input stalls | First-output latency | Output words | Output span | Output bubbles | Total cycles | Time at 200 MHz |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Zero 8x8 | 1 | 1 | 201 | 201 | 0 | 5 | 12 | 18 | 6 | 223 | 1.115 us |
-| Three-AC 8x8 | 1 | 1 | 201 | 201 | 0 | 5 | 15 | 23 | 8 | 228 | 1.140 us |
-| Zero 16x8 | 2 | 1 | 402 | 403 | 1 | 8 | 22 | 36 | 14 | 446 | 2.230 us |
-| Zero 72x72 | 81 | 4 | 16,281 | 16,361 | 80 | 245 | 818 | 1,464 | 646 | 18,069 | 90.345 us |
+| Zero 8x8 | 1 | 1 | 201 | 201 | 0 | 5 | 12 | 137 | 125 | 342 | 1.710 us |
+| Three-AC 8x8 | 1 | 1 | 201 | 201 | 0 | 5 | 15 | 142 | 127 | 347 | 1.735 us |
+| Zero 16x8 | 2 | 1 | 402 | 403 | 1 | 8 | 22 | 201 | 179 | 611 | 3.055 us |
+| Zero 72x72 | 81 | 4 | 16,281 | 16,361 | 80 | 245 | 818 | 5,888 | 5,070 | 22,493 | 112.465 us |
 | Dense-AC 72x72 | 81 | 4 | 16,281 | 16,361 | 80 | 245 | 16,127 | 17,015 | 888 | 33,620 | 168.100 us |
 
 Cycle zero is the first accepted input word. Input span runs through the final
@@ -59,33 +59,41 @@ measured 16,127 output words.
 
 ## Interpretation
 
-Startup and drain cost are visible in the five-cycle first-output latency and
-six output bubbles for one zero block. The prepared parser incurs one input
-stall between blocks. At 81 blocks this creates 80 stalls, while the internal
-DC plane-reorder feed phase increases final-input-to-first-output latency to
-245 cycles. AC/nonzero data and metadata now stream directly from the quantizer
-into their owning frame schedulers instead of passing through duplicate top-
-level stores. The zero 72x72 result remains close to the tiny baseline at
-223.07 cycles/block, showing that tile metadata has little effect when AC
-output is sparse.
+The five-cycle first-output latency still reflects the DC path; AC storage does
+not delay the beginning of the trace stream. The prepared parser incurs one
+input stall between blocks. At 81 blocks this creates 80 stalls, while the
+internal DC plane-reorder feed phase increases final-input-to-first-output
+latency to 245 cycles. Those input figures are unchanged by the AC memory:
+`PreparedAcCoefficientFrameStore` serializes each accepted block into 64
+96-bit writes, which complete before the 201-word parser can present the next
+block.
+
+Readback is content-sensitive because the scheduler prefetches the next 64-word
+block while current AC tokens emit. A zero block provides too little output
+work to hide the read, so the 72x72 sparse case measures 277.69 cycles/block
+and 5,070 output bubbles. A dense block provides enough work to hide every
+subsequent prefetch; its 17,015-cycle output span and 33,620-cycle frame total
+are unchanged from the previous register-array baseline. This is an explicit
+area/latency tradeoff rather than an unexplained regression.
 
 Steady-state input demand is at least 201 cycles per block because the ABI is a
 32-bit word stream. At the unproven 200 MHz synthesis target this corresponds
 to an ideal 800 MB/s input bus and about 995 thousand prepared blocks/s before
-parser stalls and drain cost. The complete observed zero-frame rate is lower:
-about 897 thousand blocks/s from 223.07 cycles per block.
+parser stalls and drain cost. The complete observed 72x72 zero-frame rate is
+about 720 thousand blocks/s from 277.69 cycles per block.
 
 Output work is content-dependent. Three nonzero AC coefficients add three trace
 beats and five total cycles in the one-block fixture. The dense multi-tile case
 expands to 415.06 cycles/block and 168.100 microseconds per 72x72 frame at the
-unproven 200 MHz target, versus 223.07 cycles/block and 90.345 microseconds for
+unproven 200 MHz target, versus 277.69 cycles/block and 112.465 microseconds for
 the zero frame. This bounds logical trace expansion for the current ordinary-
 DCT scheduler, but it is not a bound on DMA time, host entropy assembly, or
 future non-DCT strategies.
 
 Do not extrapolate these small-frame figures directly to camera-frame FPS. The
-current whole-frame register-array architecture, host transfer behavior, and
-unmeasured Vivado clock rate all matter. The multi-tile and maximum-density
-simulation gaps are now covered; the next performance step is synthesis
-resource/timing evidence and replacement of register-array storage before
-setting an end-to-end FPS target.
+remaining whole-frame register arrays, host transfer behavior, and unmeasured
+Vivado clock rate all matter. The largest AC coefficient plane on the frozen
+direct path now emits as a 1024x96 synchronous memory at default capacity, but
+actual BRAM inference, utilization, and timing still require Vivado. The next
+performance step is that physical evidence plus conversion of the remaining
+frame-scaled stores before setting an end-to-end FPS target.
