@@ -129,6 +129,14 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.protocolError.expect(false.B)
 
       dut.io.trace.ready.poke(true.B)
+      var waitCycles = 0
+      while (!dut.io.trace.valid.peek().litToBoolean && waitCycles < 3000) {
+        dut.clock.step()
+        waitCycles += 1
+      }
+      withClue(s"metadata route $traceRoute trace latency") {
+        waitCycles must be < 3000
+      }
       dut.io.trace.valid.expect(true.B)
       captured += StreamWord(
         dut.io.trace.bits.data.peekValue().asBigInt,
@@ -745,7 +753,7 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
-  "HjxlAxiStreamCore packs adaptive AC-metadata tokens from the RGB quant field" in {
+  "HjxlAxiStreamCore packs adaptive AC-metadata tokens with estimated RGB CFL" in {
     simulate(new HjxlAxiStreamCore(config, traceRoute = TraceStage.AcMetadataTokens)) { dut =>
       pokeConfig(dut, width = 1, height = 1)
       dut.io.config.enableXyb.poke(true.B)
@@ -772,8 +780,8 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       }
 
       val expected = Seq(
-        (0, 2, 13, false),
-        (1, 1, 22, false),
+        (0, 2, 0, false),
+        (1, 1, 0, false),
         (2, 10, 0, false),
         (3, 6, 10, false),
         (4, 0, 8, true)
@@ -881,22 +889,18 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
         "constant",
         "--fixed-raw-quant",
         "200",
-        "--fixed-ytox",
-        "-7",
-        "--fixed-ytob",
-        "11",
         "--fixed-dct-only-raw-quant-field-npy",
         expectedRawQuant.toString,
-        "--fixed-dct-only-ytox-map-npy",
+        "--dct-only-ytox-map-npy",
         expectedYtox.toString,
-        "--fixed-dct-only-ytob-map-npy",
+        "--dct-only-ytob-map-npy",
         expectedYtob.toString
       )
     )
 
     readNpyAsJson(rawQuant) mustBe "[[200]]"
-    readNpyAsJson(ytox) mustBe "[[-7]]"
-    readNpyAsJson(ytob) mustBe "[[11]]"
+    readNpyAsJson(ytox) mustBe "[[0]]"
+    readNpyAsJson(ytob) mustBe "[[0]]"
 
     expectCommandSuccess(
       Seq(

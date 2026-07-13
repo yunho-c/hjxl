@@ -60,14 +60,25 @@ class FramePreparedCflMapTraceStageSpec extends AnyFreeSpec with Matchers with C
     if (value < 0) -rounded else rounded
   }
 
-  private def expectedMultiplier(samples: Seq[TileCoefficientSample], useBWeights: Boolean): Int = {
+  private def toQ16(value: BigInt, coefficientFractionBits: Int): BigInt =
+    if (coefficientFractionBits < 16) value << (16 - coefficientFractionBits)
+    else if (coefficientFractionBits > 16) value >> (coefficientFractionBits - 16)
+    else value
+
+  private def expectedMultiplier(
+      samples: Seq[TileCoefficientSample],
+      useBWeights: Boolean,
+      coefficientFractionBits: Int
+  ): Int = {
     val (sumAa, sumAb) = samples.foldLeft(BigInt(0) -> BigInt(0)) {
       case ((aaAcc, abAcc), sample) =>
         val weight =
           if (useBWeights) CflWeightMatrix.BInvQ16(sample.index)
           else CflWeightMatrix.XInvQ16(sample.index)
-        val modelQ16 = (sample.yQ16 * weight) >> 16
-        val signalQ16 = ((if (useBWeights) sample.bQ16 else sample.xQ16) * weight) >> 16
+        val modelQ16 = (toQ16(sample.yQ16, coefficientFractionBits) * weight) >> 16
+        val signalQ16 = (
+          toQ16(if (useBWeights) sample.bQ16 else sample.xQ16, coefficientFractionBits) * weight
+        ) >> 16
         val aQ16 = roundDivBy84(modelQ16)
         val bQ16 = (if (useBWeights) modelQ16 else BigInt(0)) - signalQ16
         val aaTerm = (aQ16 * aQ16) >> 16
@@ -146,7 +157,9 @@ class FramePreparedCflMapTraceStageSpec extends AnyFreeSpec with Matchers with C
       width: Int,
       height: Int,
       maxWidth: Int = 0,
-      maxHeight: Int = 0
+      maxHeight: Int = 0,
+      coefficientFractionBits: Int = 16,
+      traceStageFilter: Option[Int] = None
   ): Unit = {
     val config = HjxlConfig(
       maxFrameWidth =
@@ -162,16 +175,45 @@ class FramePreparedCflMapTraceStageSpec extends AnyFreeSpec with Matchers with C
     val yBlocks = (height + HjxlConstants.BlockDim - 1) / HjxlConstants.BlockDim
     val xTiles = (width + HjxlConstants.TileDim - 1) / HjxlConstants.TileDim
     val yTiles = (height + HjxlConstants.TileDim - 1) / HjxlConstants.TileDim
-    val blocks = Seq.tabulate(xBlocks * yBlocks)(preparedBlock)
+    val coefficientShift = 16 - coefficientFractionBits
+    val blocks = Seq.tabulate(xBlocks * yBlocks)(preparedBlock).map { block =>
+      PreparedBlock(
+        block.coefficients.map(
+          _.map(value => if (coefficientShift >= 0) value >> coefficientShift else value << -coefficientShift)
+        )
+      )
+    }
     val expected = (0 until xTiles * yTiles).flatMap { tile =>
       val samples = tileSamples(blocks, width, height, tile)
       Seq(
-        (TraceStage.YtoxMap, tile, expectedMultiplier(samples, useBWeights = false)),
-        (TraceStage.YtobMap, tile, expectedMultiplier(samples, useBWeights = true))
-      )
+        (
+          TraceStage.YtoxMap,
+          tile,
+          expectedMultiplier(
+            samples,
+            useBWeights = false,
+            coefficientFractionBits = coefficientFractionBits
+          )
+        ),
+        (
+          TraceStage.YtobMap,
+          tile,
+          expectedMultiplier(
+            samples,
+            useBWeights = true,
+            coefficientFractionBits = coefficientFractionBits
+          )
+        )
+      ).filter(row => traceStageFilter.forall(_ == row._1))
     }
 
-    simulate(new FramePreparedCflMapTraceStage(config)) { dut =>
+    simulate(
+      new FramePreparedCflMapTraceStage(
+        config,
+        coefficientFractionBitsOverride = Some(coefficientFractionBits),
+        traceStageFilter = traceStageFilter
+      )
+    ) { dut =>
       pokeConfig(dut, width, height)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
@@ -194,7 +236,14 @@ class FramePreparedCflMapTraceStageSpec extends AnyFreeSpec with Matchers with C
       }
 
       dut.io.trace.valid.expect(false.B)
-      dut.io.input.ready.expect(true.B)
+      var drainCycles = 0
+      while (!dut.io.input.ready.peek().litToBoolean && drainCycles < 3) {
+        dut.clock.step()
+        drainCycles += 1
+      }
+      withClue("filtered map scheduler drain") {
+        drainCycles must be < 3
+      }
       dut.io.overflow.expect(false.B)
     }
   }
@@ -218,5 +267,24 @@ class FramePreparedCflMapTraceStageSpec extends AnyFreeSpec with Matchers with C
   "FramePreparedCflMapTraceStage preserves tile counts for non-tile-aligned max dimensions" in {
     expectPreparedCfl(width = 72, height = 8, maxWidth = 72, maxHeight = 72)
     expectPreparedCfl(width = 8, height = 72, maxWidth = 72, maxHeight = 72)
+  }
+
+  "FramePreparedCflMapTraceStage rescales native Q12 coefficients for CFL estimation" in {
+    expectPreparedCfl(width = 8, height = 8, coefficientFractionBits = Dct8Approx.FractionBits)
+  }
+
+  "FramePreparedCflMapTraceStage filters either map with selected-stream TLAST" in {
+    expectPreparedCfl(
+      width = 8,
+      height = 8,
+      coefficientFractionBits = Dct8Approx.FractionBits,
+      traceStageFilter = Some(TraceStage.YtoxMap)
+    )
+    expectPreparedCfl(
+      width = 8,
+      height = 8,
+      coefficientFractionBits = Dct8Approx.FractionBits,
+      traceStageFilter = Some(TraceStage.YtobMap)
+    )
   }
 }

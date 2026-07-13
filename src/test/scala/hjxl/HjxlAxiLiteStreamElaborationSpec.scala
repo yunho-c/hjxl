@@ -84,13 +84,17 @@ class HjxlAxiLiteStreamElaborationSpec extends AnyFreeSpec with Matchers {
     val text = emittedSystemVerilog(HjxlCoreTraceRoute.All)
     text must include("module HjxlAxiLiteStreamCore")
     expectAxiLiteStreamPorts(text)
-    text must not include "module FrameDctOnlyAcTokenTraceStage"
+    text must not include "module FrameAqCflDctOnlyQuantizeTokenTraceStage"
   }
 
   "HjxlAxiLiteStreamCore focused AC-token route includes the full AC-token scheduler" in {
     val text = emittedSystemVerilog(TraceStage.AcTokens)
     text must include("module HjxlAxiLiteStreamCore")
     expectAxiLiteStreamPorts(text)
-    text must include("module FrameDctOnlyAcTokenTraceStage")
+    text must include("module FrameAqCflDctOnlyQuantizeTokenTraceStage")
+    text must include("module FramePreparedCflDctOnlyQuantizeTokenTraceStage")
+    text must include("module CflTileCoefficientEstimator")
+    text must include("module AdaptiveInvQacQ16")
+    text must not include "module FrameDctOnlyAcTokenTraceStage"
   }
 }

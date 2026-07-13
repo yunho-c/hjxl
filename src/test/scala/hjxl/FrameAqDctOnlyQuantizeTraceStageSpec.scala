@@ -21,7 +21,16 @@ class FrameAqDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers wit
   private val libjxlTinyRoot =
     Path.of(sys.env.getOrElse("LIBJXL_TINY", "/Users/yunhocho/GitHub/libjxl-tiny"))
 
-  private case class RgbRow(x: Int, y: Int, r: Int, g: Int, b: Int)
+  private case class RgbRow(
+      x: Int,
+      y: Int,
+      r: Int,
+      g: Int,
+      b: Int,
+      xybXQ12: Int,
+      xybYQ12: Int,
+      xybBQ12: Int
+  )
   private case class FinalRow(block: Int, blockX: Int, blockY: Int, rawQuant: Int)
   private case class PreparedBlock(
       block: Int,
@@ -35,6 +44,7 @@ class FrameAqDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers wit
       ytob: Int,
       last: Boolean
   )
+  private case class CflMap(tile: Int, ytox: Int, ytob: Int)
   private case class TraceRow(stage: Int, group: BigInt, index: BigInt, value: BigInt)
 
   private def requireReferenceTools(): Unit = {
@@ -87,7 +97,16 @@ class FrameAqDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers wit
     xybLines.head mustBe "raster,x,y,r_q8,g_q8,b_q8,xyb_x_q12,xyb_y_q12,xyb_b_q12"
     val rgb = xybLines.tail.map { line =>
       val values = line.split(",", -1)
-      RgbRow(values(1).toInt, values(2).toInt, values(3).toInt, values(4).toInt, values(5).toInt)
+      RgbRow(
+        values(1).toInt,
+        values(2).toInt,
+        values(3).toInt,
+        values(4).toInt,
+        values(5).toInt,
+        values(6).toInt,
+        values(7).toInt,
+        values(8).toInt
+      )
     }.filter(row => row.x < width && row.y < height).toSeq
 
     val finalLines = Files.readAllLines(finalCsv, StandardCharsets.UTF_8).asScala
@@ -97,6 +116,52 @@ class FrameAqDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers wit
       FinalRow(values(0).toInt, values(1).toInt, values(2).toInt, values(17).toInt)
     }.toSeq
     rgb -> rows
+  }
+
+  private def readNpyFlatInts(path: Path): Seq[Int] = {
+    val output = Process(
+      Seq(
+        "python3",
+        "-c",
+        "import numpy as np,sys; print(','.join(str(int(v)) for v in np.load(sys.argv[1]).reshape(-1)))",
+        path.toString
+      ),
+      TestPaths.repoRoot.toFile,
+      "PYTHONDONTWRITEBYTECODE" -> "1"
+    ).!!.trim
+    if (output.isEmpty) Seq.empty else output.split(",", -1).map(_.toInt).toSeq
+  }
+
+  private def referenceCflMaps(
+      pattern: String,
+      width: Int,
+      height: Int,
+      distanceQ8: Int
+  ): Seq[CflMap] = {
+    val ytoxPath = Files.createTempFile(s"hjxl-aq-cfl-$pattern-ytox-", ".npy")
+    val ytobPath = Files.createTempFile(s"hjxl-aq-cfl-$pattern-ytob-", ".npy")
+    runTool(
+      Seq(
+        "python3",
+        "tools/hjxl_reference.py",
+        "--width",
+        width.toString,
+        "--height",
+        height.toString,
+        "--pattern",
+        pattern,
+        "--distance",
+        (distanceQ8.toDouble / 256.0).toString,
+        "--dct-only-ytox-map-npy",
+        ytoxPath.toString,
+        "--dct-only-ytob-map-npy",
+        ytobPath.toString
+      )
+    )
+    val ytox = readNpyFlatInts(ytoxPath)
+    val ytob = readNpyFlatInts(ytobPath)
+    ytox.length mustBe ytob.length
+    ytox.indices.map(tile => CflMap(tile, ytox(tile), ytob(tile)))
   }
 
   private def dct2(values: Seq[Long]): Seq[Long] =
@@ -195,6 +260,69 @@ class FrameAqDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers wit
         ytox = ytox,
         ytob = ytob,
         last = block == xBlocks * yBlocks - 1
+      )
+    }
+  }
+
+  private def roundDivBy84(value: BigInt): BigInt = {
+    val rounded = (value.abs + 42) / 84
+    if (value < 0) -rounded else rounded
+  }
+
+  private def expectedCflMultiplier(
+      samples: Seq[(Int, Int, Int, Int)],
+      useBWeights: Boolean
+  ): Int = {
+    val (sumAa, sumAb) = samples.foldLeft(BigInt(0) -> BigInt(0)) {
+      case ((aaAcc, abAcc), (coefficient, yQ12, xQ12, bQ12)) =>
+        val weight = BigInt(
+          if (useBWeights) CflWeightMatrix.BInvQ16(coefficient)
+          else CflWeightMatrix.XInvQ16(coefficient)
+        )
+        val modelQ16 = ((BigInt(yQ12) << 4) * weight) >> 16
+        val signalQ16 = (
+          (BigInt(if (useBWeights) bQ12 else xQ12) << 4) * weight
+        ) >> 16
+        val aQ16 = roundDivBy84(modelQ16)
+        val bQ16 = (if (useBWeights) modelQ16 else BigInt(0)) - signalQ16
+        (aaAcc + ((aQ16 * aQ16) >> 16)) -> (abAcc + ((aQ16 * bQ16) >> 16))
+    }
+    val denominator = sumAa + samples.size * CflMultiplierEstimator.RegularizerQ16
+    val numerator = -sumAb
+    val roundedAbs = (numerator.abs + denominator / 2) / denominator
+    val rounded = if (numerator < 0) -roundedAbs else roundedAbs
+    rounded.max(-128).min(127).toInt
+  }
+
+  private def expectedCflMaps(
+      blocks: Seq[PreparedBlock],
+      width: Int,
+      height: Int
+  ): Seq[CflMap] = {
+    val xBlocks = (width + blockDim - 1) / blockDim
+    val yBlocks = (height + blockDim - 1) / blockDim
+    val blocksPerTile = HjxlConstants.TileDim / blockDim
+    val xTiles = (width + HjxlConstants.TileDim - 1) / HjxlConstants.TileDim
+    val yTiles = (height + HjxlConstants.TileDim - 1) / HjxlConstants.TileDim
+    for (tileY <- 0 until yTiles; tileX <- 0 until xTiles) yield {
+      val samples = for {
+        blockY <- tileY * blocksPerTile until math.min((tileY + 1) * blocksPerTile, yBlocks)
+        blockX <- tileX * blocksPerTile until math.min((tileX + 1) * blocksPerTile, xBlocks)
+        coefficient <- 0 until blockSize
+      } yield {
+        val block = blocks(blockY * xBlocks + blockX)
+        (
+          coefficient,
+          block.coefficients(1)(coefficient),
+          block.coefficients(0)(coefficient),
+          block.coefficients(2)(coefficient)
+        )
+      }
+      val tile = tileY * xTiles + tileX
+      CflMap(
+        tile,
+        expectedCflMultiplier(samples, useBWeights = false),
+        expectedCflMultiplier(samples, useBWeights = true)
       )
     }
   }
@@ -454,6 +582,244 @@ class FrameAqDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers wit
     observed.toSeq
   }
 
+  private def collectRgbCflMaps(
+      rgb: Seq[RgbRow],
+      width: Int,
+      height: Int,
+      distanceQ8: Int,
+      activeConfig: HjxlConfig,
+      traceStageFilter: Option[Int] = None
+  ): Seq[TraceRow] = {
+    val observed = scala.collection.mutable.ArrayBuffer.empty[TraceRow]
+    simulate(new FrameAqCflMapTraceStage(activeConfig, traceStageFilter)) { dut =>
+      pokeConfig(dut.io.config, width, height, distanceQ8)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+      driveRgb(dut.io.input, dut.clock, rgb)
+      var done = false
+      var cycles = 0
+      while (!done && cycles < 100000) {
+        if (dut.io.trace.valid.peek().litToBoolean) {
+          val row = TraceRow(
+            dut.io.trace.bits.stage.peekValue().asBigInt.toInt,
+            dut.io.trace.bits.group.peekValue().asBigInt,
+            dut.io.trace.bits.index.peekValue().asBigInt,
+            dut.io.trace.bits.value.peekValue().asBigInt
+          )
+          if (observed.isEmpty) {
+            dut.io.trace.ready.poke(false.B)
+            dut.clock.step(3)
+            dut.io.trace.valid.expect(true.B)
+            dut.io.trace.bits.stage.expect(row.stage.U)
+            dut.io.trace.bits.index.expect(row.index.U)
+            dut.io.trace.bits.value.expect(row.value.S)
+            dut.io.trace.ready.poke(true.B)
+          }
+          observed += row
+          done = dut.io.traceLast.peek().litToBoolean
+        }
+        dut.clock.step()
+        cycles += 1
+      }
+      withClue(s"RGB CFL map completion filter=$traceStageFilter") {
+        done mustBe true
+      }
+      dut.io.overflow.expect(false.B)
+    }
+    observed.toSeq
+  }
+
+  private def collectPreparedCflQuantized(
+      blocks: Seq[PreparedBlock],
+      width: Int,
+      height: Int,
+      distanceQ8: Int
+  ): Seq[TraceRow] = {
+    val observed = scala.collection.mutable.ArrayBuffer.empty[TraceRow]
+    simulate(
+      new FramePreparedCflDctOnlyQuantizeTraceStage(config, Some(Dct8Approx.FractionBits))
+    ) { dut =>
+      pokeConfig(dut.io.config, width, height, distanceQ8)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+      var nextBlock = 0
+      var done = false
+      var cycles = 0
+      while (!done && cycles < 50000) {
+        if (nextBlock < blocks.length) {
+          dut.io.input.valid.poke(true.B)
+          pokePreparedBlock(dut.io.input.bits, blocks(nextBlock))
+        } else {
+          dut.io.input.valid.poke(false.B)
+        }
+        if (dut.io.trace.valid.peek().litToBoolean) {
+          observed += TraceRow(
+            dut.io.trace.bits.stage.peekValue().asBigInt.toInt,
+            dut.io.trace.bits.group.peekValue().asBigInt,
+            dut.io.trace.bits.index.peekValue().asBigInt,
+            dut.io.trace.bits.value.peekValue().asBigInt
+          )
+          done = dut.io.traceLast.peek().litToBoolean
+        }
+        val accepted = nextBlock < blocks.length && dut.io.input.ready.peek().litToBoolean
+        dut.clock.step()
+        if (accepted) nextBlock += 1
+        cycles += 1
+      }
+      done mustBe true
+      nextBlock mustBe blocks.length
+    }
+    observed.toSeq
+  }
+
+  private def collectRgbCflQuantized(
+      rgb: Seq[RgbRow],
+      width: Int,
+      height: Int,
+      distanceQ8: Int
+  ): Seq[TraceRow] = {
+    val observed = scala.collection.mutable.ArrayBuffer.empty[TraceRow]
+    simulate(new FrameAqCflDctOnlyQuantizeTraceStage(config)) { dut =>
+      pokeConfig(dut.io.config, width, height, distanceQ8)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+      driveRgb(dut.io.input, dut.clock, rgb)
+      var done = false
+      var cycles = 0
+      while (!done && cycles < 50000) {
+        if (dut.io.trace.valid.peek().litToBoolean) {
+          observed += TraceRow(
+            dut.io.trace.bits.stage.peekValue().asBigInt.toInt,
+            dut.io.trace.bits.group.peekValue().asBigInt,
+            dut.io.trace.bits.index.peekValue().asBigInt,
+            dut.io.trace.bits.value.peekValue().asBigInt
+          )
+          done = dut.io.traceLast.peek().litToBoolean
+        }
+        dut.clock.step()
+        cycles += 1
+      }
+      done mustBe true
+      dut.io.overflow.expect(false.B)
+    }
+    observed.toSeq
+  }
+
+  private def collectPreparedCflTokens(
+      blocks: Seq[PreparedBlock],
+      width: Int,
+      height: Int,
+      distanceQ8: Int
+  ): Seq[TraceRow] = {
+    val observed = scala.collection.mutable.ArrayBuffer.empty[TraceRow]
+    simulate(
+      new FramePreparedCflDctOnlyQuantizeTokenTraceStage(config, Some(Dct8Approx.FractionBits))
+    ) { dut =>
+      pokeConfig(dut.io.config, width, height, distanceQ8, tokenize = true)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+      var nextBlock = 0
+      var done = false
+      var cycles = 0
+      while (!done && cycles < 60000) {
+        if (nextBlock < blocks.length) {
+          dut.io.input.valid.poke(true.B)
+          pokePreparedBlock(dut.io.input.bits, blocks(nextBlock))
+        } else {
+          dut.io.input.valid.poke(false.B)
+        }
+        if (dut.io.trace.valid.peek().litToBoolean) {
+          observed += TraceRow(
+            dut.io.trace.bits.stage.peekValue().asBigInt.toInt,
+            dut.io.trace.bits.group.peekValue().asBigInt,
+            dut.io.trace.bits.index.peekValue().asBigInt,
+            dut.io.trace.bits.value.peekValue().asBigInt
+          )
+          done = dut.io.traceLast.peek().litToBoolean
+        }
+        val accepted = nextBlock < blocks.length && dut.io.input.ready.peek().litToBoolean
+        dut.clock.step()
+        if (accepted) nextBlock += 1
+        cycles += 1
+      }
+      done mustBe true
+      nextBlock mustBe blocks.length
+    }
+    observed.toSeq
+  }
+
+  private def collectRgbCflTokens(
+      rgb: Seq[RgbRow],
+      width: Int,
+      height: Int,
+      distanceQ8: Int
+  ): Seq[TraceRow] = {
+    val observed = scala.collection.mutable.ArrayBuffer.empty[TraceRow]
+    simulate(new FrameAqCflDctOnlyQuantizeTokenTraceStage(config)) { dut =>
+      pokeConfig(dut.io.config, width, height, distanceQ8, tokenize = true)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+      driveRgb(dut.io.input, dut.clock, rgb)
+      var done = false
+      var cycles = 0
+      while (!done && cycles < 60000) {
+        if (dut.io.trace.valid.peek().litToBoolean) {
+          observed += TraceRow(
+            dut.io.trace.bits.stage.peekValue().asBigInt.toInt,
+            dut.io.trace.bits.group.peekValue().asBigInt,
+            dut.io.trace.bits.index.peekValue().asBigInt,
+            dut.io.trace.bits.value.peekValue().asBigInt
+          )
+          done = dut.io.traceLast.peek().litToBoolean
+        }
+        dut.clock.step()
+        cycles += 1
+      }
+      done mustBe true
+      dut.io.overflow.expect(false.B)
+    }
+    observed.toSeq
+  }
+
+  private def collectRgbCflMetadata(
+      rgb: Seq[RgbRow],
+      width: Int,
+      height: Int,
+      distanceQ8: Int
+  ): Seq[TraceRow] = {
+    val observed = scala.collection.mutable.ArrayBuffer.empty[TraceRow]
+    simulate(new FrameAqCflDctOnlyAcMetadataTokenTraceStage(config)) { dut =>
+      pokeConfig(dut.io.config, width, height, distanceQ8, tokenize = true)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+      driveRgb(dut.io.input, dut.clock, rgb)
+      var done = false
+      var cycles = 0
+      while (!done && cycles < 50000) {
+        if (dut.io.trace.valid.peek().litToBoolean) {
+          observed += TraceRow(
+            dut.io.trace.bits.stage.peekValue().asBigInt.toInt,
+            dut.io.trace.bits.group.peekValue().asBigInt,
+            dut.io.trace.bits.index.peekValue().asBigInt,
+            dut.io.trace.bits.value.peekValue().asBigInt
+          )
+          done = dut.io.traceLast.peek().litToBoolean
+        }
+        dut.clock.step()
+        cycles += 1
+      }
+      done mustBe true
+      dut.io.overflow.expect(false.B)
+    }
+    observed.toSeq
+  }
+
   "AdaptiveInvQacQ16 matches nearest division over supported scales and bytes" in {
     simulate(new AdaptiveInvQacQ16) { dut =>
       dut.io.input.valid.poke(false.B)
@@ -672,6 +1038,92 @@ class FrameAqDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers wit
     observedMetadata.toSeq mustBe expectedMetadata
   }
 
+  "RGB Q12 CFL maps match the fixed model and stay close to libjxl-tiny" in {
+    requireReferenceTools()
+    val width = 8
+    val height = 8
+    val cases = Seq(
+      "constant" -> 256,
+      "gradient" -> 256,
+      "checkerboard" -> 512,
+      "impulse" -> 128,
+      "random" -> 2048
+    )
+    for ((pattern, distanceQ8) <- cases) {
+      val (rgb, finalRows) = generateFixture(pattern, width, height, distanceQ8)
+      val blocks = expectedBlocks(rgb, finalRows, width, height, distanceQ8)
+      val expected = expectedCflMaps(blocks, width, height)
+      val reference = referenceCflMaps(pattern, width, height, distanceQ8)
+      expected.length mustBe reference.length
+      for ((fixed, oracle) <- expected.zip(reference)) {
+        withClue(s"$pattern tile ${fixed.tile} Y-to-X") {
+          math.abs(fixed.ytox - oracle.ytox) must be <= 2
+        }
+        withClue(s"$pattern tile ${fixed.tile} Y-to-B") {
+          math.abs(fixed.ytob - oracle.ytob) must be <= 2
+        }
+      }
+
+      val observed = collectRgbCflMaps(rgb, width, height, distanceQ8, config)
+      observed mustBe expected.flatMap { map =>
+        Seq(
+          TraceRow(TraceStage.YtoxMap, 0, map.tile, map.ytox),
+          TraceRow(TraceStage.YtobMap, 0, map.tile, map.ytob)
+        )
+      }
+    }
+  }
+
+  "RGB estimated-CFL quantized traces, metadata, and tokens match the prepared handoff" in {
+    requireReferenceTools()
+    val width = 8
+    val height = 8
+    val distanceQ8 = 256
+    val (rgb, finalRows) = generateFixture("gradient", width, height, distanceQ8)
+    val blocks = expectedBlocks(rgb, finalRows, width, height, distanceQ8)
+
+    val preparedQuantized = collectPreparedCflQuantized(blocks, width, height, distanceQ8)
+    collectRgbCflQuantized(rgb, width, height, distanceQ8) mustBe preparedQuantized
+
+    val preparedTokens = collectPreparedCflTokens(blocks, width, height, distanceQ8)
+    val rgbTokens = collectRgbCflTokens(rgb, width, height, distanceQ8)
+    rgbTokens mustBe preparedTokens
+    collectRgbCflMetadata(rgb, width, height, distanceQ8) mustBe
+      preparedTokens.filter(_.stage == TraceStage.AcMetadataTokens)
+  }
+
+  "focused RGB CFL maps preserve two tiles across a 65-pixel boundary" in {
+    requireReferenceTools()
+    val width = 65
+    val height = 1
+    val distanceQ8 = 2048
+    val activeConfig = HjxlConfig(maxFrameWidth = 72, maxFrameHeight = 8)
+    val (rgb, finalRows) = generateFixture("gradient", width, height, distanceQ8)
+    val blocks = expectedBlocks(rgb, finalRows, width, height, distanceQ8)
+    val expected = expectedCflMaps(blocks, width, height)
+    expected.length mustBe 2
+
+    val ytox = collectRgbCflMaps(
+      rgb,
+      width,
+      height,
+      distanceQ8,
+      activeConfig,
+      Some(TraceStage.YtoxMap)
+    )
+    ytox mustBe expected.map(map => TraceRow(TraceStage.YtoxMap, 0, map.tile, map.ytox))
+
+    val ytob = collectRgbCflMaps(
+      rgb,
+      width,
+      height,
+      distanceQ8,
+      activeConfig,
+      Some(TraceStage.YtobMap)
+    )
+    ytob mustBe expected.map(map => TraceRow(TraceStage.YtobMap, 0, map.tile, map.ytob))
+  }
+
   "FrameAqDctOnlyBlockStage preserves nine blocks across a 65-pixel boundary" in {
     requireReferenceTools()
     val width = 65
@@ -738,6 +1190,7 @@ class FrameAqDctOnlyQuantizeElaborationSpec extends AnyFreeSpec with Matchers {
     files.keySet must contain allOf (
       "FrameAqDctOnlyQuantizeTokenTraceStage.sv",
       "FrameAqDctOnlyBlockStage.sv",
+      "FrameAqDctBlockStage.sv",
       "AdaptiveInvQacQ16.sv",
       "FrameAqFinalMapPipeline.sv",
       "Dct8x8Approx.sv",
@@ -770,5 +1223,51 @@ class FrameAqDctOnlyQuantizeElaborationSpec extends AnyFreeSpec with Matchers {
     val text = files.values.mkString("\n")
     val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r.findAllMatchIn(text).length
     converterInstances mustBe 1
+  }
+
+  "the estimated-CFL RGB token top reuses one converter, three DCTs, and one reciprocal" in {
+    val files = emittedFiles(
+      new FrameAqCflDctOnlyQuantizeTokenTraceStage(),
+      "hjxl-aq-cfl-token-elaboration-"
+    )
+    files.keySet must contain allOf (
+      "FrameAqCflDctOnlyQuantizeTokenTraceStage.sv",
+      "FrameAqDctBlockStage.sv",
+      "FrameAqDctOnlyBlockStage.sv",
+      "AdaptiveInvQacQ16.sv",
+      "FramePreparedCflMapTraceStage.sv",
+      "CflTileCoefficientEstimator.sv",
+      "Dct8x8Approx.sv",
+      "RgbToXybApprox.sv"
+    )
+    files("AdaptiveInvQacQ16.sv") must not include " / "
+    val text = files.values.mkString("\n")
+    val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r.findAllMatchIn(text).length
+    converterInstances mustBe 1
+    val dctInstances = """Dct8x8Approx\s+\w+\s*\(""".r.findAllMatchIn(text).length
+    dctInstances mustBe 3
+    val reciprocalInstances = """AdaptiveInvQacQ16\s+\w+\s*\(""".r.findAllMatchIn(text).length
+    reciprocalInstances mustBe 1
+  }
+
+  "the estimated-CFL RGB metadata top omits reciprocal hardware but retains three DCTs" in {
+    val files = emittedFiles(
+      new FrameAqCflDctOnlyAcMetadataTokenTraceStage(),
+      "hjxl-aq-cfl-metadata-elaboration-"
+    )
+    files.keySet must contain allOf (
+      "FrameAqCflDctOnlyAcMetadataTokenTraceStage.sv",
+      "FrameAqDctBlockStage.sv",
+      "FramePreparedCflMapTraceStage.sv",
+      "FramePreparedAcMetadataTokenTraceStage.sv",
+      "Dct8x8Approx.sv",
+      "RgbToXybApprox.sv"
+    )
+    files.keySet must not contain "AdaptiveInvQacQ16.sv"
+    val text = files.values.mkString("\n")
+    val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r.findAllMatchIn(text).length
+    converterInstances mustBe 1
+    val dctInstances = """Dct8x8Approx\s+\w+\s*\(""".r.findAllMatchIn(text).length
+    dctInstances mustBe 3
   }
 }

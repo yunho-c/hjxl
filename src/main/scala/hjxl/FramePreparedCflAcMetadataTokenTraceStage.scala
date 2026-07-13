@@ -12,7 +12,13 @@ import chisel3.util._
   * 64x64 tile from the prepared X/Y/B DCT coefficients, then feeds those maps
   * plus the prepared raw-quant field into `FramePreparedAcMetadataTokenTraceStage`.
   */
-class FramePreparedCflAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FramePreparedCflAcMetadataTokenTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBitsOverride: Option[Int] = None
+) extends Module {
+  private val activeCoefficientFractionBits =
+    coefficientFractionBitsOverride.getOrElse(c.preparedDctCoefficientFractionBits)
+  require(activeCoefficientFractionBits > 0, "coefficientFractionBits must be positive")
   private val blockDim = HjxlConstants.BlockDim
   private val tileDim = HjxlConstants.TileDim
   private val tileBlocks = tileDim / blockDim
@@ -56,6 +62,9 @@ class FramePreparedCflAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) ex
   val ytox = Reg(Vec(maxTiles, SInt(8.W)))
   val ytob = Reg(Vec(maxTiles, SInt(8.W)))
 
+  private def rawQuantAt(value: UInt): UInt =
+    if (maxBlocks == 1) rawQuant(0) else rawQuant(blockIndex(value))
+
   val receiving :: captureCfl :: feedMetadata :: emitMetadata :: Nil = Enum(4)
   val state = RegInit(receiving)
   val receivedBlocks = RegInit(0.U(blockCountBits.W))
@@ -84,7 +93,9 @@ class FramePreparedCflAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) ex
       nextXBlocks > maxXBlocks.U || nextYBlocks > maxYBlocks.U ||
       nextXTiles > maxXTiles.U || nextYTiles > maxYTiles.U
 
-  val cflMaps = Module(new FramePreparedCflMapTraceStage(c))
+  val cflMaps = Module(
+    new FramePreparedCflMapTraceStage(c, Some(activeCoefficientFractionBits))
+  )
   cflMaps.io.config := activeConfig
   cflMaps.io.input.valid :=
     state === receiving && io.input.valid && !configOutOfRange && receivedBlocks < nextTotalBlocks
@@ -98,7 +109,7 @@ class FramePreparedCflAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) ex
   val metadataTile = CflTileGeometry.blockTile(metadataBlock, xBlocks, xTiles)
 
   metadataTokens.io.input.valid := state === feedMetadata
-  metadataTokens.io.input.bits.rawQuant := rawQuant(blockIndex(metadataBlock))
+  metadataTokens.io.input.bits.rawQuant := rawQuantAt(metadataBlock)
   metadataTokens.io.input.bits.ytox := ytoxAt(metadataTile)
   metadataTokens.io.input.bits.ytob := ytobAt(metadataTile)
 
@@ -124,7 +135,11 @@ class FramePreparedCflAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) ex
       xBlocks := nextXBlocks
       xTiles := nextXTiles
     }
-    rawQuant(blockIndex(receivedBlocks)) := io.input.bits.quant
+    if (maxBlocks == 1) {
+      rawQuant(0) := io.input.bits.quant
+    } else {
+      rawQuant(blockIndex(receivedBlocks)) := io.input.bits.quant
+    }
 
     val nextReceived = receivedBlocks + 1.U
     receivedBlocks := nextReceived

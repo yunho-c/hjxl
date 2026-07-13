@@ -26,8 +26,8 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   private val includeXyb = includes(TraceStage.Xyb)
   private val includeDct = includes(TraceStage.RawDct8x8)
   private val includeRawQuant = traceRoute == TraceStage.RawQuantField
-  private val includeYtoxMap = includes(TraceStage.YtoxMap)
-  private val includeYtobMap = includes(TraceStage.YtobMap)
+  private val includeYtoxMap = traceRoute == TraceStage.YtoxMap
+  private val includeYtobMap = traceRoute == TraceStage.YtobMap
   private val includeQuant = includes(TraceStage.QuantizedAc)
   private val includeDcToken = includes(TraceStage.DcTokens)
   private val includeAcMetadataToken = includes(TraceStage.AcMetadataTokens)
@@ -46,13 +46,17 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   val xybTrace = if (includeXyb) Some(Module(new FrameXybTraceStage(c))) else None
   val dctTrace = if (includeDct) Some(Module(new FrameDct8x8TraceStage(c))) else None
   val rawQuantTrace = if (includeRawQuant) Some(Module(new FrameRawQuantFieldTraceStage(c))) else None
-  val ytoxTrace = if (includeYtoxMap) Some(Module(new FrameCflMapTraceStage(c, TraceStage.YtoxMap))) else None
-  val ytobTrace = if (includeYtobMap) Some(Module(new FrameCflMapTraceStage(c, TraceStage.YtobMap))) else None
-  val quantTrace = if (includeQuant) Some(Module(new FrameAqDctOnlyQuantizeTraceStage(c))) else None
+  val ytoxTrace =
+    if (includeYtoxMap) Some(Module(new FrameAqCflMapTraceStage(c, Some(TraceStage.YtoxMap)))) else None
+  val ytobTrace =
+    if (includeYtobMap) Some(Module(new FrameAqCflMapTraceStage(c, Some(TraceStage.YtobMap)))) else None
+  val quantTrace = if (includeQuant) Some(Module(new FrameAqCflDctOnlyQuantizeTraceStage(c))) else None
   val dcTokenTrace = if (includeDcToken) Some(Module(new FrameDctOnlyDcTokenTraceStage(c))) else None
   val acMetadataTokenTrace =
-    if (includeAcMetadataToken) Some(Module(new FrameAqDctOnlyAcMetadataTokenTraceStage(c))) else None
-  val acTokenTrace = if (includeAcToken) Some(Module(new FrameDctOnlyAcTokenTraceStage(c))) else None
+    if (includeAcMetadataToken) Some(Module(new FrameAqCflDctOnlyAcMetadataTokenTraceStage(c))) else None
+  val acTokenTrace =
+    if (includeAcToken) Some(Module(new FrameAqCflDctOnlyQuantizeTokenTraceStage(c, acTokensOnly = true)))
+    else None
   val acStrategyTrace = if (includeAcStrategy) Some(Module(new FrameAcStrategyTraceStage(c))) else None
   val aqContrastTrace = if (includeAqContrast) Some(Module(new FrameAqContrastTraceStage(c))) else None
   val aqFuzzyErosionTrace =

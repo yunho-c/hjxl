@@ -13,7 +13,13 @@ import chisel3.util._
   * buffered blocks through `DctOnlyQuantizeTraceStage` with the estimated tile
   * multipliers substituted into each block.
   */
-class FramePreparedCflDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FramePreparedCflDctOnlyQuantizeTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBitsOverride: Option[Int] = None
+) extends Module {
+  private val activeCoefficientFractionBits =
+    coefficientFractionBitsOverride.getOrElse(c.preparedDctCoefficientFractionBits)
+  require(activeCoefficientFractionBits > 0, "coefficientFractionBits must be positive")
   private val blockDim = HjxlConstants.BlockDim
   private val blockSize = blockDim * blockDim
   private val tileDim = HjxlConstants.TileDim
@@ -63,6 +69,24 @@ class FramePreparedCflDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) ex
   val ytox = Reg(Vec(maxTiles, SInt(8.W)))
   val ytob = Reg(Vec(maxTiles, SInt(8.W)))
 
+  private def coefficientsAt(value: UInt) =
+    if (maxBlocks == 1) coefficients(0) else coefficients(blockIndex(value))
+
+  private def quantAt(value: UInt): UInt =
+    if (maxBlocks == 1) quant(0) else quant(blockIndex(value))
+
+  private def scaleAt(value: UInt): UInt =
+    if (maxBlocks == 1) scaleQ16(0) else scaleQ16(blockIndex(value))
+
+  private def inverseAcAt(value: UInt): UInt =
+    if (maxBlocks == 1) invQacQ16(0) else invQacQ16(blockIndex(value))
+
+  private def inverseDcAt(value: UInt) =
+    if (maxBlocks == 1) invDcFactorQ16(0) else invDcFactorQ16(blockIndex(value))
+
+  private def xMultiplierAt(value: UInt): UInt =
+    if (maxBlocks == 1) xQmMultiplierQ16(0) else xQmMultiplierQ16(blockIndex(value))
+
   val receiving :: captureCfl :: feedQuantize :: emitQuantize :: Nil = Enum(4)
   val state = RegInit(receiving)
   val receivedBlocks = RegInit(0.U(blockCountBits.W))
@@ -91,25 +115,26 @@ class FramePreparedCflDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) ex
       nextXBlocks > maxXBlocks.U || nextYBlocks > maxYBlocks.U ||
       nextXTiles > maxXTiles.U || nextYTiles > maxYTiles.U
 
-  val cflMaps = Module(new FramePreparedCflMapTraceStage(c))
+  val cflMaps = Module(
+    new FramePreparedCflMapTraceStage(c, Some(activeCoefficientFractionBits))
+  )
   cflMaps.io.config := activeConfig
   cflMaps.io.input.valid :=
     state === receiving && io.input.valid && !configOutOfRange && receivedBlocks < nextTotalBlocks
   cflMaps.io.input.bits := io.input.bits
   cflMaps.io.trace.ready := state === captureCfl
 
-  val quantizer = Module(new DctOnlyQuantizeTraceStage(c, c.preparedDctCoefficientFractionBits))
+  val quantizer = Module(new DctOnlyQuantizeTraceStage(c, activeCoefficientFractionBits))
   val quantizeTile = CflTileGeometry.blockTile(quantizeBlock, xBlocks, xTiles)
-  val quantizeIndex = blockIndex(quantizeBlock)
 
   quantizer.io.input.valid := state === feedQuantize
   quantizer.io.input.bits.group := quantizeBlock
-  quantizer.io.input.bits.quantize.coefficients := coefficients(quantizeIndex)
-  quantizer.io.input.bits.quantize.quant := quant(quantizeIndex)
-  quantizer.io.input.bits.quantize.scaleQ16 := scaleQ16(quantizeIndex)
-  quantizer.io.input.bits.quantize.invQacQ16 := invQacQ16(quantizeIndex)
-  quantizer.io.input.bits.quantize.invDcFactorQ16 := invDcFactorQ16(quantizeIndex)
-  quantizer.io.input.bits.quantize.xQmMultiplierQ16 := xQmMultiplierQ16(quantizeIndex)
+  quantizer.io.input.bits.quantize.coefficients := coefficientsAt(quantizeBlock)
+  quantizer.io.input.bits.quantize.quant := quantAt(quantizeBlock)
+  quantizer.io.input.bits.quantize.scaleQ16 := scaleAt(quantizeBlock)
+  quantizer.io.input.bits.quantize.invQacQ16 := inverseAcAt(quantizeBlock)
+  quantizer.io.input.bits.quantize.invDcFactorQ16 := inverseDcAt(quantizeBlock)
+  quantizer.io.input.bits.quantize.xQmMultiplierQ16 := xMultiplierAt(quantizeBlock)
   quantizer.io.input.bits.quantize.ytox := ytoxAt(quantizeTile)
   quantizer.io.input.bits.quantize.ytob := ytobAt(quantizeTile)
   quantizer.io.trace.ready := state === emitQuantize && io.trace.ready
@@ -135,12 +160,21 @@ class FramePreparedCflDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) ex
     totalBlocks := 0.U
   }.elsewhen(io.input.fire) {
     val index = blockIndex(receivedBlocks)
-    coefficients(index) := io.input.bits.coefficients
-    quant(index) := io.input.bits.quant
-    scaleQ16(index) := io.input.bits.scaleQ16
-    invQacQ16(index) := io.input.bits.invQacQ16
-    invDcFactorQ16(index) := io.input.bits.invDcFactorQ16
-    xQmMultiplierQ16(index) := io.input.bits.xQmMultiplierQ16
+    if (maxBlocks == 1) {
+      coefficients(0) := io.input.bits.coefficients
+      quant(0) := io.input.bits.quant
+      scaleQ16(0) := io.input.bits.scaleQ16
+      invQacQ16(0) := io.input.bits.invQacQ16
+      invDcFactorQ16(0) := io.input.bits.invDcFactorQ16
+      xQmMultiplierQ16(0) := io.input.bits.xQmMultiplierQ16
+    } else {
+      coefficients(index) := io.input.bits.coefficients
+      quant(index) := io.input.bits.quant
+      scaleQ16(index) := io.input.bits.scaleQ16
+      invQacQ16(index) := io.input.bits.invQacQ16
+      invDcFactorQ16(index) := io.input.bits.invDcFactorQ16
+      xQmMultiplierQ16(index) := io.input.bits.xQmMultiplierQ16
+    }
 
     when(receivedBlocks === 0.U) {
       latchedConfig := io.config

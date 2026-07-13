@@ -98,11 +98,14 @@ owned by the host tools for now.
   default, into `FrameXybTraceStage` when `FrameConfig.enableXyb` is true, and
   into `FrameDct8x8TraceStage` when `FrameConfig.enableDct` is true. When both
   `enableDct` and `enableQuant` are true, it routes into
-  `FrameAqDctOnlyQuantizeTraceStage`; when `enableTokenize` is also true, it
+  `FrameAqCflDctOnlyQuantizeTraceStage`; when `enableTokenize` is also true, it
   uses `tokenSelect` to route into `FrameDctOnlyDcTokenTraceStage`,
-  or `FrameAqDctOnlyAcMetadataTokenTraceStage`. The quantized and metadata
-  routes now consume the completed adaptive raw-quant field; the DC-only and
-  focused AC-only token routes remain on the earlier fixed scheduler. When
+  `FrameAqCflDctOnlyAcMetadataTokenTraceStage`, or the focused
+  `FrameAqCflDctOnlyQuantizeTokenTraceStage` AC stream. The quantized, metadata,
+  and focused AC-token routes consume the completed adaptive raw-quant field
+  and RGB-derived tile CFL; the DC-only route remains on the earlier fixed
+  scheduler. Focused Y-to-X/Y-to-B routes expose the same estimated maps, while
+  the default all-route core omits those expensive diagnostic map schedulers. When
   only `enableQuant` is true,
   it routes into `FrameAcStrategyTraceStage`. When XYB and quantization are
   enabled without DCT/tokenization, `tokenSelect=AqContrast` instead routes the
@@ -381,28 +384,32 @@ wrappers.
   this converter from `FrameAqFinalMapPipeline`; the prepared stage remains for
   exact arithmetic isolation and is not yet integrated into prepared-token
   scheduling.
-- `FrameAqDctOnlyBlockStage` is the RGB-to-prepared-quantizer bridge. It retains
-  the completed AQ pipeline's X/Y/B Q12 block, applies three shared
-  `Dct8x8Approx` instances, chooses adaptive or explicit fixed raw quant, and
-  supplies all distance-derived scalar parameters to `DctOnlyQuantizeBlock`.
-  Adaptive blocks compute `round(2^32 / (scaleQ16 * rawQuant))` with the
+- `FrameAqDctBlockStage` is the reusable RGB-to-DCT bridge. It retains the
+  completed AQ pipeline's X/Y/B Q12 block, applies three shared
+  `Dct8x8Approx` instances, selects adaptive or explicit fixed raw quant, and
+  emits distance-derived scalars without a reciprocal. This keeps map and
+  metadata-only hierarchies from elaborating unused divider hardware.
+  `FrameAqDctOnlyBlockStage` enriches the same record for quantization:
+  adaptive blocks compute `round(2^32 / (scaleQ16 * rawQuant))` with the
   33-cycle `AdaptiveInvQacQ16` restoring divider; zero divisors saturate and no
   division operator appears in emitted RTL. A nonzero `fixedRawQuant` instead
   preserves the caller-supplied `fixedInvQacQ16` contract.
-- `FrameAqDctOnlyQuantizeTraceStage` feeds that Q12 block stream into the
-  parameterized prepared quantization scheduler and emits 192 `QuantizedAc`,
-  three `QuantDc`, and three `NumNonzeros` records per raster block.
-  `FrameAqDctOnlyQuantizeTokenTraceStage` feeds the same source into the exact
-  prepared quantize-to-token scheduler and emits DC, all-DCT strategy,
-  adaptive AC-metadata, and AC logical traces in host-assembler order.
-  `FrameAqDctOnlyAcMetadataTokenTraceStage` is intentionally lighter: it sends
-  final-map raw quant and fixed scalar CFL directly to the prepared metadata
-  scheduler, so its hierarchy contains neither DCT nor reciprocal hardware.
-- `FrameCflMapTraceStage` emits the current fixed scalar CFL maps for a padded
-  frame: one Y-to-X or Y-to-B value per 64x64 tile. `HjxlCore` exposes these as
-  focused `TraceStage.YtoxMap` and `TraceStage.YtobMap` routes today, giving
-  future chroma-from-luma work a tested trace shape without changing the
-  default metadata route.
+- `FrameAqCflMapTraceStage` feeds the native-Q12 DCT records into the prepared
+  tile estimator. `FramePreparedCflMapTraceStage` widens Q12 to its Q16 fitting
+  domain only at that boundary, preserving the prepared-Q16 stream ABI. It can
+  expose both maps or compile-time-filter one map while automatically draining
+  the other internal result; selected-stream `traceLast` marks the last chosen
+  tile.
+- `FrameAqCflDctOnlyQuantizeTraceStage` replays the buffered records with the
+  estimated maps through the Q12-parameterized prepared quantizer and emits
+  192 `QuantizedAc`, three `QuantDc`, and three `NumNonzeros` records per raster
+  block. `FrameAqCflDctOnlyQuantizeTokenTraceStage` emits DC, all-DCT strategy,
+  adaptive AC-metadata, and AC logical traces in host-assembler order; its
+  focused-core form drains the preceding token classes and exposes only AC.
+  `FrameAqCflDctOnlyAcMetadataTokenTraceStage` uses the DCT records for map
+  fitting but deliberately omits reciprocal hardware. The older
+  `FrameAqDctOnly*` wrappers and `FrameCflMapTraceStage` remain fixed-CFL
+  diagnostics rather than current core routes.
 - `FrameDctOnlyQuantizeTraceStage` is the retained fixed frame-level
   quantized-block diagnostic. It buffers and pads RGB like
   `FrameDct8x8TraceStage`, converts
@@ -567,11 +574,15 @@ wrappers.
   trace/status ports; the strategy-mask and nonlinear-mask specs also reject
   division operators in their sequential arithmetic modules.
 - `ElaborateAqDctOnlyQuantize`, `ElaborateAqDctOnlyAcMetadataTokens`, and
-  `ElaborateAqDctOnlyQuantizeTokens` emit the adaptive RGB quantized-trace,
-  lightweight metadata, and combined logical-token tops. Their structural
-  regression requires one RGB-to-XYB converter in each hierarchy, exactly
-  three DCT instances only where coefficients are needed, and no division
-  operator in `AdaptiveInvQacQ16`.
+  `ElaborateAqDctOnlyQuantizeTokens` retain the fixed-CFL adaptive RGB
+  diagnostics. `ElaborateAqCflMaps`, `ElaborateAqCflDctOnlyQuantize`,
+  `ElaborateAqCflDctOnlyAcMetadataTokens`, and
+  `ElaborateAqCflDctOnlyQuantizeTokens` emit the estimated-CFL map, quantized,
+  metadata, and combined logical-token tops used by the current RGB core
+  routes. Structural regressions require one RGB-to-XYB converter and three
+  DCT instances in every estimated-CFL hierarchy; only quantization/token tops
+  may contain `AdaptiveInvQacQ16`, and that restoring implementation must not
+  emit a division operator.
 - `ElaboratePreparedDctOnlyQuantize` generates standalone SystemVerilog for the
   prepared-DCT quantization scheduler. Use it when the integration boundary is
   after DCT/AQ/CFL scalar generation but before quantized DC/AC tokenization.
@@ -736,14 +747,13 @@ wrappers.
   DC/strategy/metadata/AC trace stream.
 - `PreparedTokenElaborationSpec` guards the generated trace port surface for
   prepared DC, AC-metadata, AC, and combined token tops.
-- Full frame-level quantized-block parity remains open even though adaptive raw
-  quant, dynamic reciprocal scaling, quantized traces, AC metadata, and a
-  standalone combined token stream are now connected. The RGB path still uses
-  approximate Q12 XYB/DCT, fixed scalar CFL, and ordinary 8x8 DCT strategy;
-  broader distance generation, RGB-derived CFL, rectangular-strategy
-  scheduling, and whole-frame reference comparison remain separate work. Full
-  token-to-codestream parity also still needs entropy optimization and
-  bitstream assembly.
+- Full frame-level parity remains open even though adaptive raw quant, dynamic
+  reciprocal scaling, RGB-derived tile CFL, quantized traces, AC metadata, and
+  a combined token stream are connected. The RGB path still uses approximate
+  Q12 XYB/DCT and ordinary 8x8 DCT strategy; broader distance generation,
+  rectangular-strategy scheduling, whole-frame reference comparison, and
+  RGB-token-to-codestream proof remain separate work. Entropy optimization and
+  bitstream assembly remain host responsibilities.
 - `CflCoefficientSampleWeight`/`CflWeightedSumAccumulator`/
   `CflMultiplierEstimator`/`CflCoefficientSumAccumulator`/
   `CflTileCoefficientEstimator`/`CflTileCoefficientTraceStage` cover only

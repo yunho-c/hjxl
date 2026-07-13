@@ -104,27 +104,59 @@ class AdaptiveInvQacQ16 extends Module {
   }
 }
 
+class AqDctBlockOutput(c: HjxlConfig) extends Bundle {
+  val coefficients = Vec(3, Vec(HjxlConstants.BlockDim * HjxlConstants.BlockDim, SInt(c.traceValueBits.W)))
+  val quant = UInt(8.W)
+  val scaleQ16 = UInt(16.W)
+  val fixedInvQacQ16 = UInt(32.W)
+  val adaptiveRawQuant = Bool()
+  val invDcFactorQ16 = Vec(3, UInt(32.W))
+  val xQmMultiplierQ16 = UInt(32.W)
+  val fixedYtox = SInt(8.W)
+  val fixedYtob = SInt(8.W)
+  val blockIndex = UInt(32.W)
+  val blockLast = Bool()
+}
+
 class AqDctOnlyBlockOutput(c: HjxlConfig) extends Bundle {
   val quantize = new DctOnlyQuantizeBlockInput(c)
   val blockIndex = UInt(32.W)
   val blockLast = Bool()
 }
 
-/** Converts the completed RGB AQ stream into prepared all-DCT block inputs.
+private object AqDctBlockWiring {
+  def connectPrepared(
+      target: DctOnlyQuantizeBlockInput,
+      source: AqDctBlockOutput,
+      invQacQ16: UInt,
+      ytox: SInt,
+      ytob: SInt
+  ): Unit = {
+    target.coefficients := source.coefficients
+    target.quant := source.quant
+    target.scaleQ16 := source.scaleQ16
+    target.invQacQ16 := invQacQ16
+    target.invDcFactorQ16 := source.invDcFactorQ16
+    target.xQmMultiplierQ16 := source.xQmMultiplierQ16
+    target.ytox := ytox
+    target.ytob := ytob
+  }
+}
+
+/** Converts the completed RGB AQ stream into native-Q12 all-DCT blocks.
   *
   * The source reuses the X/Y/B block retained by `FrameAqFinalMapPipeline`, so
-  * RGB-to-XYB conversion and frame storage occur only once. Adaptive blocks use
-  * a dynamically computed reciprocal matching their raw-quant byte. A nonzero
-  * `fixedRawQuant` preserves the explicit fixed byte and caller-supplied
-  * `fixedInvQacQ16` experiment contract.
+  * RGB-to-XYB conversion and frame storage occur only once. Reciprocal AC-scale
+  * generation is deliberately downstream so CFL-map and metadata-only routes
+  * do not elaborate arithmetic they never consume.
   */
-class FrameAqDctOnlyBlockStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FrameAqDctBlockStage(c: HjxlConfig = HjxlConfig()) extends Module {
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
 
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
-    val output = Decoupled(new AqDctOnlyBlockOutput(c))
+    val output = Decoupled(new AqDctBlockOutput(c))
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
@@ -143,15 +175,6 @@ class FrameAqDctOnlyBlockStage(c: HjxlConfig = HjxlConfig()) extends Module {
     aq.io.output.bits.fixedRawQuant
   )
 
-  val reciprocal = Module(new AdaptiveInvQacQ16)
-  val reciprocalStarted = RegInit(false.B)
-  reciprocal.io.input.bits.scaleQ16 := aq.io.output.bits.scaleQ16
-  reciprocal.io.input.bits.rawQuant := selectedRawQuant
-  reciprocal.io.input.valid := aq.io.output.valid && adaptiveRawQuant && !reciprocalStarted
-  when(reciprocal.io.input.fire) {
-    reciprocalStarted := true.B
-  }
-
   val dctX = Module(new Dct8x8Approx(c))
   val dctY = Module(new Dct8x8Approx(c))
   val dctB = Module(new Dct8x8Approx(c))
@@ -165,46 +188,96 @@ class FrameAqDctOnlyBlockStage(c: HjxlConfig = HjxlConfig()) extends Module {
     dctB.io.input.bits(coefficient) := aq.io.output.bits.xybBQ12(coefficient)
   }
 
-  val reciprocalAvailable = !adaptiveRawQuant || (reciprocalStarted && reciprocal.io.output.valid)
   val allDctValid = dcts.map(_.io.output.valid).reduce(_ && _)
-  io.output.valid := aq.io.output.valid && allDctValid && reciprocalAvailable
-  io.output.bits.quantize.quant := selectedRawQuant
-  io.output.bits.quantize.scaleQ16 := aq.io.output.bits.scaleQ16
-  io.output.bits.quantize.invQacQ16 := Mux(
-    adaptiveRawQuant,
-    reciprocal.io.output.bits,
-    aq.io.output.bits.fixedInvQacQ16
-  )
-  io.output.bits.quantize.invDcFactorQ16 := aq.io.output.bits.invDcFactorQ16
-  io.output.bits.quantize.xQmMultiplierQ16 := aq.io.output.bits.xQmMultiplierQ16
-  io.output.bits.quantize.ytox := aq.io.output.bits.fixedYtox
-  io.output.bits.quantize.ytob := aq.io.output.bits.fixedYtob
+  io.output.valid := aq.io.output.valid && allDctValid
+  io.output.bits.quant := selectedRawQuant
+  io.output.bits.scaleQ16 := aq.io.output.bits.scaleQ16
+  io.output.bits.fixedInvQacQ16 := aq.io.output.bits.fixedInvQacQ16
+  io.output.bits.adaptiveRawQuant := adaptiveRawQuant
+  io.output.bits.invDcFactorQ16 := aq.io.output.bits.invDcFactorQ16
+  io.output.bits.xQmMultiplierQ16 := aq.io.output.bits.xQmMultiplierQ16
+  io.output.bits.fixedYtox := aq.io.output.bits.fixedYtox
+  io.output.bits.fixedYtob := aq.io.output.bits.fixedYtob
   io.output.bits.blockIndex := aq.io.output.bits.blockIndex
   io.output.bits.blockLast := aq.io.output.bits.blockLast
   for (coefficient <- 0 until blockSize) {
-    io.output.bits.quantize.coefficients(0)(coefficient) := dctX.io.output.bits(coefficient)
-    io.output.bits.quantize.coefficients(1)(coefficient) := dctY.io.output.bits(coefficient)
-    io.output.bits.quantize.coefficients(2)(coefficient) := dctB.io.output.bits(coefficient)
+    io.output.bits.coefficients(0)(coefficient) := dctX.io.output.bits(coefficient)
+    io.output.bits.coefficients(1)(coefficient) := dctY.io.output.bits(coefficient)
+    io.output.bits.coefficients(2)(coefficient) := dctB.io.output.bits(coefficient)
   }
 
-  val consumeBlock = io.output.ready && allDctValid && reciprocalAvailable
+  val consumeBlock = io.output.ready && allDctValid
   aq.io.output.ready := consumeBlock
   for (dct <- dcts) {
-    dct.io.output.ready := io.output.ready && aq.io.output.valid && reciprocalAvailable
+    dct.io.output.ready := io.output.ready && aq.io.output.valid
   }
+
+  io.busy := aq.io.busy
+  io.overflow := aq.io.overflow
+}
+
+/** Adds the reciprocal required by the prepared all-DCT quantizer contract.
+  *
+  * Adaptive blocks compute a reciprocal matching their raw-quant byte. A
+  * nonzero `fixedRawQuant` preserves the explicit fixed byte and the caller's
+  * `fixedInvQacQ16` experiment contract.
+  */
+class FrameAqDctOnlyBlockStage(c: HjxlConfig = HjxlConfig()) extends Module {
+  val io = IO(new Bundle {
+    val config = Input(new FrameConfig(c))
+    val input = Flipped(Decoupled(new RgbPixel(c)))
+    val output = Decoupled(new AqDctOnlyBlockOutput(c))
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
+  })
+
+  val blocks = Module(new FrameAqDctBlockStage(c))
+  val reciprocal = Module(new AdaptiveInvQacQ16)
+  val reciprocalStarted = RegInit(false.B)
+
+  blocks.io.config := io.config
+  blocks.io.input <> io.input
+
+  reciprocal.io.input.bits.scaleQ16 := blocks.io.output.bits.scaleQ16
+  reciprocal.io.input.bits.rawQuant := blocks.io.output.bits.quant
+  reciprocal.io.input.valid :=
+    blocks.io.output.valid && blocks.io.output.bits.adaptiveRawQuant && !reciprocalStarted
+  when(reciprocal.io.input.fire) {
+    reciprocalStarted := true.B
+  }
+
+  val reciprocalAvailable =
+    !blocks.io.output.bits.adaptiveRawQuant || (reciprocalStarted && reciprocal.io.output.valid)
+  val selectedInvQacQ16 = Mux(
+    blocks.io.output.bits.adaptiveRawQuant,
+    reciprocal.io.output.bits,
+    blocks.io.output.bits.fixedInvQacQ16
+  )
+  io.output.valid := blocks.io.output.valid && reciprocalAvailable
+  AqDctBlockWiring.connectPrepared(
+    io.output.bits.quantize,
+    blocks.io.output.bits,
+    selectedInvQacQ16,
+    blocks.io.output.bits.fixedYtox,
+    blocks.io.output.bits.fixedYtob
+  )
+  io.output.bits.blockIndex := blocks.io.output.bits.blockIndex
+  io.output.bits.blockLast := blocks.io.output.bits.blockLast
+
+  blocks.io.output.ready := io.output.ready && reciprocalAvailable
   reciprocal.io.output.ready :=
-    io.output.ready && aq.io.output.valid && allDctValid && adaptiveRawQuant && reciprocalStarted
+    io.output.ready && blocks.io.output.valid && blocks.io.output.bits.adaptiveRawQuant && reciprocalStarted
 
   when(io.output.fire) {
     reciprocalStarted := false.B
   }
   assert(
-    !reciprocalStarted || (aq.io.output.valid && adaptiveRawQuant),
+    !reciprocalStarted || (blocks.io.output.valid && blocks.io.output.bits.adaptiveRawQuant),
     "adaptive inverse-QAC context outlived its AQ block"
   )
 
-  io.busy := aq.io.busy || reciprocal.io.busy || reciprocalStarted
-  io.overflow := aq.io.overflow
+  io.busy := blocks.io.busy || reciprocal.io.busy || reciprocalStarted
+  io.overflow := blocks.io.overflow
 }
 
 /** RGB-connected adaptive all-DCT quantized AC/DC/nonzero traces. */
@@ -336,6 +409,198 @@ class FrameAqDctOnlyQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig()) extend
   io.trace.bits := tokens.io.trace.bits
   tokens.io.trace.ready := io.trace.ready
   io.traceLast := tokens.io.traceLast
+  io.busy := draining || blocks.io.busy || tokens.io.busy
+  io.overflow := blocks.io.overflow || tokens.io.overflow
+
+  when(blocks.io.output.fire && blocks.io.output.bits.blockLast) {
+    draining := true.B
+  }
+  when(io.trace.fire && io.traceLast) {
+    draining := false.B
+  }
+}
+
+/** RGB-derived CFL map traces from the native-Q12 adaptive DCT block stream. */
+class FrameAqCflMapTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    traceStageFilter: Option[Int] = None
+) extends Module {
+  val io = IO(new Bundle {
+    val config = Input(new FrameConfig(c))
+    val input = Flipped(Decoupled(new RgbPixel(c)))
+    val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
+  })
+
+  val blocks = Module(new FrameAqDctBlockStage(c))
+  val maps = Module(
+    new FramePreparedCflMapTraceStage(
+      c,
+      coefficientFractionBitsOverride = Some(Dct8Approx.FractionBits),
+      traceStageFilter = traceStageFilter
+    )
+  )
+  val draining = RegInit(false.B)
+
+  blocks.io.config := io.config
+  blocks.io.input.bits := io.input.bits
+  blocks.io.input.valid := io.input.valid && !draining
+  io.input.ready := blocks.io.input.ready && !draining
+
+  maps.io.config := io.config
+  maps.io.input.valid := blocks.io.output.valid
+  AqDctBlockWiring.connectPrepared(
+    maps.io.input.bits,
+    blocks.io.output.bits,
+    0.U,
+    0.S,
+    0.S
+  )
+  blocks.io.output.ready := maps.io.input.ready
+
+  io.trace.valid := maps.io.trace.valid
+  io.trace.bits := maps.io.trace.bits
+  maps.io.trace.ready := io.trace.ready
+  io.traceLast := maps.io.traceLast
+  io.busy := draining || blocks.io.busy || maps.io.busy
+  io.overflow := blocks.io.overflow || maps.io.overflow
+
+  when(blocks.io.output.fire && blocks.io.output.bits.blockLast) {
+    draining := true.B
+  }
+  when(io.trace.fire && io.traceLast) {
+    draining := false.B
+  }
+}
+
+/** RGB adaptive quantization with tile CFL estimated from the same Q12 DCTs. */
+class FrameAqCflDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+  val io = IO(new Bundle {
+    val config = Input(new FrameConfig(c))
+    val input = Flipped(Decoupled(new RgbPixel(c)))
+    val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
+  })
+
+  val blocks = Module(new FrameAqDctOnlyBlockStage(c))
+  val quantized = Module(
+    new FramePreparedCflDctOnlyQuantizeTraceStage(c, Some(Dct8Approx.FractionBits))
+  )
+  val draining = RegInit(false.B)
+
+  blocks.io.config := io.config
+  blocks.io.input.bits := io.input.bits
+  blocks.io.input.valid := io.input.valid && !draining
+  io.input.ready := blocks.io.input.ready && !draining
+
+  quantized.io.config := io.config
+  quantized.io.input.valid := blocks.io.output.valid
+  quantized.io.input.bits := blocks.io.output.bits.quantize
+  blocks.io.output.ready := quantized.io.input.ready
+
+  io.trace.valid := quantized.io.trace.valid
+  io.trace.bits := quantized.io.trace.bits
+  quantized.io.trace.ready := io.trace.ready
+  io.traceLast := quantized.io.traceLast
+  io.busy := draining || blocks.io.busy || quantized.io.busy
+  io.overflow := blocks.io.overflow || quantized.io.overflow
+
+  when(blocks.io.output.fire && blocks.io.output.bits.blockLast) {
+    draining := true.B
+  }
+  when(io.trace.fire && io.traceLast) {
+    draining := false.B
+  }
+}
+
+/** RGB AC metadata with adaptive raw quant and internally estimated tile CFL. */
+class FrameAqCflDctOnlyAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+  val io = IO(new Bundle {
+    val config = Input(new FrameConfig(c))
+    val input = Flipped(Decoupled(new RgbPixel(c)))
+    val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
+  })
+
+  val blocks = Module(new FrameAqDctBlockStage(c))
+  val metadata = Module(
+    new FramePreparedCflAcMetadataTokenTraceStage(c, Some(Dct8Approx.FractionBits))
+  )
+  val draining = RegInit(false.B)
+
+  blocks.io.config := io.config
+  blocks.io.input.bits := io.input.bits
+  blocks.io.input.valid := io.input.valid && !draining
+  io.input.ready := blocks.io.input.ready && !draining
+
+  metadata.io.config := io.config
+  metadata.io.input.valid := blocks.io.output.valid
+  AqDctBlockWiring.connectPrepared(
+    metadata.io.input.bits,
+    blocks.io.output.bits,
+    0.U,
+    0.S,
+    0.S
+  )
+  blocks.io.output.ready := metadata.io.input.ready
+
+  io.trace.valid := metadata.io.trace.valid
+  io.trace.bits := metadata.io.trace.bits
+  metadata.io.trace.ready := io.trace.ready
+  io.traceLast := metadata.io.traceLast
+  io.busy := draining || blocks.io.busy || metadata.io.busy
+  io.overflow := blocks.io.overflow || metadata.io.overflow
+
+  when(blocks.io.output.fire && blocks.io.output.bits.blockLast) {
+    draining := true.B
+  }
+  when(io.trace.fire && io.traceLast) {
+    draining := false.B
+  }
+}
+
+/** Combined RGB logical tokens with adaptive quant and estimated tile CFL. */
+class FrameAqCflDctOnlyQuantizeTokenTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    acTokensOnly: Boolean = false
+) extends Module {
+  val io = IO(new Bundle {
+    val config = Input(new FrameConfig(c))
+    val input = Flipped(Decoupled(new RgbPixel(c)))
+    val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
+  })
+
+  val blocks = Module(new FrameAqDctOnlyBlockStage(c))
+  val tokens = Module(
+    new FramePreparedCflDctOnlyQuantizeTokenTraceStage(c, Some(Dct8Approx.FractionBits))
+  )
+  val draining = RegInit(false.B)
+
+  blocks.io.config := io.config
+  blocks.io.input.bits := io.input.bits
+  blocks.io.input.valid := io.input.valid && !draining
+  io.input.ready := blocks.io.input.ready && !draining
+
+  tokens.io.config := io.config
+  tokens.io.input.valid := blocks.io.output.valid
+  tokens.io.input.bits := blocks.io.output.bits.quantize
+  blocks.io.output.ready := tokens.io.input.ready
+
+  val selectedTrace =
+    if (acTokensOnly) tokens.io.trace.bits.stage === TraceStage.AcTokens.U else true.B
+  io.trace.valid := tokens.io.trace.valid && selectedTrace
+  io.trace.bits := tokens.io.trace.bits
+  tokens.io.trace.ready := Mux(selectedTrace, io.trace.ready, true.B)
+  io.traceLast := io.trace.valid && tokens.io.traceLast
   io.busy := draining || blocks.io.busy || tokens.io.busy
   io.overflow := blocks.io.overflow || tokens.io.overflow
 

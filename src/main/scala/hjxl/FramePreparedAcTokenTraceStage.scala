@@ -161,6 +161,9 @@ class FramePreparedAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
   private def blockIndex(value: UInt): UInt =
     value(blockIndexBits - 1, 0)
 
+  private def nonzerosAt(value: UInt) =
+    if (maxBlocks == 1) numNonzeros(0) else numNonzeros(blockIndex(value))
+
   val configWidth = io.config.xsize(widthBits - 1, 0)
   val configHeight = io.config.ysize(heightBits - 1, 0)
   val nextXBlocks = ceilDiv(configWidth, blockDim)
@@ -178,14 +181,12 @@ class FramePreparedAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
   val northOrdinal = blockOrdinal - xBlocksSafe
 
   val currentIndex = blockIndex(blockOrdinal)
-  val westIndex = blockIndex(westOrdinal)
-  val northIndex = blockIndex(northOrdinal)
 
   val predictedNonzeros = Wire(Vec(3, UInt(8.W)))
   for (channel <- 0 until 3) {
-    val current = numNonzeros(currentIndex)(channel)
-    val west = numNonzeros(westIndex)(channel)
-    val north = numNonzeros(northIndex)(channel)
+    val current = nonzerosAt(blockOrdinal)(channel)
+    val west = nonzerosAt(westOrdinal)(channel)
+    val north = nonzerosAt(northOrdinal)(channel)
     predictedNonzeros(channel) := Mux(
       blockX === 0.U,
       Mux(blockY === 0.U, 32.U, north),
@@ -208,7 +209,7 @@ class FramePreparedAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
   blockTokens.io.input.valid := state === waitForBlock && coefficientStore.io.readResponse.valid
   blockTokens.io.input.bits.group := tokenOrdinal
   blockTokens.io.input.bits.predictedNonzeros := predictedNonzeros
-  blockTokens.io.input.bits.numNonzeros := numNonzeros(currentIndex)
+  blockTokens.io.input.bits.numNonzeros := nonzerosAt(blockOrdinal)
   blockTokens.io.input.bits.quantized := coefficientStore.io.readResponse.bits.quantized
   blockTokens.io.trace.ready := io.trace.ready && state === emitBlock
   coefficientStore.io.readResponse.ready := state === waitForBlock && blockTokens.io.input.ready
@@ -225,7 +226,11 @@ class FramePreparedAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
     state := receiving
     prefetchRequested := false.B
   }.elsewhen(io.input.fire) {
-    numNonzeros(blockIndex(received)) := io.input.bits.numNonzeros
+    if (maxBlocks == 1) {
+      numNonzeros(0) := io.input.bits.numNonzeros
+    } else {
+      numNonzeros(blockIndex(received)) := io.input.bits.numNonzeros
+    }
     val nextReceived = received + 1.U
     received := nextReceived
 

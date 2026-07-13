@@ -43,12 +43,16 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
   private def combinedText(files: Seq[(String, String)]): String =
     files.map { case (name, text) => s"// $name\n$text" }.mkString("\n")
 
-  "HjxlCore focused AC-token route elaborates the full AC-token scheduler" in {
+  "HjxlCore focused AC-token route elaborates the adaptive estimated-CFL scheduler" in {
     val files = emittedSystemVerilog(TraceStage.AcTokens)
     files.map(_._1) must contain("HjxlCore.sv")
     val text = combinedText(files)
     text must include("module HjxlCore")
-    text must include("module FrameDctOnlyAcTokenTraceStage")
+    text must include("module FrameAqCflDctOnlyQuantizeTokenTraceStage")
+    text must include("module FramePreparedCflDctOnlyQuantizeTokenTraceStage")
+    text must include("module FramePreparedCflMapTraceStage")
+    text must include("module AdaptiveInvQacQ16")
+    text must include("module Dct8x8Approx")
     text must include("io_config_tokenSelect")
     text must include("io_trace_bits_stage")
     text must include("io_trace_bits_value")
@@ -65,46 +69,54 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must include("io_busy")
     text must include("io_overflow")
     text must include("module FrameAqContrastTraceStage")
-    text must include("module FrameAqDctOnlyQuantizeTraceStage")
-    text must include("module FrameAqDctOnlyAcMetadataTokenTraceStage")
+    text must include("module FrameAqCflDctOnlyQuantizeTraceStage")
+    text must include("module FrameAqCflDctOnlyAcMetadataTokenTraceStage")
+    text must include("module FramePreparedCflMapTraceStage")
     text must include("module FrameAqDctOnlyBlockStage")
+    text must include("module FrameAqDctBlockStage")
     text must include("module AdaptiveInvQacQ16")
-    text must not include "module FrameDctOnlyAcTokenTraceStage"
+    text must not include "module FrameAqCflMapTraceStage"
+    text must not include "module FrameAqCflDctOnlyQuantizeTokenTraceStage"
     text must not include "module FrameAqStrategyMaskTraceStage"
     text must not include "module FrameAqHfModulationTraceStage"
     text must not include "module FrameAqColorModulationTraceStage"
     text must not include "module FrameAqGammaModulationTraceStage"
   }
 
-  "HjxlCore focused quantized route uses one adaptive block source" in {
+  "HjxlCore focused quantized route uses one adaptive estimated-CFL block source" in {
     val files = emittedSystemVerilog(TraceStage.QuantizedAc)
     val text = combinedText(files)
     text must include("module HjxlCore")
-    text must include("module FrameAqDctOnlyQuantizeTraceStage")
+    text must include("module FrameAqCflDctOnlyQuantizeTraceStage")
     text must include("module FrameAqDctOnlyBlockStage")
+    text must include("module FrameAqDctBlockStage")
     text must include("module FrameAqFinalMapPipeline")
     text must include("module AdaptiveInvQacQ16")
-    text must include("module FramePreparedDctOnlyQuantizeTraceStage")
+    text must include("module FramePreparedCflDctOnlyQuantizeTraceStage")
+    text must include("module FramePreparedCflMapTraceStage")
+    text must include("module CflTileCoefficientEstimator")
     text must include("module Dct8x8Approx")
     text must not include "module FrameDctOnlyQuantizeTraceStage"
-    text must not include "module FrameAqDctOnlyAcMetadataTokenTraceStage"
+    text must not include "module FrameAqCflDctOnlyAcMetadataTokenTraceStage"
     val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r.findAllMatchIn(text).length
     converterInstances mustBe 1
     val dctInstances = """Dct8x8Approx\s+\w+\s*\(""".r.findAllMatchIn(text).length
     dctInstances mustBe 3
   }
 
-  "HjxlCore focused AC-metadata route avoids DCT and reciprocal hardware" in {
+  "HjxlCore focused AC-metadata route estimates CFL without reciprocal hardware" in {
     val files = emittedSystemVerilog(TraceStage.AcMetadataTokens)
     val text = combinedText(files)
     text must include("module HjxlCore")
-    text must include("module FrameAqDctOnlyAcMetadataTokenTraceStage")
+    text must include("module FrameAqCflDctOnlyAcMetadataTokenTraceStage")
+    text must include("module FrameAqDctBlockStage")
     text must include("module FrameAqFinalMapPipeline")
     text must include("module AqMapToRawQuant")
+    text must include("module FramePreparedCflMapTraceStage")
     text must include("module FramePreparedAcMetadataTokenTraceStage")
     text must not include "module FrameAqDctOnlyBlockStage"
     text must not include "module AdaptiveInvQacQ16"
-    text must not include "module Dct8x8Approx"
+    text must include("module Dct8x8Approx")
     val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r.findAllMatchIn(text).length
     converterInstances mustBe 1
   }
@@ -255,12 +267,17 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must not include "module FrameAcStrategyTraceStage"
   }
 
-  "HjxlCore focused CFL-map routes elaborate the fixed CFL map scheduler" in {
+  "HjxlCore focused CFL-map routes elaborate the estimated RGB CFL scheduler" in {
     for (route <- Seq(TraceStage.YtoxMap, TraceStage.YtobMap)) {
       val files = emittedSystemVerilog(route)
       val text = combinedText(files)
       text must include("module HjxlCore")
-      text must include("module FrameCflMapTraceStage")
+      text must include("module FrameAqCflMapTraceStage")
+      text must include("module FrameAqDctBlockStage")
+      text must include("module FramePreparedCflMapTraceStage")
+      text must include("module CflTileCoefficientEstimator")
+      text must include("module Dct8x8Approx")
+      text must not include "module AdaptiveInvQacQ16"
       text must include("io_trace_bits_stage")
       text must include("io_traceLast")
       text must not include "module FrameAcStrategyTraceStage"

@@ -280,6 +280,54 @@ object ElaborateAqDctOnlyQuantizeTokens extends App {
   )
 }
 
+object ElaborateAqCflMaps extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqCflMapTraceStage(),
+    args = Array("--target-dir", "generated-aq-cfl-maps"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAqCflDctOnlyQuantize extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqCflDctOnlyQuantizeTraceStage(),
+    args = Array("--target-dir", "generated-aq-cfl-dct-only-quantize"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAqCflDctOnlyAcMetadataTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqCflDctOnlyAcMetadataTokenTraceStage(),
+    args = Array("--target-dir", "generated-aq-cfl-dct-only-ac-metadata-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAqCflDctOnlyQuantizeTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqCflDctOnlyQuantizeTokenTraceStage(),
+    args = Array("--target-dir", "generated-aq-cfl-dct-only-quantize-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaboratePreparedDctOnlyQuantizeTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedDctOnlyQuantizeTokenTraceStage(),

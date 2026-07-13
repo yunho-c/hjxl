@@ -10,10 +10,29 @@ import chisel3.util._
   * This is the first frame-level scheduler for real CFL map arithmetic. It
   * accepts the prepared DCT-only block payload in raster order, buffers the
   * X/Y/B coefficients, then streams each 64x64 tile through
-  * `CflTileCoefficientTraceStage`. The generated trace order is one
-  * `YtoxMap` row followed by one `YtobMap` row per tile.
+  * `CflTileCoefficientTraceStage`. Prepared inputs remain Q16 by default; an
+  * explicit fractional-width override is rescaled at the estimator boundary.
+  * The generated trace order is one `YtoxMap` row followed by one `YtobMap`
+  * row per tile unless a compile-time stage filter selects one map.
   */
-class FramePreparedCflMapTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FramePreparedCflMapTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBitsOverride: Option[Int] = None,
+    traceStageFilter: Option[Int] = None
+) extends Module {
+  private val activeCoefficientFractionBits =
+    coefficientFractionBitsOverride.getOrElse(c.preparedDctCoefficientFractionBits)
+  require(activeCoefficientFractionBits > 0, "coefficientFractionBits must be positive")
+  require(
+    activeCoefficientFractionBits < c.traceValueBits,
+    "coefficientFractionBits must fit in traceValueBits"
+  )
+  traceStageFilter.foreach { stage =>
+    require(
+      stage == TraceStage.YtoxMap || stage == TraceStage.YtobMap,
+      "traceStageFilter must select YtoxMap or YtobMap"
+    )
+  }
   private val blockDim = HjxlConstants.BlockDim
   private val blockSize = blockDim * blockDim
   private val tileDim = HjxlConstants.TileDim
@@ -27,7 +46,10 @@ class FramePreparedCflMapTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   private val blockIndexBits = math.max(1, log2Ceil(maxBlocks))
   private val widthBits = log2Ceil(c.maxFrameWidth + 1)
   private val heightBits = log2Ceil(c.maxFrameHeight + 1)
-  private val weightedBits = math.max(48, c.traceValueBits + 16)
+  private val estimatorFractionBits = 16
+  private val estimatorCoefficientBits =
+    c.traceValueBits + math.max(0, estimatorFractionBits - activeCoefficientFractionBits)
+  private val weightedBits = math.max(48, estimatorCoefficientBits + 16)
   private val sumBits = math.max(64, weightedBits + 16)
 
   val io = IO(new Bundle {
@@ -47,7 +69,24 @@ class FramePreparedCflMapTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
 
   private def minUInt(a: UInt, b: UInt): UInt = Mux(a < b, a, b)
 
+  private def coefficientForEstimator(value: SInt): SInt = {
+    val scaled =
+      if (activeCoefficientFractionBits < estimatorFractionBits) {
+        value << (estimatorFractionBits - activeCoefficientFractionBits)
+      } else if (activeCoefficientFractionBits > estimatorFractionBits) {
+        value >> (activeCoefficientFractionBits - estimatorFractionBits)
+      } else {
+        value
+      }
+    scaled.asSInt.pad(estimatorCoefficientBits)
+  }
+
   val coefficients = Reg(Vec(maxBlocks, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W)))))
+
+  private def storedCoefficient(block: UInt, channel: Int, coefficient: UInt): SInt =
+    if (maxBlocks == 1) coefficients(0)(channel)(coefficient)
+    else coefficients(block(blockIndexBits - 1, 0))(channel)(coefficient)
+
   val receiving :: streamingTile :: drainingTile :: Nil = Enum(3)
   val state = RegInit(receiving)
   val receivedBlock = RegInit(0.U(32.W))
@@ -92,13 +131,12 @@ class FramePreparedCflMapTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   val blockX = tileBaseBlockX + localBlockX
   val blockY = tileBaseBlockY + localBlockY
   val blockIndex = blockY * xBlocks + blockX
-  val blockIndexSafe = blockIndex(blockIndexBits - 1, 0)
   val coefficientIndexSafe = coefficientIndex(log2Ceil(blockSize) - 1, 0)
 
   val tileTrace = Module(
     new CflTileCoefficientTraceStage(
       c,
-      coefficientBits = c.traceValueBits,
+      coefficientBits = estimatorCoefficientBits,
       weightedBits = weightedBits,
       sumBits = sumBits
     )
@@ -107,20 +145,31 @@ class FramePreparedCflMapTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   tileTrace.io.input.valid := state === streamingTile && tileSampleCount =/= 0.U
   tileTrace.io.input.bits.tileIndex := tileOrdinal
   tileTrace.io.input.bits.coefficient.coefficientIndex := coefficientIndexSafe
-  tileTrace.io.input.bits.coefficient.yCoeffQ16 := coefficients(blockIndexSafe)(1)(coefficientIndexSafe)
-  tileTrace.io.input.bits.coefficient.xCoeffQ16 := coefficients(blockIndexSafe)(0)(coefficientIndexSafe)
-  tileTrace.io.input.bits.coefficient.bCoeffQ16 := coefficients(blockIndexSafe)(2)(coefficientIndexSafe)
+  tileTrace.io.input.bits.coefficient.yCoeffQ16 :=
+    coefficientForEstimator(storedCoefficient(blockIndex, 1, coefficientIndexSafe))
+  tileTrace.io.input.bits.coefficient.xCoeffQ16 :=
+    coefficientForEstimator(storedCoefficient(blockIndex, 0, coefficientIndexSafe))
+  tileTrace.io.input.bits.coefficient.bCoeffQ16 :=
+    coefficientForEstimator(storedCoefficient(blockIndex, 2, coefficientIndexSafe))
   tileTrace.io.input.bits.coefficient.last := sampleOrdinal === tileSampleCount - 1.U
-  tileTrace.io.trace.ready := state === drainingTile && io.trace.ready
+  val selectedTrace = traceStageFilter match {
+    case Some(stage) => tileTrace.io.trace.bits.stage === stage.U
+    case None        => true.B
+  }
+  tileTrace.io.trace.ready :=
+    state === drainingTile && Mux(selectedTrace, io.trace.ready, true.B)
 
   io.input.ready :=
     state === receiving &&
       !configOutOfRange &&
       receivedBlock < nextTotalBlocks &&
       receivedBlock < maxBlocks.U
-  io.trace.valid := state === drainingTile && tileTrace.io.trace.valid
+  io.trace.valid := state === drainingTile && tileTrace.io.trace.valid && selectedTrace
   io.trace.bits := tileTrace.io.trace.bits
-  io.traceLast := io.trace.valid && tileTrace.io.traceLast && tileOrdinal === totalTiles - 1.U
+  io.traceLast := (traceStageFilter match {
+    case Some(_) => io.trace.valid && tileOrdinal === totalTiles - 1.U
+    case None    => io.trace.valid && tileTrace.io.traceLast && tileOrdinal === totalTiles - 1.U
+  })
   io.busy := state =/= receiving || receivedBlock =/= 0.U || tileTrace.io.busy
   io.overflow := overflow || configOutOfRange
 
@@ -130,7 +179,11 @@ class FramePreparedCflMapTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
     val storeIndex = receivedBlock(blockIndexBits - 1, 0)
     for (channel <- 0 until 3) {
       for (coefficient <- 0 until blockSize) {
-        coefficients(storeIndex)(channel)(coefficient) := io.input.bits.coefficients(channel)(coefficient)
+        if (maxBlocks == 1) {
+          coefficients(0)(channel)(coefficient) := io.input.bits.coefficients(channel)(coefficient)
+        } else {
+          coefficients(storeIndex)(channel)(coefficient) := io.input.bits.coefficients(channel)(coefficient)
+        }
       }
     }
 
