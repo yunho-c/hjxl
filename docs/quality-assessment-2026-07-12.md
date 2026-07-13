@@ -92,6 +92,12 @@ validated changes committed since that snapshot. The review included:
 - local toolchain inspection. Java, sbt, Python, and Verilator are available;
   Vivado, Vitis, and Yosys were not found.
 
+The final implementation baseline for this assessment is commit `973c3b5`
+(`feat: complete RGB adaptive quantization map`). The commit containing this
+documentation changes the assessment only; its project sources are identical
+to that baseline. Validation results below therefore apply to `973c3b5`, not
+to later uncommitted experiments in a developer working tree.
+
 Snapshot size is approximately:
 
 | Area | Files | Lines |
@@ -244,8 +250,8 @@ Verification is the project’s strongest quality dimension.
 
 ### Strong evidence
 
-- The current tree has roughly 23.5k lines of Scala tests for 12.2k lines of
-  RTL, plus extensive validation inside the Python tools.
+- The assessed baseline has roughly 23.5k lines of Scala tests for 12.2k lines
+  of RTL, plus extensive validation inside the Python tools.
 - Tests span small arithmetic primitives, frame traversal, exact 72-pixel
   capacity boundaries, two-dimensional 72x72 CFL tile ordering, route
   elaboration, generated SystemVerilog port surfaces, AXI-Lite behavior,
@@ -372,8 +378,10 @@ Recommended documentation split:
 - At the start of the review, the advanced state was not reproducible from Git:
   86 paths were dirty or untracked. The follow-up commits named in the executive
   summary have since resolved this immediate issue.
-- The history contains 23 commits from July 3–4, 2026, then a very large
-  uncommitted development wave. The project has no tags or releases.
+- The repository has 47 commits through the assessed implementation baseline,
+  but still has no tags or releases. The formerly uncommitted development wave
+  was recovered into reviewable commits; release-level checkpoints and
+  published artifacts remain absent.
 - CI has no formatter, lint, warnings-as-errors, coverage, synthesis smoke, or
   artifact publication. Generated ABI drift is checked, which is an important
   exception.
@@ -607,7 +615,8 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
 
 ## Verification performed for this assessment
 
-The following local checks were run against the current working tree:
+The following local checks were run against the assessed implementation
+baseline, commit `973c3b5`:
 
 - `git diff --check` — passed.
 - `python3 -m py_compile tools/*.py` — passed.
