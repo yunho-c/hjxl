@@ -97,6 +97,13 @@ class HjxlDiscoverySpec extends AnyFreeSpec with Matchers with ChiselSim {
         TraceStage.AqStrategyMask
       )
     }
+    simulate(new HjxlRouteDiscoveryHarness(traceRoute = TraceStage.AqNonlinearMask)) { dut =>
+      expectRoute(
+        dut,
+        RouteConfig(xyb = true, quant = true, tokenSelect = TokenTraceSelect.AqContrast),
+        TraceStage.AqNonlinearMask
+      )
+    }
   }
 
   "active-route discovery holds the frame-start route while busy" in {

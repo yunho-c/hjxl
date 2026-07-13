@@ -41,9 +41,11 @@ A focused `traceRoute = TraceStage.AqFuzzyErosion` build instead composes that
 stage with the next AQ step and emits one erosion-derived Q16 value per padded
 8x8 block. A focused `traceRoute = TraceStage.AqStrategyMask` build continues
 through the pre-modulation reciprocal mask consumed by AC-strategy scoring. A
-focused
-`traceRoute = TraceStage.RawQuantField`
-core can also emit the current fixed raw-quant field, one adjusted raw-quant
+focused `traceRoute = TraceStage.AqNonlinearMask` build instead applies
+libjxl-tiny's separate `_compute_mask` function to the erosion grid and emits
+the signed-Q24 log-domain seed used by final AQ-map modulation. A focused
+`traceRoute = TraceStage.RawQuantField` core can also emit the current fixed
+raw-quant field, one adjusted raw-quant
 value per padded 8x8 block, so the quant-metadata trace shape exists before
 adaptive quantization hardware does. `AqMapToRawQuant` and
 `FramePreparedAqRawQuantTraceStage` now form the first real adaptive-
@@ -59,10 +61,12 @@ cell-to-block reduction, with a one-LSB prepared Q16 seam and the composed RGB
 route. `AqStrategyMaskReciprocal` then evaluates the Q16 strategy mask with a
 42-cycle restoring divider, and its prepared and RGB-composed frame stages
 emit `AqStrategyMask` block traces. This mask is not yet connected to real
-rectangular-strategy scoring. The separate nonlinear mask transform that starts
-the final AQ-map modulations, plus HF, color, gamma, power/scale, and final-map
-plumbing, remain open; the prepared final-conversion seam is not yet connected
-downstream. Focused `TraceStage.YtoxMap` and
+rectangular-strategy scoring. `AqNonlinearMaskEvaluator` evaluates the other
+erosion-derived branch in signed Q24, sharing one 56-cycle restoring divider
+across its three rational terms; prepared and RGB-composed frame stages emit
+`AqNonlinearMask` traces. HF, color, gamma, power/scale, final-map assembly, and
+connection to the prepared final-conversion seam remain open. Focused
+`TraceStage.YtoxMap` and
 `TraceStage.YtobMap` routes emit the current fixed scalar CFL tile maps, one
 record per 64x64 tile. Later stages will replace the fixed quantization
 defaults with adaptive quantization/CFL metadata, entropy coding, and bitstream
@@ -274,12 +278,13 @@ sbt 'runMain hjxl.Elaborate'
 ```
 
 Generate the standalone RGB-input AQ contrast, fuzzy-erosion, strategy-mask,
-and prepared final-AQ conversion tops:
+nonlinear-mask, and prepared final-AQ conversion tops:
 
 ```sh
 sbt 'runMain hjxl.ElaborateAqContrast'
 sbt 'runMain hjxl.ElaborateAqFuzzyErosion'
 sbt 'runMain hjxl.ElaborateAqStrategyMask'
+sbt 'runMain hjxl.ElaborateAqNonlinearMask'
 sbt 'runMain hjxl.ElaboratePreparedAqRawQuant'
 ```
 
@@ -360,6 +365,7 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --aq-contrast-q16-csv build-codex/fixtures/gradient-17x9-aq-contrast-q16.csv \
   --aq-fuzzy-erosion-q16-csv build-codex/fixtures/gradient-17x9-aq-fuzzy-erosion-q16.csv \
   --aq-strategy-mask-q16-csv build-codex/fixtures/gradient-17x9-aq-strategy-mask-q16.csv \
+  --aq-nonlinear-mask-q24-csv build-codex/fixtures/gradient-17x9-aq-nonlinear-mask-q24.csv \
   --dct8x8-npy build-codex/fixtures/gradient-17x9-dct8x8.npy \
   --default-ac-strategy-npy build-codex/fixtures/gradient-17x9-ac-strategy.npy \
   --raw-quant-field-npy build-codex/fixtures/gradient-17x9-raw-qf.npy \
@@ -432,7 +438,17 @@ tile calls used by the encoder, then includes the rational fixed-Q16 result.
 `AqStrategyMaskSpec` proves exact prepared-Q16 output for the fixture domain,
 five composed RGB families within two percent, 65x1 and 65x65 traversal, and
 the fixed 42-cycle divider latency. This is distinct from `_compute_mask`,
-which begins the still-missing final AQ-map modulations.
+which begins the final AQ-map modulations.
+
+The `--aq-nonlinear-mask-q24-csv` artifact records the signed log-domain seed
+returned by `_compute_mask`. The exporter independently reconstructs the
+float32 formula, compares it to the real private reference function, checks
+full-frame equality against stitched 64x64 AQ calls, and emits the matching
+Q16-input/Q24-output integer model. `AqNonlinearMaskSpec` covers directed and
+randomized positive-Q16 inputs, exact 174-cycle shared-divider latency, signed
+prepared traces, five composed RGB families, and 65x1/65x65 traversal. This is
+still not the final `aq_map`: HF, color, and gamma terms are added to this seed
+before the power/scale step.
 
 The `--dct-only-aq-map-q24-csv` artifact records each real all-DCT AQ-map
 sample, the frame-level inverse global AC scale, libjxl-tiny's raw-quant byte,
@@ -493,9 +509,9 @@ lookup entry. Output trace words are packed as
 `stage` in the low eight bits. Output `last` is asserted on the final trace
 word for each current route: padded input, XYB, raw DCT, quantized traces, DC
 tokens, AC-metadata tokens, AC strategy, AQ contrast, focused AQ fuzzy erosion,
-focused AQ strategy mask, and the variable-length full AC-token route all
-expose a scheduler `traceLast` sideband that the stream wrapper carries to
-TLAST.
+focused AQ strategy mask, focused signed AQ nonlinear mask, and the variable-
+length full AC-token route all expose a scheduler `traceLast` sideband that the
+stream wrapper carries to TLAST.
 
 Convert a linear RGB PFM into an input stream CSV for `HjxlAxiStreamCore` or
 `HjxlAxiLiteStreamCore` simulation/DMA bring-up:
@@ -521,8 +537,9 @@ flags; use focused names such as `raw-quant-field`, `ytox-map`, `ytob-map`, or
 `ac-tokens` when generating artifacts for a focused top. An AQ-contrast replay
 uses `--enable-xyb --enable-quant --token-select aq-contrast` and either the
 all-route shell or `--trace-route aq-contrast`; the same runtime flags with
-`--trace-route aq-fuzzy-erosion` select the composed focused erosion build, and
-`--trace-route aq-strategy-mask` select the composed focused strategy mask.
+`--trace-route aq-fuzzy-erosion` selects the composed focused erosion build, and
+`--trace-route aq-strategy-mask` selects the composed focused strategy mask.
+Use `--trace-route aq-nonlinear-mask` for the signed-Q24 modulation seed.
 Prepared-DCT manifests
 record `prepared-dct-quantize-token` for the direct prepared stream boundary,
 with no `TraceStage` id. `--manifest-json`
@@ -537,8 +554,9 @@ stream CSV, through RTL padded-input trace emission, and back through
 `tools/hjxl_stream_trace.py`. It also covers focused raw-quant and CFL metadata
 trace captures feeding into `tools/hjxl_trace_tokens.py` metadata-grid outputs
 and `tools/hjxl_compare_tokens.py` fixed-oracle comparison. The selected AQ
-contrast, focused fuzzy-erosion, and focused strategy-mask routes have packed
-stage/index/value and final-TLAST regressions at this shell.
+contrast, focused fuzzy-erosion, focused strategy-mask, and focused nonlinear-
+mask routes have packed stage/index/value and final-TLAST regressions at this
+shell.
 `HjxlAxiLiteStreamCoreSpec` covers the same input stream after
 programming the DUT from the generated AXI-Lite CSV.
 
@@ -826,10 +844,10 @@ replay-capture input-stream, trace-layout, and AXI-Lite expectation guards.
 | `0x20` | `fixedYtox` | signed 8-bit scalar Y-to-X CFL override |
 | `0x24` | `fixedYtob` | signed 8-bit scalar Y-to-B CFL override |
 | `0x28` | identity | read-only ASCII `HJXL` magic (`0x484a584c`) |
-| `0x2c` | ABI version | read-only `major << 16 | minor`; currently 1.3 |
+| `0x2c` | ABI version | read-only `major << 16 | minor`; currently 1.4 |
 | `0x30` | capabilities | read-only target capability mask defined in `abi/hjxl_abi.json` |
 | `0x34` | maximum frame geometry | read-only maximum height in bits 31:16 and width in bits 15:0 |
-| `0x38` | active route | read-only trace stage 0–15, direct prepared route 128, or estimated-CFL prepared route 129 |
+| `0x38` | active route | read-only trace stage 0–16, direct prepared route 128, or estimated-CFL prepared route 129 |
 | `0x3c` | build ID | read-only contract build identifier; currently `0x20260712` |
 
 The AXI-Lite wrapper returns OKAY for mapped registers and DECERR for unmapped
@@ -1147,6 +1165,14 @@ latency and backpressure stability, exact prepared fixture masks, five composed
 RGB oracle families, and horizontal/two-dimensional tile traversal.
 `AqStrategyMaskElaborationSpec` also verifies that the reciprocal emits without
 a SystemVerilog division operator.
+
+`AqNonlinearMaskSpec` locks the parallel final-map branch after erosion. It
+checks the three-term Q24 evaluator against directed/randomized float32 and
+integer models, its exact shared-divider latency, signed prepared output and
+backpressure stability, five RGB oracle families, and horizontal/two-
+dimensional tile traversal. `AqNonlinearMaskElaborationSpec` verifies that one
+sequential divider is shared and neither evaluator nor divider emits a
+SystemVerilog division operator.
 
 `AdaptiveQuantizationSpec` checks the prepared final-AQ seam independently of
 the still-missing per-block image heuristics. It validates Q24 multiplication,

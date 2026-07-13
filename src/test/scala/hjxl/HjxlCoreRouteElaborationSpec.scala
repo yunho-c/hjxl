@@ -68,6 +68,7 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must not include "module FrameDctOnlyAcTokenTraceStage"
     text must not include "module FrameAqFuzzyErosionTraceStage"
     text must not include "module FrameAqStrategyMaskTraceStage"
+    text must not include "module FrameAqNonlinearMaskTraceStage"
   }
 
   "HjxlCore focused AQ-contrast route elaborates only the image contrast scheduler" in {
@@ -103,6 +104,21 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must include("module FrameAqStrategyMaskTraceStage")
     text must include("module FramePreparedAqStrategyMaskTraceStage")
     text must include("module AqStrategyMaskReciprocal")
+    text must include("module FrameAqFuzzyErosionTraceStage")
+    text must include("module FrameAqContrastTraceStage")
+    text must include("io_traceLast")
+    text must not include "module FrameDct8x8TraceStage"
+    text must not include "module FrameAcStrategyTraceStage"
+  }
+
+  "HjxlCore focused AQ nonlinear-mask route composes the modulation-seed chain" in {
+    val files = emittedSystemVerilog(TraceStage.AqNonlinearMask)
+    val text = combinedText(files)
+    text must include("module HjxlCore")
+    text must include("module FrameAqNonlinearMaskTraceStage")
+    text must include("module FramePreparedAqNonlinearMaskTraceStage")
+    text must include("module AqNonlinearMaskEvaluator")
+    text must include("module AqNonlinearMaskRoundedDivider")
     text must include("module FrameAqFuzzyErosionTraceStage")
     text must include("module FrameAqContrastTraceStage")
     text must include("io_traceLast")

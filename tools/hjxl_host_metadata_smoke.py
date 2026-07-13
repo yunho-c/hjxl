@@ -1188,6 +1188,11 @@ def main() -> int:
         focused_route=TRACE_STAGES["aq-strategy-mask"],
     ) != TRACE_STAGES["aq-strategy-mask"]:
         raise AssertionError("RGB host route selection missed focused AQ strategy mask")
+    if rgb_active_route(
+        flags=aq_flags,
+        focused_route=TRACE_STAGES["aq-nonlinear-mask"],
+    ) != TRACE_STAGES["aq-nonlinear-mask"]:
+        raise AssertionError("RGB host route selection missed focused AQ nonlinear mask")
 
     with tempfile.TemporaryDirectory(prefix="hjxl-host-metadata-smoke-") as temp_name:
         temp = Path(temp_name)

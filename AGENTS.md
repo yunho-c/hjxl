@@ -206,8 +206,15 @@ Read these libjxl-tiny files before making architectural changes:
   `FrameAqStrategyMaskTraceStage` composes the contrast and erosion path without
   duplicating their arithmetic. It is a focused
   `traceRoute = TraceStage.AqStrategyMask` diagnostic route and is not yet wired
-  into rectangular strategy scoring. The distinct nonlinear `_compute_mask`,
-  per-block HF/color/gamma and power/scale modulations, final AQ-map assembly,
+  into rectangular strategy scoring.
+- `AqNonlinearMaskEvaluator` evaluates the distinct `_compute_mask` branch from
+  positive Q16 erosion to the signed-Q24 log-domain seed used by final AQ-map
+  modulation. It shares one 56-cycle restoring divider across three rational
+  terms for an exact 174-cycle evaluator latency. The prepared frame stage
+  preserves raster order/config lifetime and `FrameAqNonlinearMaskTraceStage`
+  composes it after the existing contrast/erosion path. Use the focused
+  `traceRoute = TraceStage.AqNonlinearMask`; do not call this the final AQ map.
+  Per-block HF/color/gamma and power/scale modulations, final AQ-map assembly,
   and connection to `FramePreparedAqRawQuantTraceStage` remain separate work.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive. It should be reused for
   the future 8x8 transform stage instead of writing a separate transform shape
@@ -432,8 +439,8 @@ Read these libjxl-tiny files before making architectural changes:
   `tools/hjxl_trace_tokens.py` metadata-grid extraction and
   `tools/hjxl_compare_tokens.py` fixed-oracle comparison, plus packed
   `AqContrast` stage/index/value fields and final TLAST for the selected AQ
-  route plus the focused `AqFuzzyErosion` and `AqStrategyMask` block/TLAST
-  routes.
+  route plus the focused `AqFuzzyErosion`, `AqStrategyMask`, and signed
+  `AqNonlinearMask` block/TLAST routes.
 - Use `sbt 'runMain hjxl.ElaborateAxiLiteStream'` for the default AXI-Lite
   controlled stream wrapper and
   `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
@@ -612,6 +619,11 @@ Read these libjxl-tiny files before making architectural changes:
   directory out of git. The reciprocal is sequential, but the upstream
   correctness-first RGB/contrast/erosion structures still require physical
   feasibility work.
+- Use `sbt 'runMain hjxl.ElaborateAqNonlinearMask'` to generate the composed RGB
+  `_compute_mask` top. It writes `generated-aq-nonlinear-mask/`; keep the
+  generated directory out of git. The evaluator shares a sequential divider,
+  but the upstream register grids and remaining AQ arithmetic still require
+  physical feasibility work.
 - `FrameCflMapTraceStage` emits fixed scalar CFL map traces for focused Y-to-X
   and Y-to-B routes. It establishes the per-64x64-tile trace shape used by
   libjxl-tiny metadata for RGB-input fixed-map routes; prepared-DCT
@@ -642,6 +654,13 @@ Read these libjxl-tiny files before making architectural changes:
   encoder's stitched 64x64 tile calls. Keep the fixed-latency/backpressure,
   five RGB families, 65x1 crossing, and 65x65 tiled-order cases in
   `AqStrategyMaskSpec`.
+- `tools/hjxl_reference.py --aq-nonlinear-mask-q24-csv ...` exports prepared
+  Q16 erosion, native and fixed signed-Q24 `_compute_mask` outputs, and Q12-
+  input variants. It checks an independent float32 reconstruction against the
+  real private reference function and verifies full-frame equality with
+  stitched 64x64 tile calls. Keep directed/random fixed-model and exact-
+  latency checks, signed backpressure, five RGB families, 65x1 crossing, and
+  65x65 tiled order in `AqNonlinearMaskSpec`.
 - `tools/hjxl_reference.py` can export real libjxl-tiny quant metadata with
   `--raw-quant-field-npy`, `--libjxl-ac-strategy-npy`, `--ytox-map-npy`, and
   `--ytob-map-npy`. Use those artifacts as the oracle before implementing AQ,
@@ -1091,7 +1110,8 @@ Read these libjxl-tiny files before making architectural changes:
   tokens; `enableXyb && enableQuant && tokenSelect=AqContrast` without DCT or
   tokenization selects the AQ contrast grid in the all-route core, the fuzzy
   erosion grid when `traceRoute = TraceStage.AqFuzzyErosion`, and the strategy
-  mask when `traceRoute = TraceStage.AqStrategyMask`; `enableQuant` alone
+  mask when `traceRoute = TraceStage.AqStrategyMask`, or the signed modulation
+  seed when `traceRoute = TraceStage.AqNonlinearMask`; `enableQuant` alone
   selects fixed AC strategy metadata. Do not describe it as an encoder yet;
   these are traceable pipeline slices.
 

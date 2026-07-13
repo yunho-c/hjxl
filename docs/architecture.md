@@ -37,9 +37,10 @@ contract is intentionally simple:
   when XYB and quantization are enabled without DCT/tokenization. A focused
   `traceRoute = TraceStage.AqFuzzyErosion` build uses the same runtime flags to
   emit the next AQ intermediate, and `TraceStage.AqStrategyMask` continues to
-  the mask consumed by strategy scoring. The full AC-token route is only
-  instantiated when the core is elaborated with `traceRoute =
-  TraceStage.AcTokens`.
+  the mask consumed by strategy scoring. The parallel focused
+  `TraceStage.AqNonlinearMask` route emits the signed-Q24 `_compute_mask`
+  modulation seed. The full AC-token route is only instantiated when the core
+  is elaborated with `traceRoute = TraceStage.AcTokens`.
 - `RgbPixel` carries fixed-point linear RGB samples and image coordinates.
 - `StageTrace` carries a stage id, group id, element index, and value.
 - `HjxlCore` is the integration shell where stage modules will be wired.
@@ -97,7 +98,9 @@ owned by the host tools for now.
   enabled without DCT/tokenization, `tokenSelect=AqContrast` instead routes the
   global pre-erosion contrast grid; a focused `TraceStage.AqFuzzyErosion` build
   emits the erosion-derived block grid and a focused `TraceStage.AqStrategyMask`
-  build emits its reciprocal strategy mask. The default selector still routes
+  build emits its reciprocal strategy mask. A focused
+  `TraceStage.AqNonlinearMask` build emits the separate signed-Q24 log-domain
+  seed that starts final AQ-map modulation. The default selector still routes
   fixed AC strategy.
   The optional compile-time `traceRoute` constructor argument restricts
   elaboration to one route for focused simulation while keeping the same public
@@ -159,9 +162,19 @@ owned by the host tools for now.
   reference mask and the stitched 64x64 calls used by the real encoder; five
   RGB families stay within two percent and prepared fixtures match Q16 exactly.
   This focused trace is not connected to `FrameAcStrategyTraceStage`, which
-  still emits fixed all-DCT choices. The separate nonlinear `_compute_mask`,
-  HF/color/gamma and power/scale modulations, final AQ map, and prepared
-  raw-quant conversion connection remain downstream.
+  still emits fixed all-DCT choices.
+- `AqNonlinearMaskEvaluator` implements libjxl-tiny's separate `_compute_mask`
+  branch from positive Q16 fuzzy erosion to a signed-Q24 log-domain modulation
+  seed. Q24 constants preserve the reference's three rational terms, and one
+  56-cycle restoring divider is reused sequentially for an exact 174-cycle
+  evaluator latency without a combinational division operator.
+  `FramePreparedAqNonlinearMaskTraceStage` supplies the one-block-at-a-time
+  frame contract and `FrameAqNonlinearMaskTraceStage` composes it after the
+  existing RGB contrast/erosion path. The oracle independently reconstructs
+  the float32 private function, checks full-frame versus stitched 64x64 calls,
+  and supplies the fixed model. HF/color/gamma additions, power/scale, final AQ
+  map assembly, and the prepared raw-quant conversion connection remain
+  downstream.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny's
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`; unsupported values currently
@@ -461,12 +474,14 @@ wrappers.
   `sbt 'runMain hjxl.ElaborateAxiLiteStream'` for the default controlled shell
   or `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
   full-AC-token controlled shell.
-- `ElaborateAqContrast`, `ElaborateAqFuzzyErosion`, and
-  `ElaborateAqStrategyMask` generate standalone RGB AQ diagnostic tops in
+- `ElaborateAqContrast`, `ElaborateAqFuzzyErosion`,
+  `ElaborateAqStrategyMask`, and `ElaborateAqNonlinearMask` generate standalone
+  RGB AQ diagnostic tops in
   `generated-aq-contrast/`, `generated-aq-fuzzy-erosion/`, and
-  `generated-aq-strategy-mask/`. Their elaboration specs guard the composed
-  RGB/prepared module boundaries and trace/status ports; the strategy-mask spec
-  also rejects a division operator in the sequential reciprocal module.
+  `generated-aq-strategy-mask/`, and `generated-aq-nonlinear-mask/`. Their
+  elaboration specs guard the composed RGB/prepared module boundaries and
+  trace/status ports; the strategy-mask and nonlinear-mask specs also reject
+  division operators in their sequential arithmetic modules.
 - `ElaboratePreparedDctOnlyQuantize` generates standalone SystemVerilog for the
   prepared-DCT quantization scheduler. Use it when the integration boundary is
   after DCT/AQ/CFL scalar generation but before quantized DC/AC tokenization.
@@ -607,9 +622,9 @@ wrappers.
   `tools/hjxl_trace_tokens.py` metadata-grid extraction and
   `tools/hjxl_compare_tokens.py` fixed-oracle comparison, and checks packed
   `AqContrast` stage/index/value fields with final TLAST plus the focused
-  `AqFuzzyErosion` and `AqStrategyMask` block/TLAST paths. Full AC-token TLAST
-  alignment is covered at the token-stage and frame-scheduler levels because
-  the focused AXI AC-token simulation is expensive.
+  `AqFuzzyErosion`, `AqStrategyMask`, and signed `AqNonlinearMask` block/TLAST
+  paths. Full AC-token TLAST alignment is covered at the token-stage and frame-
+  scheduler levels because the focused AXI AC-token simulation is expensive.
 - `HjxlAxiStreamElaborationSpec` guards the generated stream-shell port surface
   and checks that the focused AC-token stream top includes the full AC-token
   scheduler while the default stream top omits it.
@@ -627,11 +642,12 @@ wrappers.
   DC/strategy/metadata/AC trace stream.
 - `PreparedTokenElaborationSpec` guards the generated trace port surface for
   prepared DC, AC-metadata, AC, and combined token tops.
-- Full frame-level quantized-block parity remains open: upstream AQ-map
-  generation and AQ/CFL map plumbing, distance parameter generation, dynamic
-  reciprocal scaling, rectangular strategy scheduling, and RGB-path comparison
-  against `tools/hjxl_reference.py` DCT-only whole-frame artifacts are still
-  separate work. Full token-to-codestream parity also still needs entropy table
+- Full frame-level quantized-block parity remains open: HF/color/gamma and
+  power/scale AQ modulation, final AQ-map assembly and AQ/CFL map plumbing,
+  distance parameter generation, dynamic reciprocal scaling, rectangular
+  strategy scheduling, and RGB-path comparison against
+  `tools/hjxl_reference.py` DCT-only whole-frame artifacts are still separate
+  work. Full token-to-codestream parity also still needs entropy table
   optimization and bitstream assembly.
 - `CflCoefficientSampleWeight`/`CflWeightedSumAccumulator`/
   `CflMultiplierEstimator`/`CflCoefficientSumAccumulator`/

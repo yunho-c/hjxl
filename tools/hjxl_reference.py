@@ -19,6 +19,7 @@ import sys
 
 DEFAULT_LIBJXL_TINY = Path("/Users/yunhocho/GitHub/libjxl-tiny")
 SIGNED_INT32_MAX = (1 << 31) - 1
+SIGNED_INT32_MIN = -(1 << 31)
 
 
 def _load_numpy():
@@ -289,6 +290,149 @@ def fixed_aq_strategy_mask_q16(fuzzy_erosion_q16: int) -> int:
     return (numerator + denominator // 2) // denominator
 
 
+def aq_nonlinear_mask_from_fuzzy_erosion(fuzzy_erosion):
+    """Reconstruct `_compute_mask`, the log-domain seed for AQ modulation."""
+    np = _load_numpy()
+    source = np.asarray(fuzzy_erosion, dtype=np.float32)
+    output = np.empty_like(source)
+
+    base = np.float32(-0.74174993)
+    mul4 = np.float32(3.2353257320940401)
+    mul2 = np.float32(12.906028311180409)
+    offset2 = np.float32(305.04035728311436)
+    mul3 = np.float32(5.0220313103171232)
+    offset3 = np.float32(2.1925739705298404)
+    offset4 = np.float32(np.float32(0.25) * offset3)
+    mul0 = np.float32(0.74760422233706747)
+
+    for index in np.ndindex(source.shape):
+        value1 = max(np.float32(source[index] * mul0), np.float32(1e-3))
+        value1_squared = np.float32(value1 * value1)
+        value2 = np.float32(np.float32(1.0) / np.float32(value1 + offset2))
+        value3 = np.float32(np.float32(1.0) / np.float32(value1_squared + offset3))
+        value4 = np.float32(np.float32(1.0) / np.float32(value1_squared + offset4))
+        output[index] = np.float32(
+            base
+            + np.float32(mul4 * value4)
+            + np.float32(mul2 * value2)
+            + np.float32(mul3 * value3)
+        )
+    return output
+
+
+def fixed_aq_nonlinear_mask_q24(fuzzy_erosion_q16: int) -> int:
+    """Convert positive Q16 erosion to signed Q24 `_compute_mask` output."""
+    if fuzzy_erosion_q16 < 0 or fuzzy_erosion_q16 > SIGNED_INT32_MAX:
+        raise ValueError("AQ fuzzy-erosion input must fit positive signed 32-bit Q16")
+
+    fraction_bits = 24
+    base_q24 = -12444499
+    mul4_q24 = 54279760
+    mul2_q24 = 216527232
+    offset2_q24 = 5117727744
+    mul3_q24 = 84255704
+    offset3_q24 = 36785288
+    offset4_q24 = 9196322
+    mul0_q24 = 12542718
+    minimum_q24 = 16777
+
+    value1_q24 = max(
+        (fuzzy_erosion_q16 * mul0_q24 + (1 << 15)) >> 16,
+        minimum_q24,
+    )
+    value1_squared_q24 = (
+        value1_q24 * value1_q24 + (1 << (fraction_bits - 1))
+    ) >> fraction_bits
+
+    def rounded_term(multiplier_q24: int, denominator_q24: int) -> int:
+        numerator = multiplier_q24 << fraction_bits
+        return (numerator + denominator_q24 // 2) // denominator_q24
+
+    result = (
+        base_q24
+        + rounded_term(mul4_q24, value1_squared_q24 + offset4_q24)
+        + rounded_term(mul2_q24, value1_q24 + offset2_q24)
+        + rounded_term(mul3_q24, value1_squared_q24 + offset3_q24)
+    )
+    if result < SIGNED_INT32_MIN or result > SIGNED_INT32_MAX:
+        raise ValueError("AQ nonlinear-mask Q24 result does not fit signed 32-bit")
+    return result
+
+
+def capture_aq_nonlinear_mask_from_xyb(
+    xyb,
+    block_x0: int = 0,
+    block_y0: int = 0,
+    block_width: int | None = None,
+    block_height: int | None = None,
+):
+    """Capture real `_compute_mask` outputs from one reference AQ rectangle."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny import adaptive_quantization  # pylint: disable=import-outside-toplevel
+
+    source = np.asarray(xyb, dtype=np.float32)
+    if block_width is None:
+        block_width = source.shape[2] // 8 - block_x0
+    if block_height is None:
+        block_height = source.shape[1] // 8 - block_y0
+
+    captured = []
+    original_compute_mask = adaptive_quantization._compute_mask
+
+    def capture_compute_mask(value):
+        result = original_compute_mask(value)
+        captured.append(result)
+        return result
+
+    adaptive_quantization._compute_mask = capture_compute_mask
+    try:
+        adaptive_quantization.compute_adaptive_quantization(
+            source,
+            distance=1.0,
+            block_x0=block_x0,
+            block_y0=block_y0,
+            block_width=block_width,
+            block_height=block_height,
+        )
+    finally:
+        adaptive_quantization._compute_mask = original_compute_mask
+
+    expected_count = block_width * block_height
+    if len(captured) != expected_count:
+        raise RuntimeError(
+            f"libjxl-tiny AQ captured {len(captured)} nonlinear-mask values; "
+            f"expected {expected_count}"
+        )
+    return np.asarray(captured, dtype=np.float32).reshape(block_height, block_width)
+
+
+def tiled_aq_nonlinear_mask_from_xyb(xyb):
+    """Stitch `_compute_mask` outputs from encoder-shaped 64x64 AQ calls."""
+    np = _load_numpy()
+    source = np.asarray(xyb, dtype=np.float32)
+    y_blocks = source.shape[1] // 8
+    x_blocks = source.shape[2] // 8
+    tile_blocks = 8
+    output = np.empty((y_blocks, x_blocks), dtype=np.float32)
+    for block_y0 in range(0, y_blocks, tile_blocks):
+        block_height = min(tile_blocks, y_blocks - block_y0)
+        for block_x0 in range(0, x_blocks, tile_blocks):
+            block_width = min(tile_blocks, x_blocks - block_x0)
+            output[
+                block_y0 : block_y0 + block_height,
+                block_x0 : block_x0 + block_width,
+            ] = capture_aq_nonlinear_mask_from_xyb(
+                source,
+                block_x0=block_x0,
+                block_y0=block_y0,
+                block_width=block_width,
+                block_height=block_height,
+            )
+    return output
+
+
 def tiled_aq_strategy_mask_from_xyb(xyb):
     """Stitch the strategy mask from the same 64x64 AQ calls used by encoder.py."""
     np = _load_numpy()
@@ -554,6 +698,94 @@ def write_aq_strategy_mask_q16_csv(path: Path, image) -> None:
                         int(fixed_reference_q16[block_y, block_x]),
                         int(quantized_erosion_q16[block_y, block_x]),
                         int(quantized_reference_q16[block_y, block_x]),
+                    )
+                )
+                block += 1
+
+
+def write_aq_nonlinear_mask_q24_csv(path: Path, image) -> None:
+    """Write `_compute_mask` output, the signed Q24 AQ modulation seed."""
+    np = _load_numpy()
+    xyb = xyb_from_python_port(image)
+    pre_erosion = aq_contrast_pre_erosion_from_xyb(xyb)
+    erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+    reference = aq_nonlinear_mask_from_fuzzy_erosion(erosion)
+    captured_reference = capture_aq_nonlinear_mask_from_xyb(xyb)
+    if not np.array_equal(reference, captured_reference):
+        raise RuntimeError(
+            "AQ nonlinear-mask reconstruction does not match libjxl-tiny `_compute_mask`"
+        )
+    tiled_reference = tiled_aq_nonlinear_mask_from_xyb(xyb)
+    if not np.array_equal(reference, tiled_reference):
+        raise RuntimeError(
+            "full-frame AQ nonlinear mask does not match encoder-style tiled AQ calls"
+        )
+
+    quantized_xyb = (
+        np.rint(np.asarray(xyb, dtype=np.float64) * (1 << 12)).astype(np.float32)
+        / np.float32(1 << 12)
+    )
+    quantized_pre = aq_contrast_pre_erosion_from_xyb(quantized_xyb)
+    quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(quantized_pre)
+    quantized_reference = aq_nonlinear_mask_from_fuzzy_erosion(quantized_erosion)
+
+    erosion_q16 = np.rint(erosion.astype(np.float64) * (1 << 16)).astype(np.int64)
+    reference_q24 = np.rint(reference.astype(np.float64) * (1 << 24)).astype(np.int64)
+    fixed_reference_q24 = np.empty(reference_q24.shape, dtype=np.int64)
+    for block_y in range(reference_q24.shape[0]):
+        for block_x in range(reference_q24.shape[1]):
+            fixed_reference_q24[block_y, block_x] = fixed_aq_nonlinear_mask_q24(
+                int(erosion_q16[block_y, block_x])
+            )
+    quantized_erosion_q16 = np.rint(
+        quantized_erosion.astype(np.float64) * (1 << 16)
+    ).astype(np.int64)
+    quantized_reference_q24 = np.rint(
+        quantized_reference.astype(np.float64) * (1 << 24)
+    ).astype(np.int64)
+
+    for name, values in (
+        ("AQ fuzzy erosion", erosion_q16),
+        ("quantized-XYB AQ fuzzy erosion", quantized_erosion_q16),
+    ):
+        if np.any(values < 0) or np.any(values > SIGNED_INT32_MAX):
+            raise ValueError(f"{name} Q16 fixture does not fit positive signed 32-bit")
+    for name, values in (
+        ("AQ nonlinear mask", reference_q24),
+        ("fixed AQ nonlinear mask", fixed_reference_q24),
+        ("quantized-XYB AQ nonlinear mask", quantized_reference_q24),
+    ):
+        if np.any(values < SIGNED_INT32_MIN) or np.any(values > SIGNED_INT32_MAX):
+            raise ValueError(f"{name} Q24 fixture does not fit signed 32-bit")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "block",
+                "block_x",
+                "block_y",
+                "fuzzy_erosion_q16",
+                "nonlinear_mask_q24",
+                "fixed_nonlinear_mask_q24",
+                "quantized_xyb_fuzzy_erosion_q16",
+                "quantized_xyb_nonlinear_mask_q24",
+            )
+        )
+        block = 0
+        for block_y in range(reference_q24.shape[0]):
+            for block_x in range(reference_q24.shape[1]):
+                writer.writerow(
+                    (
+                        block,
+                        block_x,
+                        block_y,
+                        int(erosion_q16[block_y, block_x]),
+                        int(reference_q24[block_y, block_x]),
+                        int(fixed_reference_q24[block_y, block_x]),
+                        int(quantized_erosion_q16[block_y, block_x]),
+                        int(quantized_reference_q24[block_y, block_x]),
                     )
                 )
                 block += 1
@@ -1363,6 +1595,11 @@ def main() -> int:
         help="optional block-resolution AQ strategy-mask Q16 fixture",
     )
     parser.add_argument(
+        "--aq-nonlinear-mask-q24-csv",
+        type=Path,
+        help="optional signed-Q24 `_compute_mask` AQ modulation-seed fixture",
+    )
+    parser.add_argument(
         "--dct8x8-npy",
         type=Path,
         help="optional libjxl-tiny raster 8x8 XYB DCT blocks NumPy output path",
@@ -1670,6 +1907,8 @@ def main() -> int:
         write_aq_fuzzy_erosion_q16_csv(args.aq_fuzzy_erosion_q16_csv, image)
     if args.aq_strategy_mask_q16_csv is not None:
         write_aq_strategy_mask_q16_csv(args.aq_strategy_mask_q16_csv, image)
+    if args.aq_nonlinear_mask_q24_csv is not None:
+        write_aq_nonlinear_mask_q24_csv(args.aq_nonlinear_mask_q24_csv, image)
     if args.dct8x8_npy is not None:
         np = _load_numpy()
         args.dct8x8_npy.parent.mkdir(parents=True, exist_ok=True)
