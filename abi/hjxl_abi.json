@@ -57,7 +57,8 @@
       {"name": "aq-fuzzy-erosion", "scala_name": "AqFuzzyErosion", "value": 14},
       {"name": "aq-strategy-mask", "scala_name": "AqStrategyMask", "value": 15},
       {"name": "aq-nonlinear-mask", "scala_name": "AqNonlinearMask", "value": 16},
-      {"name": "aq-hf-modulation", "scala_name": "AqHfModulation", "value": 17}
+      {"name": "aq-hf-modulation", "scala_name": "AqHfModulation", "value": 17},
+      {"name": "aq-color-modulation", "scala_name": "AqColorModulation", "value": 18}
     ]
   },
   "token_select": [
@@ -69,7 +70,7 @@
   "discovery": {
     "identity": 1212831820,
     "abi_major": 1,
-    "abi_minor": 5,
+    "abi_minor": 6,
     "build_id": 539363090,
     "capability_bits": [
       {"name": "rgb_input", "scala_name": "RgbInput", "bit": 0},

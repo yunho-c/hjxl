@@ -71,6 +71,24 @@ class AqHfModulationBlockInput extends Bundle {
   val xybYQ12 = Vec(SamplesPerBlock, SInt(XybValueBits.W))
 }
 
+/** One padded 8x8 XYB block paired with the nonlinear AQ seed that starts the
+  * cumulative per-block modulation pipeline.
+  *
+  * The RGB-connected scheduler keeps block identity and frame completion with
+  * the samples so HF, color, and later gamma stages can share one XYB capture.
+  */
+class AqModulationBlockInput extends Bundle {
+  import AqHfModulationFixedPoint._
+
+  val seedQ24 = SInt(SeedValueBits.W)
+  val distanceQ8 = UInt(16.W)
+  val blockIndex = UInt(32.W)
+  val blockLast = Bool()
+  val xybXQ12 = Vec(SamplesPerBlock, SInt(XybValueBits.W))
+  val xybYQ12 = Vec(SamplesPerBlock, SInt(XybValueBits.W))
+  val xybBQ12 = Vec(SamplesPerBlock, SInt(XybValueBits.W))
+}
+
 /** Adds libjxl-tiny's per-block high-frequency modulation to one nonlinear AQ
   * seed.
   *
@@ -256,14 +274,19 @@ class FramePreparedAqHfModulationTraceStage(c: HjxlConfig = HjxlConfig()) extend
   }
 }
 
-/** RGB-connected high-frequency AQ modulation path.
+/** Shared RGB-to-per-block scheduler for cumulative AQ modulation stages.
   *
-  * The upstream contrast stage exposes every accepted approximate XYB sample
-  * as a passive tap. This wrapper stores that stream once, composes the existing
-  * contrast/erosion/nonlinear path, and extracts padded Y blocks for HF
-  * modulation without instantiating a second RGB-to-XYB converter.
+  * The nonlinear-mask path exposes each accepted approximate XYB sample as a
+  * passive tap. This module stores that frame once, applies right/bottom edge
+  * replication, and emits nonlinear seeds paired with complete padded XYB
+  * blocks. It deliberately holds the frame boundary until `frameDone`, so a
+  * downstream HF/color/gamma pipeline cannot overlap the next frame with the
+  * final block still in flight.
   */
-class FrameAqHfModulationTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FrameAqModulationBlockStage(
+    c: HjxlConfig = HjxlConfig(),
+    includeColorChannels: Boolean = true
+) extends Module {
   import AqHfModulationFixedPoint._
 
   private val numPixels = c.maxFrameWidth * c.maxFrameHeight
@@ -276,15 +299,18 @@ class FrameAqHfModulationTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val xybAccepted = Output(Valid(new XybPixel(c)))
-    val trace = Decoupled(new StageTrace(c))
-    val traceLast = Output(Bool())
+    val block = Decoupled(new AqModulationBlockInput)
+    val frameDone = Input(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
 
+  val xybX = if (includeColorChannels) Some(Reg(Vec(numPixels, SInt(XybValueBits.W)))) else None
   val xybY = Reg(Vec(numPixels, SInt(XybValueBits.W)))
+  val xybB = if (includeColorChannels) Some(Reg(Vec(numPixels, SInt(XybValueBits.W)))) else None
   val latchedConfig = Reg(new FrameConfig(c))
   val frameActive = RegInit(false.B)
+  val finalBlockIssued = RegInit(false.B)
   val received = RegInit(0.U(frameCountBits.W))
   val activePixelCount = RegInit(0.U(frameCountBits.W))
   val latchedWidth = RegInit(0.U(widthBits.W))
@@ -322,39 +348,50 @@ class FrameAqHfModulationTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   }
 
   when(nonlinear.io.xybAccepted.valid) {
-    assert(received < selectedPixelCount, "AQ HF modulation accepted too many XYB pixels")
+    assert(received < selectedPixelCount, "AQ modulation scheduler accepted too many XYB pixels")
+    xybX.foreach(_(received(frameIndexBits - 1, 0)) := nonlinear.io.xybAccepted.bits.xybX)
     xybY(received(frameIndexBits - 1, 0)) := nonlinear.io.xybAccepted.bits.xybY
+    xybB.foreach(_(received(frameIndexBits - 1, 0)) := nonlinear.io.xybAccepted.bits.xybB)
     received := received + 1.U
   }
 
-  private def frameSample(paddedX: UInt, paddedY: UInt): SInt = {
+  private def frameSample(samples: Vec[SInt], paddedX: UInt, paddedY: UInt): SInt = {
     val sourceX = Mux(paddedX >= latchedWidth, latchedWidth - 1.U, paddedX)
     val sourceY = Mux(paddedY >= latchedHeight, latchedHeight - 1.U, paddedY)
     val index = sourceY * latchedWidth + sourceX
-    xybY(index(frameIndexBits - 1, 0))
+    samples(index(frameIndexBits - 1, 0))
   }
 
-  val prepared = Module(new FramePreparedAqHfModulationTraceStage(c))
-  prepared.io.config := activeConfig
-  prepared.io.input.bits.seedQ24 := nonlinear.io.trace.bits.value
+  io.block.bits.seedQ24 := nonlinear.io.trace.bits.value
+  io.block.bits.distanceQ8 := latchedConfig.distanceQ8
+  io.block.bits.blockIndex := nonlinear.io.trace.bits.index
+  io.block.bits.blockLast := nonlinear.io.traceLast
   for (sample <- 0 until SamplesPerBlock) {
     val localX = sample % BlockDim
     val localY = sample / BlockDim
     val paddedX = (currentBlockX << log2Ceil(BlockDim)) + localX.U
     val paddedY = (currentBlockY << log2Ceil(BlockDim)) + localY.U
-    prepared.io.input.bits.xybYQ12(sample) := frameSample(paddedX, paddedY)
+    io.block.bits.xybXQ12(sample) := xybX
+      .map(frameSample(_, paddedX, paddedY))
+      .getOrElse(0.S(XybValueBits.W))
+    io.block.bits.xybYQ12(sample) := frameSample(xybY, paddedX, paddedY)
+    io.block.bits.xybBQ12(sample) := xybB
+      .map(frameSample(_, paddedX, paddedY))
+      .getOrElse(0.S(XybValueBits.W))
   }
   val frameComplete = frameActive && received === activePixelCount
-  prepared.io.input.valid := nonlinear.io.trace.valid && frameComplete
-  nonlinear.io.trace.ready := prepared.io.input.ready && frameComplete
+  io.block.valid := nonlinear.io.trace.valid && frameComplete && !finalBlockIssued
+  nonlinear.io.trace.ready := io.block.ready && frameComplete && !finalBlockIssued
 
-  when(prepared.io.input.fire) {
+  when(io.block.fire) {
     val expectedIndex = currentBlockY * blocksX + currentBlockX
     assert(
       nonlinear.io.trace.bits.index === expectedIndex,
-      "AQ HF modulation nonlinear-seed order does not match the Y-block traversal"
+      "AQ modulation nonlinear-seed order does not match the XYB-block traversal"
     )
-    when(!nonlinear.io.traceLast) {
+    when(nonlinear.io.traceLast) {
+      finalBlockIssued := true.B
+    }.otherwise {
       when(currentBlockX + 1.U === blocksX) {
         currentBlockX := 0.U
         currentBlockY := currentBlockY + 1.U
@@ -364,15 +401,14 @@ class FrameAqHfModulationTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
     }
   }
 
-  io.trace.valid := prepared.io.trace.valid
-  io.trace.bits := prepared.io.trace.bits
-  prepared.io.trace.ready := io.trace.ready
-  io.traceLast := prepared.io.traceLast
-  io.busy := frameActive || nonlinear.io.busy || prepared.io.busy
-  io.overflow := nonlinear.io.overflow || prepared.io.overflow
+  io.busy := frameActive || nonlinear.io.busy
+  io.overflow := nonlinear.io.overflow
 
-  when(io.trace.fire && io.traceLast) {
+  when(io.frameDone) {
+    assert(frameActive, "AQ modulation frame completion requires an active frame")
+    assert(finalBlockIssued, "AQ modulation frame completed before its final block was issued")
     frameActive := false.B
+    finalBlockIssued := false.B
     received := 0.U
     activePixelCount := 0.U
     latchedWidth := 0.U
@@ -380,5 +416,65 @@ class FrameAqHfModulationTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
     blocksX := 0.U
     currentBlockX := 0.U
     currentBlockY := 0.U
+  }
+}
+
+/** RGB-connected high-frequency AQ modulation path.
+  *
+  * This focused route specializes the shared modulation scheduler to retain
+  * only Y, then emits the result of `_hf_modulation` without changing its
+  * compact trace IO. Wider cumulative routes retain X/Y/B in the same
+  * scheduler instead of repeating RGB-to-XYB conversion.
+  */
+class FrameAqHfModulationTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+  import AqHfModulationFixedPoint._
+
+  val io = IO(new Bundle {
+    val config = Input(new FrameConfig(c))
+    val input = Flipped(Decoupled(new RgbPixel(c)))
+    val xybAccepted = Output(Valid(new XybPixel(c)))
+    val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
+  })
+
+  val scheduler = Module(new FrameAqModulationBlockStage(c, includeColorChannels = false))
+  scheduler.io.config := io.config
+  scheduler.io.input <> io.input
+  io.xybAccepted := scheduler.io.xybAccepted
+
+  val block = Module(new AqHfModulationBlock)
+  block.io.input.bits.seedQ24 := scheduler.io.block.bits.seedQ24
+  block.io.input.bits.xybYQ12 := scheduler.io.block.bits.xybYQ12
+  block.io.input.valid := scheduler.io.block.valid
+  scheduler.io.block.ready := block.io.input.ready
+
+  val activeBlockValid = RegInit(false.B)
+  val activeBlockIndex = RegInit(0.U(32.W))
+  val activeBlockLast = RegInit(false.B)
+
+  when(scheduler.io.block.fire) {
+    assert(!activeBlockValid, "AQ HF modulation accepted overlapping block metadata")
+    activeBlockValid := true.B
+    activeBlockIndex := scheduler.io.block.bits.blockIndex
+    activeBlockLast := scheduler.io.block.bits.blockLast
+  }
+
+  io.trace.valid := block.io.output.valid
+  io.trace.bits.stage := TraceStage.AqHfModulation.U
+  io.trace.bits.group := 0.U
+  io.trace.bits.index := activeBlockIndex
+  io.trace.bits.value := block.io.output.bits
+  block.io.output.ready := io.trace.ready
+  io.traceLast := block.io.output.valid && activeBlockLast
+  scheduler.io.frameDone := io.trace.fire && activeBlockLast
+  io.busy := scheduler.io.busy || block.io.busy || activeBlockValid
+  io.overflow := scheduler.io.overflow
+
+  when(io.trace.fire) {
+    assert(activeBlockValid, "AQ HF modulation emitted without block metadata")
+    activeBlockValid := false.B
+    activeBlockLast := false.B
   }
 }

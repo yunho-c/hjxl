@@ -70,6 +70,7 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must not include "module FrameAqStrategyMaskTraceStage"
     text must not include "module FrameAqNonlinearMaskTraceStage"
     text must not include "module FrameAqHfModulationTraceStage"
+    text must not include "module FrameAqColorModulationTraceStage"
   }
 
   "HjxlCore focused AQ-contrast route elaborates only the image contrast scheduler" in {
@@ -132,7 +133,7 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     val text = combinedText(files)
     text must include("module HjxlCore")
     text must include("module FrameAqHfModulationTraceStage")
-    text must include("module FramePreparedAqHfModulationTraceStage")
+    text must include("module FrameAqModulationBlockStage")
     text must include("module AqHfModulationBlock")
     text must include("module FrameAqNonlinearMaskTraceStage")
     text must include("module AqNonlinearMaskEvaluator")
@@ -140,6 +141,26 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must include("io_traceLast")
     text must not include "module FrameDct8x8TraceStage"
     text must not include "module FrameAcStrategyTraceStage"
+  }
+
+  "HjxlCore focused AQ color-modulation route composes one shared XYB block chain" in {
+    val files = emittedSystemVerilog(TraceStage.AqColorModulation)
+    val text = combinedText(files)
+    text must include("module HjxlCore")
+    text must include("module FrameAqColorModulationTraceStage")
+    text must include("module FrameAqModulationBlockStage")
+    text must include("module AqHfModulationBlock")
+    text must include("module AqColorModulationBlock")
+    text must include("module FrameAqNonlinearMaskTraceStage")
+    text must include("module AqNonlinearMaskEvaluator")
+    text must include("module FrameAqContrastTraceStage")
+    text must include("io_traceLast")
+    text must not include "module FrameDct8x8TraceStage"
+    text must not include "module FrameAcStrategyTraceStage"
+    val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r
+      .findAllMatchIn(text)
+      .length
+    converterInstances mustBe 1
   }
 
   "HjxlCore focused raw-quant route elaborates the raw quant-field scheduler" in {

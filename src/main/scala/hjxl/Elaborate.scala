@@ -184,6 +184,18 @@ object ElaborateAqHfModulation extends App {
   )
 }
 
+object ElaborateAqColorModulation extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqColorModulationTraceStage(),
+    args = Array("--target-dir", "generated-aq-color-modulation"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaboratePreparedDctOnlyQuantizeTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedDctOnlyQuantizeTokenTraceStage(),

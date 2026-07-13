@@ -501,7 +501,7 @@ class AqHfModulationElaborationSpec extends AnyFreeSpec with Matchers {
     }
     files.keySet must contain allOf (
       "FrameAqHfModulationTraceStage.sv",
-      "FramePreparedAqHfModulationTraceStage.sv",
+      "FrameAqModulationBlockStage.sv",
       "AqHfModulationBlock.sv",
       "FrameAqNonlinearMaskTraceStage.sv",
       "FrameAqContrastTraceStage.sv",
@@ -518,6 +518,8 @@ class AqHfModulationElaborationSpec extends AnyFreeSpec with Matchers {
     block must include("sampleOrdinal")
     block must include("edgeTotal")
     block must not include " / "
+    val scheduler = files("FrameAqModulationBlockStage.sv")
+    scheduler must include("xybY")
     val allSystemVerilog = files.values.mkString("\n")
     val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r
       .findAllMatchIn(allSystemVerilog)

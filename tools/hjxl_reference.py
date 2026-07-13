@@ -431,6 +431,159 @@ def fixed_aq_hf_modulation_q24(seed_q24: int, xyb_y_q12) -> int:
     return max(SIGNED_INT32_MIN, min(SIGNED_INT32_MAX, seed_q24 - magnitude_q24))
 
 
+def aq_color_modulation_from_xyb(xyb, hf_modulation, distance: float):
+    """Add libjxl-tiny's per-block red/blue color modulation to AQ seeds."""
+    np = _load_numpy()
+    source = np.asarray(xyb, dtype=np.float32)
+    seeds = np.asarray(hf_modulation, dtype=np.float32)
+    if source.ndim != 3 or source.shape[0] != 3:
+        raise ValueError("expected channel-first XYB image with shape (3, y, x)")
+    if source.shape[1] % 8 or source.shape[2] % 8:
+        raise ValueError("AQ color modulation input dimensions must be multiples of eight")
+    expected_shape = (source.shape[1] // 8, source.shape[2] // 8)
+    if seeds.shape != expected_shape:
+        raise ValueError(
+            f"AQ color modulation seeds must have shape {expected_shape}, got {seeds.shape}"
+        )
+
+    strength_mul = np.float32(2.177823400325309)
+    red_ramp_start = np.float32(0.0073200141118951231)
+    red_ramp_length = np.float32(0.019421555948474039)
+    blue_ramp_length = np.float32(0.086890611400405895)
+    blue_ramp_start = np.float32(0.26973418507870539)
+    strength = np.float32(
+        strength_mul
+        * np.float32(np.float32(1.0) - np.float32(0.25) * np.float32(distance))
+    )
+    if strength < 0:
+        return np.array(seeds, dtype=np.float32, copy=True)
+
+    ratio = np.float32(30.610615782142737)
+    red_strength = np.float32(strength * np.float32(5.992297772961519))
+    baseline = np.float32(strength * np.float32(-0.009174542291185913))
+    red_cap = np.float32(ratio * red_ramp_length)
+    blue_cap = np.float32(ratio * blue_ramp_length)
+    red_coefficient = np.float32(red_strength / ratio)
+    blue_coefficient = np.float32(strength / ratio)
+
+    output = np.empty_like(seeds)
+    for block_y in range(expected_shape[0]):
+        for block_x in range(expected_shape[1]):
+            red_coverage = np.float32(0.0)
+            blue_coverage = np.float32(0.0)
+            pixel_y0 = block_y * 8
+            pixel_x0 = block_x * 8
+            for local_y in range(8):
+                y = pixel_y0 + local_y
+                for local_x in range(8):
+                    x = pixel_x0 + local_x
+                    pixel_x = max(
+                        np.float32(0.0),
+                        np.float32(source[0, y, x] - red_ramp_start),
+                    )
+                    pixel_y = np.float32(source[1, y, x])
+                    pixel_b = max(
+                        np.float32(0.0),
+                        np.float32(
+                            source[2, y, x]
+                            - np.float32(pixel_y + blue_ramp_start)
+                        ),
+                    )
+                    red_coverage = np.float32(
+                        red_coverage + min(pixel_x, red_ramp_length)
+                    )
+                    blue_coverage = np.float32(
+                        blue_coverage + min(pixel_b, blue_ramp_length)
+                    )
+
+            overall_red = np.float32(
+                min(red_coverage, red_cap) * red_coefficient
+            )
+            overall_blue = np.float32(
+                min(blue_coverage, blue_cap) * blue_coefficient
+            )
+            output[block_y, block_x] = np.float32(
+                overall_red
+                + overall_blue
+                + np.float32(np.float32(seeds[block_y, block_x]) + baseline)
+            )
+    return output
+
+
+def fixed_aq_color_modulation_q24(
+    seed_q24: int,
+    distance_q8: int,
+    xyb_q12,
+) -> int:
+    """Apply HJXL's Q16-coverage color modulation to one prepared XYB block."""
+    np = _load_numpy()
+    if seed_q24 < SIGNED_INT32_MIN or seed_q24 > SIGNED_INT32_MAX:
+        raise ValueError("AQ color modulation seed must fit signed 32-bit Q24")
+    if distance_q8 < 0 or distance_q8 > np.iinfo(np.uint16).max:
+        raise ValueError("AQ color modulation distance must fit unsigned 16-bit Q8")
+    samples = np.asarray(xyb_q12)
+    if samples.shape != (3, 8, 8):
+        raise ValueError(
+            f"AQ color modulation XYB block must have shape (3, 8, 8), got {samples.shape}"
+        )
+    if not np.issubdtype(samples.dtype, np.integer):
+        raise ValueError("AQ color modulation block must contain integer Q12 samples")
+    if np.any(samples < SIGNED_INT32_MIN) or np.any(samples > SIGNED_INT32_MAX):
+        raise ValueError("AQ color modulation samples must fit signed 32-bit Q12")
+
+    distance_delta_q10 = max(0, 1024 - distance_q8)
+    if distance_delta_q10 == 0:
+        return seed_q24
+
+    red_ramp_start_q16 = 480
+    red_ramp_length_q16 = 1273
+    blue_ramp_start_q16 = 17677
+    blue_ramp_length_q16 = 5694
+    red_coverage_cap_q16 = 38962
+    blue_coverage_cap_q16 = 174311
+    baseline_magnitude_combined_q24 = 335218
+    red_combined_q24 = 7152598
+    blue_combined_q24 = 1193632
+
+    red_coverage_q16 = 0
+    blue_coverage_q16 = 0
+    for local_y in range(8):
+        for local_x in range(8):
+            x_q16 = int(samples[0, local_y, local_x]) << 4
+            b_minus_y_q16 = (
+                int(samples[2, local_y, local_x])
+                - int(samples[1, local_y, local_x])
+            ) << 4
+            red_coverage_q16 += min(
+                max(0, x_q16 - red_ramp_start_q16),
+                red_ramp_length_q16,
+            )
+            blue_coverage_q16 += min(
+                max(0, b_minus_y_q16 - blue_ramp_start_q16),
+                blue_ramp_length_q16,
+            )
+
+    red_coverage_q16 = min(red_coverage_q16, red_coverage_cap_q16)
+    blue_coverage_q16 = min(blue_coverage_q16, blue_coverage_cap_q16)
+
+    def distance_scaled_q24(combined_q24: int) -> int:
+        return (combined_q24 * distance_delta_q10 + (1 << 9)) >> 10
+
+    baseline_magnitude_q24 = distance_scaled_q24(
+        baseline_magnitude_combined_q24
+    )
+    red_coefficient_q24 = distance_scaled_q24(red_combined_q24)
+    blue_coefficient_q24 = distance_scaled_q24(blue_combined_q24)
+    red_q24 = (
+        red_coverage_q16 * red_coefficient_q24 + (1 << 15)
+    ) >> 16
+    blue_q24 = (
+        blue_coverage_q16 * blue_coefficient_q24 + (1 << 15)
+    ) >> 16
+    result = seed_q24 - baseline_magnitude_q24 + red_q24 + blue_q24
+    return max(SIGNED_INT32_MIN, min(SIGNED_INT32_MAX, result))
+
+
 def capture_aq_nonlinear_mask_from_xyb(
     xyb,
     block_x0: int = 0,
@@ -529,6 +682,58 @@ def capture_aq_hf_modulation_from_xyb(
     return np.asarray(captured, dtype=np.float32).reshape(block_height, block_width)
 
 
+def capture_aq_color_modulation_from_xyb(
+    xyb,
+    distance: float,
+    block_x0: int = 0,
+    block_y0: int = 0,
+    block_width: int | None = None,
+    block_height: int | None = None,
+):
+    """Capture real `_color_modulation` outputs from one reference AQ rectangle."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny import adaptive_quantization  # pylint: disable=import-outside-toplevel
+
+    source = np.asarray(xyb, dtype=np.float32)
+    if block_width is None:
+        block_width = source.shape[2] // 8 - block_x0
+    if block_height is None:
+        block_height = source.shape[1] // 8 - block_y0
+
+    captured = []
+    original_color_modulation = adaptive_quantization._color_modulation
+
+    def capture_color_modulation(xyb_value, block_x, block_y, distance_value, out_val):
+        result = original_color_modulation(
+            xyb_value, block_x, block_y, distance_value, out_val
+        )
+        captured.append(result)
+        return result
+
+    adaptive_quantization._color_modulation = capture_color_modulation
+    try:
+        adaptive_quantization.compute_adaptive_quantization(
+            source,
+            distance=distance,
+            block_x0=block_x0,
+            block_y0=block_y0,
+            block_width=block_width,
+            block_height=block_height,
+        )
+    finally:
+        adaptive_quantization._color_modulation = original_color_modulation
+
+    expected_count = block_width * block_height
+    if len(captured) != expected_count:
+        raise RuntimeError(
+            f"libjxl-tiny AQ captured {len(captured)} color-modulation values; "
+            f"expected {expected_count}"
+        )
+    return np.asarray(captured, dtype=np.float32).reshape(block_height, block_width)
+
+
 def tiled_aq_nonlinear_mask_from_xyb(xyb):
     """Stitch `_compute_mask` outputs from encoder-shaped 64x64 AQ calls."""
     np = _load_numpy()
@@ -571,6 +776,32 @@ def tiled_aq_hf_modulation_from_xyb(xyb):
                 block_x0 : block_x0 + block_width,
             ] = capture_aq_hf_modulation_from_xyb(
                 source,
+                block_x0=block_x0,
+                block_y0=block_y0,
+                block_width=block_width,
+                block_height=block_height,
+            )
+    return output
+
+
+def tiled_aq_color_modulation_from_xyb(xyb, distance: float):
+    """Stitch color-modulated AQ seeds from encoder-shaped 64x64 AQ calls."""
+    np = _load_numpy()
+    source = np.asarray(xyb, dtype=np.float32)
+    y_blocks = source.shape[1] // 8
+    x_blocks = source.shape[2] // 8
+    tile_blocks = 8
+    output = np.empty((y_blocks, x_blocks), dtype=np.float32)
+    for block_y0 in range(0, y_blocks, tile_blocks):
+        block_height = min(tile_blocks, y_blocks - block_y0)
+        for block_x0 in range(0, x_blocks, tile_blocks):
+            block_width = min(tile_blocks, x_blocks - block_x0)
+            output[
+                block_y0 : block_y0 + block_height,
+                block_x0 : block_x0 + block_width,
+            ] = capture_aq_color_modulation_from_xyb(
+                source,
+                distance=distance,
                 block_x0=block_x0,
                 block_y0=block_y0,
                 block_width=block_width,
@@ -972,6 +1203,10 @@ def write_aq_hf_modulation_q24_csv(path: Path, image) -> None:
     input_q8 = np.rint(
         np.asarray(image, dtype=np.float64) * (1 << 8)
     ).astype(np.int64)
+    if np.any(input_q8 < np.iinfo(np.int16).min) or np.any(
+        input_q8 > np.iinfo(np.int16).max
+    ):
+        raise ValueError("RGB Q8 fixture does not fit signed 16-bit")
     input_quantized_rgb = (
         input_q8.astype(np.float32) / np.float32(1 << 8)
     ).astype(np.float32)
@@ -1111,6 +1346,190 @@ def write_aq_hf_modulation_q24_csv(path: Path, image) -> None:
                         int(input_quantized_erosion_q16[block_y, block_x]),
                         int(input_quantized_fixed_nonlinear_q24[block_y, block_x]),
                         int(input_quantized_fixed_reference_q24[block_y, block_x]),
+                    )
+                )
+                block += 1
+
+
+def write_aq_color_modulation_q24_csv(
+    path: Path,
+    image,
+    distance: float,
+) -> None:
+    """Write cumulative signed-Q24 AQ seeds after red/blue color modulation."""
+    np = _load_numpy()
+    distance_q8 = int(round(float(distance) * (1 << 8)))
+    if distance_q8 < 0 or distance_q8 > np.iinfo(np.uint16).max:
+        raise ValueError("AQ color-modulation distance does not fit unsigned Q8")
+    reference_distance = float(np.float32(distance_q8 / float(1 << 8)))
+
+    def float_chain(source):
+        pre_erosion = aq_contrast_pre_erosion_from_xyb(source)
+        erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+        nonlinear = aq_nonlinear_mask_from_fuzzy_erosion(erosion)
+        hf = aq_hf_modulation_from_xyb(source, nonlinear)
+        color = aq_color_modulation_from_xyb(source, hf, reference_distance)
+        return erosion, hf, color
+
+    def fixed_chain(erosion, source_q12):
+        erosion_q16 = np.rint(
+            np.asarray(erosion, dtype=np.float64) * (1 << 16)
+        ).astype(np.int64)
+        shape = erosion_q16.shape
+        fixed_hf = np.empty(shape, dtype=np.int64)
+        fixed_color = np.empty(shape, dtype=np.int64)
+        for block_y in range(shape[0]):
+            for block_x in range(shape[1]):
+                y0 = block_y * 8
+                x0 = block_x * 8
+                block = source_q12[:, y0 : y0 + 8, x0 : x0 + 8]
+                nonlinear_q24 = fixed_aq_nonlinear_mask_q24(
+                    int(erosion_q16[block_y, block_x])
+                )
+                fixed_hf[block_y, block_x] = fixed_aq_hf_modulation_q24(
+                    nonlinear_q24,
+                    block[1],
+                )
+                fixed_color[block_y, block_x] = fixed_aq_color_modulation_q24(
+                    int(fixed_hf[block_y, block_x]),
+                    distance_q8,
+                    block,
+                )
+        return erosion_q16, fixed_hf, fixed_color
+
+    xyb = xyb_from_python_port(image)
+    erosion, hf, reference = float_chain(xyb)
+    captured_reference = capture_aq_color_modulation_from_xyb(
+        xyb, reference_distance
+    )
+    if not np.array_equal(reference, captured_reference):
+        raise RuntimeError(
+            "AQ color-modulation reconstruction does not match libjxl-tiny "
+            "`_color_modulation`"
+        )
+    tiled_reference = tiled_aq_color_modulation_from_xyb(
+        xyb, reference_distance
+    )
+    if not np.array_equal(reference, tiled_reference):
+        raise RuntimeError(
+            "full-frame AQ color modulation does not match encoder-style tiled AQ calls"
+        )
+
+    xyb_q12 = np.rint(
+        np.asarray(xyb, dtype=np.float64) * (1 << 12)
+    ).astype(np.int64)
+    quantized_xyb = (
+        xyb_q12.astype(np.float32) / np.float32(1 << 12)
+    ).astype(np.float32)
+    quantized_erosion, quantized_hf, quantized_reference = float_chain(
+        quantized_xyb
+    )
+
+    input_q8 = np.rint(
+        np.asarray(image, dtype=np.float64) * (1 << 8)
+    ).astype(np.int64)
+    if np.any(input_q8 < np.iinfo(np.int16).min) or np.any(
+        input_q8 > np.iinfo(np.int16).max
+    ):
+        raise ValueError("RGB Q8 fixture does not fit signed 16-bit")
+    input_quantized_rgb = (
+        input_q8.astype(np.float32) / np.float32(1 << 8)
+    ).astype(np.float32)
+    input_quantized_xyb = xyb_from_python_port(input_quantized_rgb)
+    input_quantized_xyb_q12 = np.rint(
+        np.asarray(input_quantized_xyb, dtype=np.float64) * (1 << 12)
+    ).astype(np.int64)
+    input_q8_xyb_q12 = (
+        input_quantized_xyb_q12.astype(np.float32) / np.float32(1 << 12)
+    ).astype(np.float32)
+    input_quantized_pre = aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
+    input_quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(
+        input_quantized_pre
+    )
+
+    erosion_q16, fixed_hf, fixed_reference = fixed_chain(erosion, xyb_q12)
+    quantized_erosion_q16, fixed_quantized_hf, fixed_quantized_reference = (
+        fixed_chain(quantized_erosion, xyb_q12)
+    )
+    (
+        input_quantized_erosion_q16,
+        input_quantized_fixed_hf,
+        input_quantized_fixed_reference,
+    ) = fixed_chain(input_quantized_erosion, input_quantized_xyb_q12)
+
+    hf_q24 = np.rint(hf.astype(np.float64) * (1 << 24)).astype(np.int64)
+    reference_q24 = np.rint(
+        reference.astype(np.float64) * (1 << 24)
+    ).astype(np.int64)
+    quantized_hf_q24 = np.rint(
+        quantized_hf.astype(np.float64) * (1 << 24)
+    ).astype(np.int64)
+    quantized_reference_q24 = np.rint(
+        quantized_reference.astype(np.float64) * (1 << 24)
+    ).astype(np.int64)
+
+    for name, values in (
+        ("AQ fuzzy erosion", erosion_q16),
+        ("quantized-XYB AQ fuzzy erosion", quantized_erosion_q16),
+        ("input-Q8 AQ fuzzy erosion", input_quantized_erosion_q16),
+    ):
+        if np.any(values < 0) or np.any(values > SIGNED_INT32_MAX):
+            raise ValueError(f"{name} Q16 fixture does not fit positive signed 32-bit")
+    for name, values in (
+        ("AQ HF modulation", hf_q24),
+        ("AQ color modulation", reference_q24),
+        ("fixed AQ HF modulation", fixed_hf),
+        ("fixed AQ color modulation", fixed_reference),
+        ("quantized-XYB AQ HF modulation", quantized_hf_q24),
+        ("quantized-XYB AQ color modulation", quantized_reference_q24),
+        ("fixed quantized-XYB AQ HF modulation", fixed_quantized_hf),
+        ("fixed quantized-XYB AQ color modulation", fixed_quantized_reference),
+        ("input-Q8 fixed AQ HF modulation", input_quantized_fixed_hf),
+        ("input-Q8 fixed AQ color modulation", input_quantized_fixed_reference),
+    ):
+        if np.any(values < SIGNED_INT32_MIN) or np.any(values > SIGNED_INT32_MAX):
+            raise ValueError(f"{name} Q24 fixture does not fit signed 32-bit")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "block",
+                "block_x",
+                "block_y",
+                "distance_q8",
+                "hf_modulation_q24",
+                "color_modulation_q24",
+                "fixed_hf_modulation_q24",
+                "fixed_color_modulation_q24",
+                "quantized_xyb_hf_modulation_q24",
+                "quantized_xyb_color_modulation_q24",
+                "fixed_quantized_xyb_hf_modulation_q24",
+                "fixed_quantized_xyb_color_modulation_q24",
+                "input_q8_fixed_hf_modulation_q24",
+                "input_q8_fixed_color_modulation_q24",
+            )
+        )
+        block = 0
+        for block_y in range(reference_q24.shape[0]):
+            for block_x in range(reference_q24.shape[1]):
+                writer.writerow(
+                    (
+                        block,
+                        block_x,
+                        block_y,
+                        distance_q8,
+                        int(hf_q24[block_y, block_x]),
+                        int(reference_q24[block_y, block_x]),
+                        int(fixed_hf[block_y, block_x]),
+                        int(fixed_reference[block_y, block_x]),
+                        int(quantized_hf_q24[block_y, block_x]),
+                        int(quantized_reference_q24[block_y, block_x]),
+                        int(fixed_quantized_hf[block_y, block_x]),
+                        int(fixed_quantized_reference[block_y, block_x]),
+                        int(input_quantized_fixed_hf[block_y, block_x]),
+                        int(input_quantized_fixed_reference[block_y, block_x]),
                     )
                 )
                 block += 1
@@ -1930,6 +2349,11 @@ def main() -> int:
         help="optional signed-Q24 AQ seed after per-block Y HF modulation",
     )
     parser.add_argument(
+        "--aq-color-modulation-q24-csv",
+        type=Path,
+        help="optional signed-Q24 AQ seed after per-block red/blue color modulation",
+    )
+    parser.add_argument(
         "--dct8x8-npy",
         type=Path,
         help="optional libjxl-tiny raster 8x8 XYB DCT blocks NumPy output path",
@@ -2241,6 +2665,12 @@ def main() -> int:
         write_aq_nonlinear_mask_q24_csv(args.aq_nonlinear_mask_q24_csv, image)
     if args.aq_hf_modulation_q24_csv is not None:
         write_aq_hf_modulation_q24_csv(args.aq_hf_modulation_q24_csv, image)
+    if args.aq_color_modulation_q24_csv is not None:
+        write_aq_color_modulation_q24_csv(
+            args.aq_color_modulation_q24_csv,
+            image,
+            args.distance,
+        )
     if args.dct8x8_npy is not None:
         np = _load_numpy()
         args.dct8x8_npy.parent.mkdir(parents=True, exist_ok=True)

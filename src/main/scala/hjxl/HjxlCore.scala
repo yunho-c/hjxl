@@ -38,6 +38,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   private val includeAqStrategyMask = traceRoute == TraceStage.AqStrategyMask
   private val includeAqNonlinearMask = traceRoute == TraceStage.AqNonlinearMask
   private val includeAqHfModulation = traceRoute == TraceStage.AqHfModulation
+  private val includeAqColorModulation = traceRoute == TraceStage.AqColorModulation
 
   val inputTrace = if (includeInput) Some(Module(new FramePadTraceStage(c))) else None
   val xybTrace = if (includeXyb) Some(Module(new FrameXybTraceStage(c))) else None
@@ -60,6 +61,8 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     if (includeAqNonlinearMask) Some(Module(new FrameAqNonlinearMaskTraceStage(c))) else None
   val aqHfModulationTrace =
     if (includeAqHfModulation) Some(Module(new FrameAqHfModulationTraceStage(c))) else None
+  val aqColorModulationTrace =
+    if (includeAqColorModulation) Some(Module(new FrameAqColorModulationTraceStage(c))) else None
 
   val useDcTokenTrace =
     if (includeDcToken) {
@@ -126,6 +129,13 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     }
   val useAqHfModulationTrace =
     if (includeAqHfModulation) {
+      io.config.enableXyb && io.config.enableQuant && !io.config.enableDct &&
+        !io.config.enableTokenize && io.config.tokenSelect === TokenTraceSelect.AqContrast.U
+    } else {
+      false.B
+    }
+  val useAqColorModulationTrace =
+    if (includeAqColorModulation) {
       io.config.enableXyb && io.config.enableQuant && !io.config.enableDct &&
         !io.config.enableTokenize && io.config.tokenSelect === TokenTraceSelect.AqContrast.U
     } else {
@@ -272,6 +282,12 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     stage.io.input.valid := io.input.valid && useAqHfModulationTrace
     stage.io.trace.ready := io.trace.ready && useAqHfModulationTrace
   }
+  aqColorModulationTrace.foreach { stage =>
+    stage.io.config := io.config
+    stage.io.input.bits := io.input.bits
+    stage.io.input.valid := io.input.valid && useAqColorModulationTrace
+    stage.io.trace.ready := io.trace.ready && useAqColorModulationTrace
+  }
 
   val inactiveTrace = WireDefault(0.U.asTypeOf(new StageTrace(c)))
 
@@ -281,6 +297,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.input.ready).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.input.ready).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.input.ready).getOrElse(false.B),
+      useAqColorModulationTrace -> aqColorModulationTrace.map(_.io.input.ready).getOrElse(false.B),
       useAqHfModulationTrace -> aqHfModulationTrace.map(_.io.input.ready).getOrElse(false.B),
       useAqNonlinearMaskTrace -> aqNonlinearMaskTrace.map(_.io.input.ready).getOrElse(false.B),
       useAqStrategyMaskTrace -> aqStrategyMaskTrace.map(_.io.input.ready).getOrElse(false.B),
@@ -301,6 +318,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.trace.valid).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.trace.valid).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.trace.valid).getOrElse(false.B),
+      useAqColorModulationTrace -> aqColorModulationTrace.map(_.io.trace.valid).getOrElse(false.B),
       useAqHfModulationTrace -> aqHfModulationTrace.map(_.io.trace.valid).getOrElse(false.B),
       useAqNonlinearMaskTrace -> aqNonlinearMaskTrace.map(_.io.trace.valid).getOrElse(false.B),
       useAqStrategyMaskTrace -> aqStrategyMaskTrace.map(_.io.trace.valid).getOrElse(false.B),
@@ -321,6 +339,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAcTokenTrace -> acTokenTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
+      useAqColorModulationTrace -> aqColorModulationTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAqHfModulationTrace -> aqHfModulationTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAqNonlinearMaskTrace -> aqNonlinearMaskTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAqStrategyMaskTrace -> aqStrategyMaskTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
@@ -348,6 +367,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.traceLast).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.traceLast).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.traceLast).getOrElse(false.B),
+      useAqColorModulationTrace -> aqColorModulationTrace.map(_.io.traceLast).getOrElse(false.B),
       useAqHfModulationTrace -> aqHfModulationTrace.map(_.io.traceLast).getOrElse(false.B),
       useAqNonlinearMaskTrace -> aqNonlinearMaskTrace.map(_.io.traceLast).getOrElse(false.B),
       useAqStrategyMaskTrace -> aqStrategyMaskTrace.map(_.io.traceLast).getOrElse(false.B),
@@ -369,6 +389,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.busy).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.busy).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.busy).getOrElse(false.B),
+      useAqColorModulationTrace -> aqColorModulationTrace.map(_.io.busy).getOrElse(false.B),
       useAqHfModulationTrace -> aqHfModulationTrace.map(_.io.busy).getOrElse(false.B),
       useAqNonlinearMaskTrace -> aqNonlinearMaskTrace.map(_.io.busy).getOrElse(false.B),
       useAqStrategyMaskTrace -> aqStrategyMaskTrace.map(_.io.busy).getOrElse(false.B),
@@ -390,6 +411,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.overflow).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.overflow).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.overflow).getOrElse(false.B),
+      useAqColorModulationTrace -> aqColorModulationTrace.map(_.io.overflow).getOrElse(false.B),
       useAqHfModulationTrace -> aqHfModulationTrace.map(_.io.overflow).getOrElse(false.B),
       useAqNonlinearMaskTrace -> aqNonlinearMaskTrace.map(_.io.overflow).getOrElse(false.B),
       useAqStrategyMaskTrace -> aqStrategyMaskTrace.map(_.io.overflow).getOrElse(false.B),

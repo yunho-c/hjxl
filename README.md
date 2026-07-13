@@ -47,6 +47,8 @@ the signed-Q24 log-domain seed used by final AQ-map modulation. A focused
 `traceRoute = TraceStage.AqHfModulation` build continues through the first
 per-block modulation, subtracting the weighted sum of the 112 internal
 horizontal/vertical Y edges from each seed. A focused
+`traceRoute = TraceStage.AqColorModulation` build then applies the reference's
+distance-dependent baseline plus capped red/blue coverage terms. A focused
 `traceRoute = TraceStage.RawQuantField` core can also emit the current fixed
 raw-quant field, one adjusted raw-quant
 value per padded 8x8 block, so the quant-metadata trace shape exists before
@@ -69,10 +71,15 @@ erosion-derived branch in signed Q24, sharing one 56-cycle restoring divider
 across its three rational terms; prepared and RGB-composed frame stages emit
 `AqNonlinearMask` traces. `AqHfModulationBlock` then walks one Q12 Y block over
 64 cycles, and its prepared/RGB frame stages emit cumulative signed-Q24
-`AqHfModulation` traces. The RGB chain captures the existing converter's
-accepted XYB stream into one shared buffer instead of converting the frame a
-second time. Color, gamma, power/scale, final-map assembly, and connection to
-the prepared final-conversion seam remain open. Focused
+`AqHfModulation` traces. `FrameAqModulationBlockStage` is the shared
+RGB-to-padded-block boundary: it captures the existing converter's accepted XYB
+stream once and holds frame completion until the cumulative modulation chain
+finishes. The focused HF build stores only Y; the color build also retains X/B.
+`AqColorModulationBlock` walks the same 8x8 block over 64 cycles, accumulates
+Q16 red and blue coverage, applies capped distance-folded Q24 coefficients, and
+emits cumulative `AqColorModulation` traces without a runtime divider. Gamma,
+power/scale, final-map assembly, and connection to the prepared final-conversion
+seam remain open. Focused
 `TraceStage.YtoxMap` and
 `TraceStage.YtobMap` routes emit the current fixed scalar CFL tile maps, one
 record per 64x64 tile. Later stages will replace the fixed quantization
@@ -285,7 +292,7 @@ sbt 'runMain hjxl.Elaborate'
 ```
 
 Generate the standalone RGB-input AQ contrast, fuzzy-erosion, strategy-mask,
-nonlinear-mask, HF-modulation, and prepared final-AQ conversion tops:
+nonlinear-mask, HF/color-modulation, and prepared final-AQ conversion tops:
 
 ```sh
 sbt 'runMain hjxl.ElaborateAqContrast'
@@ -293,6 +300,7 @@ sbt 'runMain hjxl.ElaborateAqFuzzyErosion'
 sbt 'runMain hjxl.ElaborateAqStrategyMask'
 sbt 'runMain hjxl.ElaborateAqNonlinearMask'
 sbt 'runMain hjxl.ElaborateAqHfModulation'
+sbt 'runMain hjxl.ElaborateAqColorModulation'
 sbt 'runMain hjxl.ElaboratePreparedAqRawQuant'
 ```
 
@@ -375,6 +383,7 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --aq-strategy-mask-q16-csv build-codex/fixtures/gradient-17x9-aq-strategy-mask-q16.csv \
   --aq-nonlinear-mask-q24-csv build-codex/fixtures/gradient-17x9-aq-nonlinear-mask-q24.csv \
   --aq-hf-modulation-q24-csv build-codex/fixtures/gradient-17x9-aq-hf-modulation-q24.csv \
+  --aq-color-modulation-q24-csv build-codex/fixtures/gradient-17x9-aq-color-modulation-q24.csv \
   --dct8x8-npy build-codex/fixtures/gradient-17x9-dct8x8.npy \
   --default-ac-strategy-npy build-codex/fixtures/gradient-17x9-ac-strategy.npy \
   --raw-quant-field-npy build-codex/fixtures/gradient-17x9-raw-qf.npy \
@@ -466,8 +475,20 @@ and proves full-frame equality against stitched 64x64 AQ calls. It also emits
 the Q32-coefficient fixed model for native, Q12-rounded, and signed-Q8 input
 fixtures. `AqHfModulationSpec` checks exact prepared results, 64-cycle latency,
 full signed-input saturation, output stability, five composed RGB families,
-65x1 crossing, and 65x65 raster order. This trace still precedes color/gamma
-modulation and the final power/scale step.
+65x1 crossing, and 65x65 raster order. This focused trace is the input to the
+now-connected color route and still precedes gamma and the final power/scale
+step.
+
+The `--aq-color-modulation-q24-csv` artifact records the cumulative signed-Q24
+seed after `_color_modulation` for the requested Q8 distance. Its independent
+float32 reconstruction is checked against the real private function and against
+stitched 64x64 AQ calls. Q16 ramp coverage plus distance-folded Q24 coefficients
+form the fixed oracle, including the exact early return above distance 4.
+`AqColorModulationSpec` covers all distance regimes, full signed XYB inputs and
+saturation, exact 64-cycle prepared output, backpressure/config lifetime, five
+RGB families, and 65x1/65x65 traversal. The composed elaboration contains one
+shared modulation scheduler and one RGB-to-XYB converter. Gamma modulation and
+the final power/scale step remain downstream.
 
 The `--dct-only-aq-map-q24-csv` artifact records each real all-DCT AQ-map
 sample, the frame-level inverse global AC scale, libjxl-tiny's raw-quant byte,
@@ -560,7 +581,8 @@ all-route shell or `--trace-route aq-contrast`; the same runtime flags with
 `--trace-route aq-strategy-mask` selects the composed focused strategy mask.
 Use `--trace-route aq-nonlinear-mask` for the signed-Q24 modulation seed.
 Use `--trace-route aq-hf-modulation` for the cumulative seed after Y-detail
-modulation.
+modulation, and `--trace-route aq-color-modulation` for the cumulative seed
+after distance-dependent red/blue coverage.
 Prepared-DCT manifests
 record `prepared-dct-quantize-token` for the direct prepared stream boundary,
 with no `TraceStage` id. `--manifest-json`
@@ -865,10 +887,10 @@ replay-capture input-stream, trace-layout, and AXI-Lite expectation guards.
 | `0x20` | `fixedYtox` | signed 8-bit scalar Y-to-X CFL override |
 | `0x24` | `fixedYtob` | signed 8-bit scalar Y-to-B CFL override |
 | `0x28` | identity | read-only ASCII `HJXL` magic (`0x484a584c`) |
-| `0x2c` | ABI version | read-only `major << 16 | minor`; currently 1.5 |
+| `0x2c` | ABI version | read-only `major << 16 | minor`; currently 1.6 |
 | `0x30` | capabilities | read-only target capability mask defined in `abi/hjxl_abi.json` |
 | `0x34` | maximum frame geometry | read-only maximum height in bits 31:16 and width in bits 15:0 |
-| `0x38` | active route | read-only trace stage 0–17, direct prepared route 128, or estimated-CFL prepared route 129 |
+| `0x38` | active route | read-only trace stage 0–18, direct prepared route 128, or estimated-CFL prepared route 129 |
 | `0x3c` | build ID | read-only contract build identifier; currently `0x20260712` |
 
 The AXI-Lite wrapper returns OKAY for mapped registers and DECERR for unmapped
@@ -1202,6 +1224,15 @@ backpressure behavior, five RGB oracle families, and 65x1/65x65 traversal.
 `AqHfModulationElaborationSpec` verifies a sequential edge walker, no division
 operator in the block datapath, and exactly one RGB-to-XYB converter in the
 composed stage.
+
+`AqColorModulationSpec` locks the next cumulative per-block operation. It
+checks Q16 ramp coverage and distance-folded Q24 coefficients against exact
+integer and float32 models across the active, zero-strength, and early-return
+distance regimes; exact 64-cycle latency; saturation and stalled-output
+stability; prepared oracle rows; five composed RGB families; and 65x1/65x65
+traversal. `AqColorModulationElaborationSpec` verifies sequential HF/color
+walkers, no color-block divider, one shared frame scheduler, and one
+RGB-to-XYB converter.
 
 `AdaptiveQuantizationSpec` checks the prepared final-AQ seam independently of
 the still-missing per-block image heuristics. It validates Q24 multiplication,
