@@ -148,6 +148,18 @@ object ElaborateAqFuzzyErosion extends App {
   )
 }
 
+object ElaborateAqStrategyMask extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqStrategyMaskTraceStage(),
+    args = Array("--target-dir", "generated-aq-strategy-mask"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaboratePreparedDctOnlyQuantizeTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedDctOnlyQuantizeTokenTraceStage(),

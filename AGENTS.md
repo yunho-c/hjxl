@@ -198,8 +198,17 @@ Read these libjxl-tiny files before making architectural changes:
   that prepared scheduler without duplicating XYB conversion. It is available
   through the focused `traceRoute = TraceStage.AqFuzzyErosion` core build; the
   default all-route core continues to select the earlier `AqContrast` trace for
-  `tokenSelect = AqContrast`. Per-block HF/color/gamma/mask modulation and
-  connection to `FramePreparedAqRawQuantTraceStage` remain separate work.
+  `tokenSelect = AqContrast`.
+- `AqStrategyMaskReciprocal` evaluates libjxl-tiny's pre-modulation
+  `1 / (erosion + 0.001)` strategy mask in Q16 using an exact 1/1000 rational
+  offset and a 42-cycle restoring divider. `FramePreparedAqStrategyMaskTraceStage`
+  applies that primitive to prepared raster block values, and
+  `FrameAqStrategyMaskTraceStage` composes the contrast and erosion path without
+  duplicating their arithmetic. It is a focused
+  `traceRoute = TraceStage.AqStrategyMask` diagnostic route and is not yet wired
+  into rectangular strategy scoring. The distinct nonlinear `_compute_mask`,
+  per-block HF/color/gamma and power/scale modulations, final AQ-map assembly,
+  and connection to `FramePreparedAqRawQuantTraceStage` remain separate work.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive. It should be reused for
   the future 8x8 transform stage instead of writing a separate transform shape
   from scratch.
@@ -423,7 +432,8 @@ Read these libjxl-tiny files before making architectural changes:
   `tools/hjxl_trace_tokens.py` metadata-grid extraction and
   `tools/hjxl_compare_tokens.py` fixed-oracle comparison, plus packed
   `AqContrast` stage/index/value fields and final TLAST for the selected AQ
-  route and the focused `AqFuzzyErosion` block/TLAST route.
+  route plus the focused `AqFuzzyErosion` and `AqStrategyMask` block/TLAST
+  routes.
 - Use `sbt 'runMain hjxl.ElaborateAxiLiteStream'` for the default AXI-Lite
   controlled stream wrapper and
   `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
@@ -597,6 +607,11 @@ Read these libjxl-tiny files before making architectural changes:
   RGB contrast-to-erosion top. It writes `generated-aq-fuzzy-erosion/`; keep
   the generated directory out of git. This trace is pre-modulation AQ state,
   not the final AQ map.
+- Use `sbt 'runMain hjxl.ElaborateAqStrategyMask'` to generate the composed RGB
+  strategy-mask top. It writes `generated-aq-strategy-mask/`; keep the generated
+  directory out of git. The reciprocal is sequential, but the upstream
+  correctness-first RGB/contrast/erosion structures still require physical
+  feasibility work.
 - `FrameCflMapTraceStage` emits fixed scalar CFL map traces for focused Y-to-X
   and Y-to-B routes. It establishes the per-64x64-tile trace shape used by
   libjxl-tiny metadata for RGB-input fixed-map routes; prepared-DCT
@@ -621,6 +636,12 @@ Read these libjxl-tiny files before making architectural changes:
   reconstruction exactly against the full reference AQ function. Keep the
   prepared one-LSB checks, five RGB families, 65x1 RGB crossing, and prepared
   65x65-to-72x72 two-dimensional traversal in `AqFuzzyErosionSpec`.
+- `tools/hjxl_reference.py --aq-strategy-mask-q16-csv ...` exports prepared
+  erosion, native mask, fixed-Q16 mask, and Q12-input variants. It checks the
+  independent full-frame mask exactly against both the real AQ result and the
+  encoder's stitched 64x64 tile calls. Keep the fixed-latency/backpressure,
+  five RGB families, 65x1 crossing, and 65x65 tiled-order cases in
+  `AqStrategyMaskSpec`.
 - `tools/hjxl_reference.py` can export real libjxl-tiny quant metadata with
   `--raw-quant-field-npy`, `--libjxl-ac-strategy-npy`, `--ytox-map-npy`, and
   `--ytob-map-npy`. Use those artifacts as the oracle before implementing AQ,
@@ -1042,7 +1063,8 @@ Read these libjxl-tiny files before making architectural changes:
   focused regression for the northwest tile-neighbor branch.
 - `HjxlCore` currently exposes padded-input, XYB, raw-DCT, fixed-parameter
   quantized-DCT, fixed-parameter DC-token, fixed AC-metadata-token, or default
-  AC-strategy, AQ-contrast, and focused AQ-fuzzy-erosion trace streams.
+  AC-strategy, AQ-contrast, focused AQ-fuzzy-erosion, and focused AQ-strategy-
+  mask trace streams.
   `FrameConfig.tokenSelect` chooses
   `Dc`, `AcMetadata`, or `AcTokens` for token routes; the reserved
   `AqContrast` value selects the RGB contrast extension when XYB and
@@ -1067,9 +1089,10 @@ Read these libjxl-tiny files before making architectural changes:
   frame trace; `enableDct` alone selects raw DCT;
   `enableQuant && enableTokenize && tokenSelect=AcMetadata` selects AC metadata
   tokens; `enableXyb && enableQuant && tokenSelect=AqContrast` without DCT or
-  tokenization selects the AQ contrast grid in the all-route core and the fuzzy
-  erosion grid when `traceRoute = TraceStage.AqFuzzyErosion`; `enableQuant`
-  alone selects AC strategy metadata. Do not describe it as an encoder yet;
+  tokenization selects the AQ contrast grid in the all-route core, the fuzzy
+  erosion grid when `traceRoute = TraceStage.AqFuzzyErosion`, and the strategy
+  mask when `traceRoute = TraceStage.AqStrategyMask`; `enableQuant` alone
+  selects fixed AC strategy metadata. Do not describe it as an encoder yet;
   these are traceable pipeline slices.
 
 ## Verification Commands

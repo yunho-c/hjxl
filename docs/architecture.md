@@ -36,8 +36,10 @@ contract is intentionally simple:
   traces; the reserved value `AqContrast` selects the RGB contrast extension
   when XYB and quantization are enabled without DCT/tokenization. A focused
   `traceRoute = TraceStage.AqFuzzyErosion` build uses the same runtime flags to
-  emit the next AQ intermediate. The full AC-token route is only instantiated
-  when the core is elaborated with `traceRoute = TraceStage.AcTokens`.
+  emit the next AQ intermediate, and `TraceStage.AqStrategyMask` continues to
+  the mask consumed by strategy scoring. The full AC-token route is only
+  instantiated when the core is elaborated with `traceRoute =
+  TraceStage.AcTokens`.
 - `RgbPixel` carries fixed-point linear RGB samples and image coordinates.
 - `StageTrace` carries a stage id, group id, element index, and value.
 - `HjxlCore` is the integration shell where stage modules will be wired.
@@ -94,8 +96,9 @@ owned by the host tools for now.
   it routes into `FrameAcStrategyTraceStage`. When XYB and quantization are
   enabled without DCT/tokenization, `tokenSelect=AqContrast` instead routes the
   global pre-erosion contrast grid; a focused `TraceStage.AqFuzzyErosion` build
-  emits the erosion-derived block grid instead. The default selector still
-  routes AC strategy.
+  emits the erosion-derived block grid and a focused `TraceStage.AqStrategyMask`
+  build emits its reciprocal strategy mask. The default selector still routes
+  fixed AC strategy.
   The optional compile-time `traceRoute` constructor argument restricts
   elaboration to one route for focused simulation while keeping the same public
   IO shape. Use it for tests and route-specific experiments; the default
@@ -145,8 +148,20 @@ owned by the host tools for now.
   the default all-route core retains `AqContrast` behavior for ABI compatibility.
   Five RGB families remain within two percent, a 65x1 case crosses the
   horizontal 64-pixel tile edge, and prepared 65x65 input exercises the full
-  18x18-cell/9x9-block grid padded to 72x72. The HF, color, gamma, mask, and
-  final AQ-map stages remain downstream.
+  18x18-cell/9x9-block grid padded to 72x72.
+- `AqStrategyMaskReciprocal` computes the block mask used only by AC-strategy
+  scoring: `1 / (fuzzy_erosion + 0.001)`. The Q16 boundary represents 0.001 as
+  the exact rational 1/1000 and uses a 42-cycle restoring divider rather than a
+  combinational division operator. `FramePreparedAqStrategyMaskTraceStage`
+  provides a one-block-at-a-time ready/valid boundary, while
+  `FrameAqStrategyMaskTraceStage` composes it after the RGB fuzzy-erosion path.
+  The oracle checks the full-frame reconstruction against both the returned
+  reference mask and the stitched 64x64 calls used by the real encoder; five
+  RGB families stay within two percent and prepared fixtures match Q16 exactly.
+  This focused trace is not connected to `FrameAcStrategyTraceStage`, which
+  still emits fixed all-DCT choices. The separate nonlinear `_compute_mask`,
+  HF/color/gamma and power/scale modulations, final AQ map, and prepared
+  raw-quant conversion connection remain downstream.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny's
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`; unsupported values currently
@@ -446,10 +461,12 @@ wrappers.
   `sbt 'runMain hjxl.ElaborateAxiLiteStream'` for the default controlled shell
   or `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
   full-AC-token controlled shell.
-- `ElaborateAqContrast` and `ElaborateAqFuzzyErosion` generate standalone RGB
-  AQ diagnostic tops in `generated-aq-contrast/` and
-  `generated-aq-fuzzy-erosion/`. `AqFuzzyErosionElaborationSpec` guards the
-  latter's composed RGB/prepared module boundary and trace/status ports.
+- `ElaborateAqContrast`, `ElaborateAqFuzzyErosion`, and
+  `ElaborateAqStrategyMask` generate standalone RGB AQ diagnostic tops in
+  `generated-aq-contrast/`, `generated-aq-fuzzy-erosion/`, and
+  `generated-aq-strategy-mask/`. Their elaboration specs guard the composed
+  RGB/prepared module boundaries and trace/status ports; the strategy-mask spec
+  also rejects a division operator in the sequential reciprocal module.
 - `ElaboratePreparedDctOnlyQuantize` generates standalone SystemVerilog for the
   prepared-DCT quantization scheduler. Use it when the integration boundary is
   after DCT/AQ/CFL scalar generation but before quantized DC/AC tokenization.
@@ -590,7 +607,7 @@ wrappers.
   `tools/hjxl_trace_tokens.py` metadata-grid extraction and
   `tools/hjxl_compare_tokens.py` fixed-oracle comparison, and checks packed
   `AqContrast` stage/index/value fields with final TLAST plus the focused
-  `AqFuzzyErosion` block/TLAST path. Full AC-token TLAST
+  `AqFuzzyErosion` and `AqStrategyMask` block/TLAST paths. Full AC-token TLAST
   alignment is covered at the token-stage and frame-scheduler levels because
   the focused AXI AC-token simulation is expensive.
 - `HjxlAxiStreamElaborationSpec` guards the generated stream-shell port surface

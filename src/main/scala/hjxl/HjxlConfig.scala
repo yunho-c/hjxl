@@ -50,6 +50,7 @@ object TraceStage {
   val AcTokens = HjxlAbiGenerated.Trace.Stage.AcTokens
   val AqContrast = HjxlAbiGenerated.Trace.Stage.AqContrast
   val AqFuzzyErosion = HjxlAbiGenerated.Trace.Stage.AqFuzzyErosion
+  val AqStrategyMask = HjxlAbiGenerated.Trace.Stage.AqStrategyMask
 }
 
 object TokenTraceSelect {

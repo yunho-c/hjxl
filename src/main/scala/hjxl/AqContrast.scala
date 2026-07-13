@@ -337,6 +337,8 @@ class FrameAqContrastTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   val cellsX = RegInit(0.U(widthBits.W))
   val totalCells = RegInit(0.U(32.W))
   val cellOrdinal = RegInit(0.U(32.W))
+  val currentCellX = RegInit(0.U(widthBits.W))
+  val currentCellY = RegInit(0.U(heightBits.W))
   val sampleOrdinal = RegInit(0.U(log2Ceil(samplesPerCell).W))
   val cellAccumulator = RegInit(0.U(35.W))
   val outputValid = RegInit(false.B)
@@ -367,11 +369,8 @@ class FrameAqContrastTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   converter.io.output.ready := canReceive
   io.input.ready := converter.io.input.ready && canReceive
 
-  val cellsXSafe = Mux(cellsX === 0.U, 1.U, cellsX)
-  val cellY = cellOrdinal / cellsXSafe
-  val cellX = cellOrdinal - cellY * cellsXSafe
-  val cellBaseX = (cellX << log2Ceil(cellDim))(widthBits - 1, 0)
-  val cellBaseY = (cellY << log2Ceil(cellDim))(heightBits - 1, 0)
+  val cellBaseX = (currentCellX << log2Ceil(cellDim))(widthBits - 1, 0)
+  val cellBaseY = (currentCellY << log2Ceil(cellDim))(heightBits - 1, 0)
   val localX = sampleOrdinal(log2Ceil(cellDim) - 1, 0)
   val localY = sampleOrdinal >> log2Ceil(cellDim)
   val sampleX = (cellBaseX + localX)(widthBits - 1, 0)
@@ -430,6 +429,8 @@ class FrameAqContrastTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
       state := contrasting
       received := 0.U
       cellOrdinal := 0.U
+      currentCellX := 0.U
+      currentCellY := 0.U
       sampleOrdinal := 0.U
       cellAccumulator := 0.U
     }.otherwise {
@@ -469,8 +470,16 @@ class FrameAqContrastTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
       cellsX := 0.U
       totalCells := 0.U
       cellOrdinal := 0.U
+      currentCellX := 0.U
+      currentCellY := 0.U
     }.otherwise {
       cellOrdinal := cellOrdinal + 1.U
+      when(currentCellX + 1.U === cellsX) {
+        currentCellX := 0.U
+        currentCellY := currentCellY + 1.U
+      }.otherwise {
+        currentCellX := currentCellX + 1.U
+      }
     }
   }
 }

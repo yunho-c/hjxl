@@ -18,6 +18,7 @@ import sys
 
 
 DEFAULT_LIBJXL_TINY = Path("/Users/yunhocho/GitHub/libjxl-tiny")
+SIGNED_INT32_MAX = (1 << 31) - 1
 
 
 def _load_numpy():
@@ -267,8 +268,62 @@ def aq_fuzzy_erosion_from_pre_erosion(pre_erosion):
     return output
 
 
+def aq_strategy_mask_from_fuzzy_erosion(fuzzy_erosion):
+    """Reconstruct the pre-modulation mask used by AC-strategy scoring."""
+    np = _load_numpy()
+    source = np.asarray(fuzzy_erosion, dtype=np.float32)
+    return np.asarray(
+        np.float32(1.0) / np.asarray(source + np.float32(0.001), dtype=np.float32),
+        dtype=np.float32,
+    )
+
+
+def fixed_aq_strategy_mask_q16(fuzzy_erosion_q16: int) -> int:
+    """Convert prepared Q16 erosion to Q16 strategy mask with rational 0.001."""
+    if fuzzy_erosion_q16 < 0 or fuzzy_erosion_q16 > SIGNED_INT32_MAX:
+        raise ValueError("AQ fuzzy-erosion input must fit positive signed 32-bit Q16")
+    scale = 1 << 16
+    offset_denominator = 1000
+    numerator = scale * scale * offset_denominator
+    denominator = fuzzy_erosion_q16 * offset_denominator + scale
+    return (numerator + denominator // 2) // denominator
+
+
+def tiled_aq_strategy_mask_from_xyb(xyb):
+    """Stitch the strategy mask from the same 64x64 AQ calls used by encoder.py."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.adaptive_quantization import (  # pylint: disable=import-outside-toplevel
+        compute_adaptive_quantization,
+    )
+
+    source = np.asarray(xyb, dtype=np.float32)
+    y_blocks = source.shape[1] // 8
+    x_blocks = source.shape[2] // 8
+    tile_blocks = 8
+    output = np.empty((y_blocks, x_blocks), dtype=np.float32)
+    for block_y0 in range(0, y_blocks, tile_blocks):
+        block_height = min(tile_blocks, y_blocks - block_y0)
+        for block_x0 in range(0, x_blocks, tile_blocks):
+            block_width = min(tile_blocks, x_blocks - block_x0)
+            result = compute_adaptive_quantization(
+                source,
+                distance=1.0,
+                block_x0=block_x0,
+                block_y0=block_y0,
+                block_width=block_width,
+                block_height=block_height,
+            )
+            output[
+                block_y0 : block_y0 + block_height,
+                block_x0 : block_x0 + block_width,
+            ] = result.mask
+    return output
+
+
 def capture_aq_erosion_inputs_from_xyb(xyb):
-    """Capture the actual pre- and post-erosion arrays from the full AQ function."""
+    """Capture actual contrast, erosion, and strategy-mask arrays from full AQ."""
     np = _load_numpy()
     root = _libjxl_tiny_root()
     _add_libjxl_tiny(root)
@@ -287,12 +342,14 @@ def capture_aq_erosion_inputs_from_xyb(xyb):
 
     adaptive_quantization._fuzzy_erosion = capture_fuzzy_erosion
     try:
-        adaptive_quantization.compute_adaptive_quantization(xyb, distance=1.0)
+        result = adaptive_quantization.compute_adaptive_quantization(xyb, distance=1.0)
     finally:
         adaptive_quantization._fuzzy_erosion = original_fuzzy_erosion
     if captured_pre_erosion is None or captured_erosion is None:
         raise RuntimeError("libjxl-tiny AQ function did not invoke fuzzy erosion")
-    return captured_pre_erosion, captured_erosion
+    return captured_pre_erosion, captured_erosion, np.array(
+        result.mask, dtype=np.float32, copy=True
+    )
 
 
 def write_aq_contrast_q16_csv(path: Path, image) -> None:
@@ -300,7 +357,7 @@ def write_aq_contrast_q16_csv(path: Path, image) -> None:
     np = _load_numpy()
     xyb = xyb_from_python_port(image)
     reference = aq_contrast_pre_erosion_from_xyb(xyb)
-    captured_pre_erosion, _ = capture_aq_erosion_inputs_from_xyb(xyb)
+    captured_pre_erosion, _, _ = capture_aq_erosion_inputs_from_xyb(xyb)
     if captured_pre_erosion is None or not np.array_equal(reference, captured_pre_erosion):
         raise RuntimeError(
             "AQ contrast reconstruction does not match libjxl-tiny pre_erosion input"
@@ -355,7 +412,7 @@ def write_aq_fuzzy_erosion_q16_csv(path: Path, image) -> None:
     xyb = xyb_from_python_port(image)
     pre_erosion = aq_contrast_pre_erosion_from_xyb(xyb)
     reference = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
-    captured_pre_erosion, captured_reference = capture_aq_erosion_inputs_from_xyb(xyb)
+    captured_pre_erosion, captured_reference, _ = capture_aq_erosion_inputs_from_xyb(xyb)
     if not np.array_equal(pre_erosion, captured_pre_erosion):
         raise RuntimeError(
             "AQ contrast reconstruction does not match libjxl-tiny pre_erosion input"
@@ -403,6 +460,99 @@ def write_aq_fuzzy_erosion_q16_csv(path: Path, image) -> None:
                         block_x,
                         block_y,
                         int(reference_q16[block_y, block_x]),
+                        int(quantized_reference_q16[block_y, block_x]),
+                    )
+                )
+                block += 1
+
+
+def write_aq_strategy_mask_q16_csv(path: Path, image) -> None:
+    """Write the block mask consumed by AC-strategy scoring in Q16."""
+    np = _load_numpy()
+    xyb = xyb_from_python_port(image)
+    pre_erosion = aq_contrast_pre_erosion_from_xyb(xyb)
+    erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+    reference = aq_strategy_mask_from_fuzzy_erosion(erosion)
+    captured_pre, captured_erosion, captured_reference = (
+        capture_aq_erosion_inputs_from_xyb(xyb)
+    )
+    if not np.array_equal(pre_erosion, captured_pre):
+        raise RuntimeError(
+            "AQ contrast reconstruction does not match libjxl-tiny pre_erosion input"
+        )
+    if not np.array_equal(erosion, captured_erosion):
+        raise RuntimeError(
+            "AQ fuzzy-erosion reconstruction does not match libjxl-tiny output"
+        )
+    if not np.array_equal(reference, captured_reference):
+        raise RuntimeError(
+            "AQ strategy-mask reconstruction does not match libjxl-tiny output"
+        )
+    tiled_reference = tiled_aq_strategy_mask_from_xyb(xyb)
+    if not np.array_equal(reference, tiled_reference):
+        raise RuntimeError(
+            "full-frame AQ strategy mask does not match encoder-style tiled AQ calls"
+        )
+
+    quantized_xyb = (
+        np.rint(np.asarray(xyb, dtype=np.float64) * (1 << 12)).astype(np.float32)
+        / np.float32(1 << 12)
+    )
+    quantized_pre = aq_contrast_pre_erosion_from_xyb(quantized_xyb)
+    quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(quantized_pre)
+    quantized_reference = aq_strategy_mask_from_fuzzy_erosion(quantized_erosion)
+
+    erosion_q16 = np.rint(erosion.astype(np.float64) * (1 << 16)).astype(np.int64)
+    reference_q16 = np.rint(reference.astype(np.float64) * (1 << 16)).astype(np.int64)
+    fixed_reference_q16 = np.empty(reference_q16.shape, dtype=np.int64)
+    for block_y in range(reference_q16.shape[0]):
+        for block_x in range(reference_q16.shape[1]):
+            fixed_reference_q16[block_y, block_x] = fixed_aq_strategy_mask_q16(
+                int(erosion_q16[block_y, block_x])
+            )
+    quantized_erosion_q16 = np.rint(
+        quantized_erosion.astype(np.float64) * (1 << 16)
+    ).astype(np.int64)
+    quantized_reference_q16 = np.rint(
+        quantized_reference.astype(np.float64) * (1 << 16)
+    ).astype(np.int64)
+    for name, values in (
+        ("AQ fuzzy erosion", erosion_q16),
+        ("AQ strategy mask", reference_q16),
+        ("fixed AQ strategy mask", fixed_reference_q16),
+        ("quantized-XYB AQ fuzzy erosion", quantized_erosion_q16),
+        ("quantized-XYB AQ strategy mask", quantized_reference_q16),
+    ):
+        if np.any(values < 0) or np.any(values > SIGNED_INT32_MAX):
+            raise ValueError(f"{name} Q16 fixture does not fit signed 32-bit")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "block",
+                "block_x",
+                "block_y",
+                "fuzzy_erosion_q16",
+                "strategy_mask_q16",
+                "fixed_strategy_mask_q16",
+                "quantized_xyb_fuzzy_erosion_q16",
+                "quantized_xyb_strategy_mask_q16",
+            )
+        )
+        block = 0
+        for block_y in range(reference_q16.shape[0]):
+            for block_x in range(reference_q16.shape[1]):
+                writer.writerow(
+                    (
+                        block,
+                        block_x,
+                        block_y,
+                        int(erosion_q16[block_y, block_x]),
+                        int(reference_q16[block_y, block_x]),
+                        int(fixed_reference_q16[block_y, block_x]),
+                        int(quantized_erosion_q16[block_y, block_x]),
                         int(quantized_reference_q16[block_y, block_x]),
                     )
                 )
@@ -1208,6 +1358,11 @@ def main() -> int:
         help="optional block-resolution AQ fuzzy-erosion Q16 fixture",
     )
     parser.add_argument(
+        "--aq-strategy-mask-q16-csv",
+        type=Path,
+        help="optional block-resolution AQ strategy-mask Q16 fixture",
+    )
+    parser.add_argument(
         "--dct8x8-npy",
         type=Path,
         help="optional libjxl-tiny raster 8x8 XYB DCT blocks NumPy output path",
@@ -1513,6 +1668,8 @@ def main() -> int:
         write_aq_contrast_q16_csv(args.aq_contrast_q16_csv, image)
     if args.aq_fuzzy_erosion_q16_csv is not None:
         write_aq_fuzzy_erosion_q16_csv(args.aq_fuzzy_erosion_q16_csv, image)
+    if args.aq_strategy_mask_q16_csv is not None:
+        write_aq_strategy_mask_q16_csv(args.aq_strategy_mask_q16_csv, image)
     if args.dct8x8_npy is not None:
         np = _load_numpy()
         args.dct8x8_npy.parent.mkdir(parents=True, exist_ok=True)

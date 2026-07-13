@@ -54,7 +54,8 @@
       {"name": "ac-metadata-tokens", "scala_name": "AcMetadataTokens", "value": 11},
       {"name": "ac-tokens", "scala_name": "AcTokens", "value": 12},
       {"name": "aq-contrast", "scala_name": "AqContrast", "value": 13},
-      {"name": "aq-fuzzy-erosion", "scala_name": "AqFuzzyErosion", "value": 14}
+      {"name": "aq-fuzzy-erosion", "scala_name": "AqFuzzyErosion", "value": 14},
+      {"name": "aq-strategy-mask", "scala_name": "AqStrategyMask", "value": 15}
     ]
   },
   "token_select": [
@@ -66,7 +67,7 @@
   "discovery": {
     "identity": 1212831820,
     "abi_major": 1,
-    "abi_minor": 2,
+    "abi_minor": 3,
     "build_id": 539363090,
     "capability_bits": [
       {"name": "rgb_input", "scala_name": "RgbInput", "bit": 0},
