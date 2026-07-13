@@ -322,6 +322,37 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
+  "HjxlCore exposes cumulative RGB AQ gamma modulation in a focused build" in {
+    simulate(new HjxlCore(config, traceRoute = TraceStage.AqGammaModulation)) { dut =>
+      pokeConfig(
+        dut,
+        enableXyb = true,
+        enableQuant = true,
+        tokenSelect = TokenTraceSelect.AqContrast
+      )
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+
+      driveOnePixel(dut)
+      var waitCycles = 0
+      while (dut.io.trace.valid.peekValue().asBigInt == 0 && waitCycles < 700) {
+        dut.clock.step()
+        waitCycles += 1
+      }
+      waitCycles must be < 700
+      dut.io.trace.bits.stage.expect(TraceStage.AqGammaModulation.U)
+      dut.io.trace.bits.group.expect(0.U)
+      dut.io.trace.bits.index.expect(0.U)
+      dut.io.trace.bits.value.peekValue().asBigInt.toInt must be < 0
+      dut.io.traceLast.expect(true.B)
+      dut.clock.step()
+      dut.io.trace.valid.expect(false.B)
+      dut.io.busy.expect(false.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
   "HjxlCore routes to AC strategy trace when quantization metadata is enabled" in {
     simulate(new HjxlCore(config, traceRoute = TraceStage.AcStrategy)) { dut =>
       pokeConfig(dut, enableXyb = true, enableQuant = true)

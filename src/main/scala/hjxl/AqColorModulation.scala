@@ -371,12 +371,94 @@ class FramePreparedAqColorModulationTraceStage(c: HjxlConfig = HjxlConfig()) ext
   }
 }
 
+class AqHfColorModulationBlockOutput extends Bundle {
+  import AqColorModulationFixedPoint._
+
+  val valueQ24 = SInt(OutputValueBits.W)
+  val blockIndex = UInt(32.W)
+  val blockLast = Bool()
+  val xybXQ12 = Vec(SamplesPerBlock, SInt(XybValueBits.W))
+  val xybYQ12 = Vec(SamplesPerBlock, SInt(XybValueBits.W))
+}
+
+/** Shared prepared-block pipeline through `_hf_modulation` and
+  * `_color_modulation`.
+  *
+  * The retained X/Y context is part of the output contract so the cumulative
+  * gamma stage can continue without rereading or reconverting the frame. The B
+  * samples are consumed by color modulation and are not carried farther.
+  */
+class AqHfColorModulationBlockPipeline extends Module {
+  import AqColorModulationFixedPoint._
+
+  val io = IO(new Bundle {
+    val input = Flipped(Decoupled(new AqModulationBlockInput))
+    val output = Decoupled(new AqHfColorModulationBlockOutput)
+    val busy = Output(Bool())
+  })
+
+  val hf = Module(new AqHfModulationBlock)
+  val pendingContext = Reg(new AqModulationBlockInput)
+  val pendingContextValid = RegInit(false.B)
+
+  hf.io.input.bits.seedQ24 := io.input.bits.seedQ24
+  hf.io.input.bits.xybYQ12 := io.input.bits.xybYQ12
+  hf.io.input.valid := io.input.valid && !pendingContextValid
+  io.input.ready := hf.io.input.ready && !pendingContextValid
+
+  when(io.input.fire) {
+    assert(!pendingContextValid, "AQ HF/color pipeline accepted overlapping input context")
+    pendingContext := io.input.bits
+    pendingContextValid := true.B
+  }
+
+  val color = Module(new AqColorModulationBlock)
+  val outputContextValid = RegInit(false.B)
+  val outputBlockIndex = RegInit(0.U(32.W))
+  val outputBlockLast = RegInit(false.B)
+  val outputX = Reg(Vec(SamplesPerBlock, SInt(XybValueBits.W)))
+  val outputY = Reg(Vec(SamplesPerBlock, SInt(XybValueBits.W)))
+
+  color.io.input.bits.seedQ24 := hf.io.output.bits
+  color.io.input.bits.distanceQ8 := pendingContext.distanceQ8
+  color.io.input.bits.xybXQ12 := pendingContext.xybXQ12
+  color.io.input.bits.xybYQ12 := pendingContext.xybYQ12
+  color.io.input.bits.xybBQ12 := pendingContext.xybBQ12
+  color.io.input.valid := hf.io.output.valid && pendingContextValid && !outputContextValid
+  hf.io.output.ready := color.io.input.ready && pendingContextValid && !outputContextValid
+
+  when(color.io.input.fire) {
+    assert(pendingContextValid, "AQ HF/color pipeline lost its input context")
+    assert(!outputContextValid, "AQ HF/color pipeline accepted overlapping output context")
+    outputBlockIndex := pendingContext.blockIndex
+    outputBlockLast := pendingContext.blockLast
+    outputX := pendingContext.xybXQ12
+    outputY := pendingContext.xybYQ12
+    outputContextValid := true.B
+    pendingContextValid := false.B
+  }
+
+  io.output.valid := color.io.output.valid && outputContextValid
+  io.output.bits.valueQ24 := color.io.output.bits
+  io.output.bits.blockIndex := outputBlockIndex
+  io.output.bits.blockLast := outputBlockLast
+  io.output.bits.xybXQ12 := outputX
+  io.output.bits.xybYQ12 := outputY
+  color.io.output.ready := io.output.ready && outputContextValid
+  io.busy := hf.io.busy || color.io.busy || pendingContextValid || outputContextValid
+
+  when(io.output.fire) {
+    assert(outputContextValid, "AQ HF/color pipeline emitted without output context")
+    outputContextValid := false.B
+    outputBlockLast := false.B
+  }
+}
+
 /** RGB-connected cumulative AQ path through `_color_modulation`.
   *
-  * One shared scheduler captures XYB and emits prepared blocks. The HF block
-  * consumes Y first; its cumulative output and the retained block context then
-  * feed the color block. No second RGB-to-XYB converter or frame buffer is
-  * instantiated.
+  * One shared scheduler captures XYB and emits prepared blocks. The reusable
+  * HF/color block pipeline preserves the context needed by the next cumulative
+  * stage. No second RGB-to-XYB converter or frame buffer is instantiated.
   */
 class FrameAqColorModulationTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   import AqColorModulationFixedPoint._
@@ -396,58 +478,17 @@ class FrameAqColorModulationTraceStage(c: HjxlConfig = HjxlConfig()) extends Mod
   scheduler.io.input <> io.input
   io.xybAccepted := scheduler.io.xybAccepted
 
-  val hf = Module(new AqHfModulationBlock)
-  val pendingContext = Reg(new AqModulationBlockInput)
-  val pendingContextValid = RegInit(false.B)
+  val pipeline = Module(new AqHfColorModulationBlockPipeline)
+  pipeline.io.input <> scheduler.io.block
 
-  hf.io.input.bits.seedQ24 := scheduler.io.block.bits.seedQ24
-  hf.io.input.bits.xybYQ12 := scheduler.io.block.bits.xybYQ12
-  hf.io.input.valid := scheduler.io.block.valid && !pendingContextValid
-  scheduler.io.block.ready := hf.io.input.ready && !pendingContextValid
-
-  when(scheduler.io.block.fire) {
-    assert(!pendingContextValid, "AQ color modulation accepted overlapping block context")
-    pendingContext := scheduler.io.block.bits
-    pendingContextValid := true.B
-  }
-
-  val color = Module(new AqColorModulationBlock)
-  color.io.input.bits.seedQ24 := hf.io.output.bits
-  color.io.input.bits.distanceQ8 := pendingContext.distanceQ8
-  color.io.input.bits.xybXQ12 := pendingContext.xybXQ12
-  color.io.input.bits.xybYQ12 := pendingContext.xybYQ12
-  color.io.input.bits.xybBQ12 := pendingContext.xybBQ12
-  color.io.input.valid := hf.io.output.valid && pendingContextValid
-  hf.io.output.ready := color.io.input.ready && pendingContextValid
-
-  val activeBlockValid = RegInit(false.B)
-  val activeBlockIndex = RegInit(0.U(32.W))
-  val activeBlockLast = RegInit(false.B)
-
-  when(color.io.input.fire) {
-    assert(pendingContextValid, "AQ color modulation lost its XYB block context")
-    assert(!activeBlockValid, "AQ color modulation accepted overlapping output metadata")
-    activeBlockValid := true.B
-    activeBlockIndex := pendingContext.blockIndex
-    activeBlockLast := pendingContext.blockLast
-    pendingContextValid := false.B
-  }
-
-  io.trace.valid := color.io.output.valid
+  io.trace.valid := pipeline.io.output.valid
   io.trace.bits.stage := TraceStage.AqColorModulation.U
   io.trace.bits.group := 0.U
-  io.trace.bits.index := activeBlockIndex
-  io.trace.bits.value := color.io.output.bits
-  color.io.output.ready := io.trace.ready
-  io.traceLast := color.io.output.valid && activeBlockLast
-  scheduler.io.frameDone := io.trace.fire && activeBlockLast
-  io.busy := scheduler.io.busy || hf.io.busy || color.io.busy ||
-    pendingContextValid || activeBlockValid
+  io.trace.bits.index := pipeline.io.output.bits.blockIndex
+  io.trace.bits.value := pipeline.io.output.bits.valueQ24
+  pipeline.io.output.ready := io.trace.ready
+  io.traceLast := pipeline.io.output.valid && pipeline.io.output.bits.blockLast
+  scheduler.io.frameDone := io.trace.fire && pipeline.io.output.bits.blockLast
+  io.busy := scheduler.io.busy || pipeline.io.busy
   io.overflow := scheduler.io.overflow
-
-  when(io.trace.fire) {
-    assert(activeBlockValid, "AQ color modulation emitted without block metadata")
-    activeBlockValid := false.B
-    activeBlockLast := false.B
-  }
 }

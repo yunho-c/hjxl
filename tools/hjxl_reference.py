@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from functools import lru_cache
 import json
 import math
 import os
@@ -584,6 +585,232 @@ def fixed_aq_color_modulation_q24(
     return max(SIGNED_INT32_MIN, min(SIGNED_INT32_MAX, result))
 
 
+def _aq_inverse_gamma_ratio_float32(value):
+    """Independent float32 reconstruction of the inverted gamma ratio."""
+    np = _load_numpy()
+    epsilon = np.float32(1e-2)
+    sg_mul = np.float32(226.0480446705883)
+    sg_mul2 = np.float32(1.0 / 73.377132366608819)
+    log2 = np.float32(0.693147181)
+    return_mul = np.float32(sg_mul2 * np.float32(18.6580932135) * log2)
+    value_offset = np.float32(7.14672470003)
+    normalized = max(np.float32(value), np.float32(0.0))
+    value_squared = np.float32(normalized * normalized)
+    numerator_multiplier = np.float32(
+        np.float32(return_mul * np.float32(3.0)) * sg_mul
+    )
+    numerator = np.float32(
+        np.float32(numerator_multiplier * value_squared) + epsilon
+    )
+    denominator_multiplier = np.float32(log2 * sg_mul)
+    denominator = np.float32(
+        np.float32(np.float32(denominator_multiplier * normalized) * value_squared)
+        + np.float32(np.float32(value_offset * log2) + epsilon)
+    )
+    return np.float32(numerator / denominator)
+
+
+def _aq_fast_log2_float32(value):
+    """Independent float32 reconstruction of libjxl-tiny `fast_log2f`."""
+    np = _load_numpy()
+    input_value = np.float32(value)
+    coefficients_p = (
+        np.float32(-1.8503833400518310e-06),
+        np.float32(1.4287160470083755),
+        np.float32(0.74245873327820566),
+    )
+    coefficients_q = (
+        np.float32(0.99032814277590719),
+        np.float32(1.0096718572241148),
+        np.float32(0.17409343003366823),
+    )
+    input_bits = np.asarray(input_value, dtype=np.float32).view(np.int32)[()]
+    exponent_bits = np.int32(input_bits - np.int32(0x3F2AAAAB))
+    exponent = np.int32(exponent_bits >> np.int32(23))
+    mantissa = np.asarray(
+        np.int32(input_bits - np.int32(exponent << np.int32(23))),
+        dtype=np.int32,
+    ).view(np.float32)[()]
+    reduced = np.float32(mantissa - np.float32(1.0))
+    numerator = np.float32(
+        np.float32(coefficients_p[2] * reduced) + coefficients_p[1]
+    )
+    denominator = np.float32(
+        np.float32(coefficients_q[2] * reduced) + coefficients_q[1]
+    )
+    numerator = np.float32(
+        np.float32(numerator * reduced) + coefficients_p[0]
+    )
+    denominator = np.float32(
+        np.float32(denominator * reduced) + coefficients_q[0]
+    )
+    return np.float32(
+        np.float32(numerator / denominator) + np.float32(exponent)
+    )
+
+
+def aq_gamma_modulation_from_xyb(xyb, color_modulation):
+    """Add libjxl-tiny's per-block gamma term to cumulative AQ seeds."""
+    np = _load_numpy()
+    source = np.asarray(xyb, dtype=np.float32)
+    seeds = np.asarray(color_modulation, dtype=np.float32)
+    if source.ndim != 3 or source.shape[0] != 3:
+        raise ValueError("expected channel-first XYB image with shape (3, y, x)")
+    if source.shape[1] % 8 or source.shape[2] % 8:
+        raise ValueError("AQ gamma modulation input dimensions must be multiples of eight")
+    expected_shape = (source.shape[1] // 8, source.shape[2] // 8)
+    if seeds.shape != expected_shape:
+        raise ValueError(
+            f"AQ gamma modulation seeds must have shape {expected_shape}, got {seeds.shape}"
+        )
+
+    output = np.empty_like(seeds)
+    gamma_multiplier = np.float32(
+        np.float32(-0.15526878023684174) * np.float32(0.693147180559945)
+    )
+    for block_y in range(expected_shape[0]):
+        for block_x in range(expected_shape[1]):
+            overall_ratio = np.float32(0.0)
+            pixel_y0 = block_y * 8
+            pixel_x0 = block_x * 8
+            for local_y in range(8):
+                y = pixel_y0 + local_y
+                for local_x in range(8):
+                    x = pixel_x0 + local_x
+                    input_y = np.float32(source[1, y, x] + np.float32(0.16))
+                    input_x = np.float32(source[0, y, x])
+                    ratio_r = _aq_inverse_gamma_ratio_float32(
+                        np.float32(input_y - input_x)
+                    )
+                    ratio_g = _aq_inverse_gamma_ratio_float32(
+                        np.float32(input_y + input_x)
+                    )
+                    overall_ratio = np.float32(
+                        overall_ratio
+                        + np.float32(
+                            np.float32(0.5) * np.float32(ratio_r + ratio_g)
+                        )
+                    )
+            overall_ratio = np.float32(overall_ratio * np.float32(1.0 / 64.0))
+            contribution = np.float32(
+                gamma_multiplier * _aq_fast_log2_float32(overall_ratio)
+            )
+            output[block_y, block_x] = np.float32(
+                contribution + seeds[block_y, block_x]
+            )
+    return output
+
+
+@lru_cache(maxsize=1)
+def _aq_gamma_fixed_tables():
+    """Return the integer tables shared by the Python and Chisel models."""
+    ratio_scale = 1 << 20
+
+    def rounded_ratio(value_q12: int) -> int:
+        value = float(_aq_inverse_gamma_ratio_float32(value_q12 / float(1 << 12)))
+        return int(math.floor(value * ratio_scale + 0.5))
+
+    fine = tuple(rounded_ratio(value) for value in range(0, 257))
+    coarse = tuple(rounded_ratio(value) for value in range(256, 4097, 16))
+    hdr = tuple(rounded_ratio(value) for value in range(4096, 32769, 64))
+    log_table = tuple(
+        max(
+            0,
+            int(
+                math.floor(
+                    float(_aq_fast_log2_float32(1.0 + index / 256.0))
+                    * (1 << 20)
+                    + 0.5
+                )
+            ),
+        )
+        for index in range(257)
+    )
+    return fine, coarse, hdr, log_table
+
+
+def fixed_aq_inverse_gamma_ratio_q20(value_q12: int) -> int:
+    """Evaluate HJXL's clamped piecewise inverse-ratio approximation."""
+    fine, coarse, hdr, _ = _aq_gamma_fixed_tables()
+    clamped = max(0, min(8 << 12, int(value_q12)))
+
+    def interpolate(table, relative: int, step_bits: int) -> int:
+        base = relative >> step_bits
+        if base >= len(table) - 1:
+            return table[-1]
+        fraction = relative & ((1 << step_bits) - 1)
+        scale = 1 << step_bits
+        return (
+            table[base] * (scale - fraction)
+            + table[base + 1] * fraction
+            + scale // 2
+        ) >> step_bits
+
+    if clamped <= 256:
+        return fine[clamped]
+    if clamped <= 4096:
+        return interpolate(coarse, clamped - 256, 4)
+    return interpolate(hdr, clamped - 4096, 6)
+
+
+def fixed_aq_fast_log2_q20(value_q20: int) -> int:
+    """Evaluate HJXL's normalized Q20 `fast_log2f` approximation."""
+    tables = _aq_gamma_fixed_tables()
+    _, _, _, table = tables
+    maximum_ratio = max(max(values) for values in tables[:3])
+    if value_q20 <= 0 or value_q20 > maximum_ratio:
+        raise ValueError("AQ gamma fixed log input is out of range")
+    leading_index = int(value_q20).bit_length() - 1
+    normalized = int(value_q20) << (20 - leading_index)
+    relative = normalized - (1 << 20)
+    index = relative >> 12
+    fraction = relative & ((1 << 12) - 1)
+    mantissa = (
+        table[index] * ((1 << 12) - fraction)
+        + table[index + 1] * fraction
+        + (1 << 11)
+    ) >> 12
+    return (leading_index - 20) * (1 << 20) + mantissa
+
+
+def fixed_aq_gamma_modulation_q24(seed_q24: int, xyb_q12) -> int:
+    """Apply HJXL's Q20 ratio/log gamma modulation to one X/Y block."""
+    np = _load_numpy()
+    if seed_q24 < SIGNED_INT32_MIN or seed_q24 > SIGNED_INT32_MAX:
+        raise ValueError("AQ gamma modulation seed must fit signed 32-bit Q24")
+    samples = np.asarray(xyb_q12)
+    if samples.shape not in ((2, 8, 8), (3, 8, 8)):
+        raise ValueError(
+            f"AQ gamma modulation X/Y block must have shape (2, 8, 8) or "
+            f"(3, 8, 8), got {samples.shape}"
+        )
+    if not np.issubdtype(samples.dtype, np.integer):
+        raise ValueError("AQ gamma modulation block must contain integer Q12 samples")
+    if np.any(samples < SIGNED_INT32_MIN) or np.any(samples > SIGNED_INT32_MAX):
+        raise ValueError("AQ gamma modulation samples must fit signed 32-bit Q12")
+
+    ratio_sum_q20 = 0
+    for local_y in range(8):
+        for local_x in range(8):
+            input_y_q12 = int(samples[1, local_y, local_x]) + 655
+            input_x_q12 = int(samples[0, local_y, local_x])
+            ratio_sum_q20 += fixed_aq_inverse_gamma_ratio_q20(
+                input_y_q12 - input_x_q12
+            )
+            ratio_sum_q20 += fixed_aq_inverse_gamma_ratio_q20(
+                input_y_q12 + input_x_q12
+            )
+    average_ratio_q20 = (ratio_sum_q20 + 64) >> 7
+    log_q20 = fixed_aq_fast_log2_q20(average_ratio_q20)
+    product = log_q20 * -1805633
+    if product >= 0:
+        contribution_q24 = (product + (1 << 19)) >> 20
+    else:
+        contribution_q24 = -(((-product) + (1 << 19)) >> 20)
+    result = seed_q24 + contribution_q24
+    return max(SIGNED_INT32_MIN, min(SIGNED_INT32_MAX, result))
+
+
 def capture_aq_nonlinear_mask_from_xyb(
     xyb,
     block_x0: int = 0,
@@ -734,6 +961,56 @@ def capture_aq_color_modulation_from_xyb(
     return np.asarray(captured, dtype=np.float32).reshape(block_height, block_width)
 
 
+def capture_aq_gamma_modulation_from_xyb(
+    xyb,
+    distance: float,
+    block_x0: int = 0,
+    block_y0: int = 0,
+    block_width: int | None = None,
+    block_height: int | None = None,
+):
+    """Capture real `_gamma_modulation` outputs from one reference AQ rectangle."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny import adaptive_quantization  # pylint: disable=import-outside-toplevel
+
+    source = np.asarray(xyb, dtype=np.float32)
+    if block_width is None:
+        block_width = source.shape[2] // 8 - block_x0
+    if block_height is None:
+        block_height = source.shape[1] // 8 - block_y0
+
+    captured = []
+    original_gamma_modulation = adaptive_quantization._gamma_modulation
+
+    def capture_gamma_modulation(xyb_value, block_x, block_y, out_val):
+        result = original_gamma_modulation(xyb_value, block_x, block_y, out_val)
+        captured.append(result)
+        return result
+
+    adaptive_quantization._gamma_modulation = capture_gamma_modulation
+    try:
+        adaptive_quantization.compute_adaptive_quantization(
+            source,
+            distance=distance,
+            block_x0=block_x0,
+            block_y0=block_y0,
+            block_width=block_width,
+            block_height=block_height,
+        )
+    finally:
+        adaptive_quantization._gamma_modulation = original_gamma_modulation
+
+    expected_count = block_width * block_height
+    if len(captured) != expected_count:
+        raise RuntimeError(
+            f"libjxl-tiny AQ captured {len(captured)} gamma-modulation values; "
+            f"expected {expected_count}"
+        )
+    return np.asarray(captured, dtype=np.float32).reshape(block_height, block_width)
+
+
 def tiled_aq_nonlinear_mask_from_xyb(xyb):
     """Stitch `_compute_mask` outputs from encoder-shaped 64x64 AQ calls."""
     np = _load_numpy()
@@ -800,6 +1077,32 @@ def tiled_aq_color_modulation_from_xyb(xyb, distance: float):
                 block_y0 : block_y0 + block_height,
                 block_x0 : block_x0 + block_width,
             ] = capture_aq_color_modulation_from_xyb(
+                source,
+                distance=distance,
+                block_x0=block_x0,
+                block_y0=block_y0,
+                block_width=block_width,
+                block_height=block_height,
+            )
+    return output
+
+
+def tiled_aq_gamma_modulation_from_xyb(xyb, distance: float):
+    """Stitch gamma-modulated AQ seeds from encoder-shaped 64x64 AQ calls."""
+    np = _load_numpy()
+    source = np.asarray(xyb, dtype=np.float32)
+    y_blocks = source.shape[1] // 8
+    x_blocks = source.shape[2] // 8
+    tile_blocks = 8
+    output = np.empty((y_blocks, x_blocks), dtype=np.float32)
+    for block_y0 in range(0, y_blocks, tile_blocks):
+        block_height = min(tile_blocks, y_blocks - block_y0)
+        for block_x0 in range(0, x_blocks, tile_blocks):
+            block_width = min(tile_blocks, x_blocks - block_x0)
+            output[
+                block_y0 : block_y0 + block_height,
+                block_x0 : block_x0 + block_width,
+            ] = capture_aq_gamma_modulation_from_xyb(
                 source,
                 distance=distance,
                 block_x0=block_x0,
@@ -1529,6 +1832,182 @@ def write_aq_color_modulation_q24_csv(
                         int(fixed_quantized_hf[block_y, block_x]),
                         int(fixed_quantized_reference[block_y, block_x]),
                         int(input_quantized_fixed_hf[block_y, block_x]),
+                        int(input_quantized_fixed_reference[block_y, block_x]),
+                    )
+                )
+                block += 1
+
+
+def write_aq_gamma_modulation_q24_csv(
+    path: Path,
+    image,
+    distance: float,
+) -> None:
+    """Write cumulative signed-Q24 AQ seeds after gamma modulation."""
+    np = _load_numpy()
+    distance_q8 = int(round(float(distance) * (1 << 8)))
+    if distance_q8 < 0 or distance_q8 > np.iinfo(np.uint16).max:
+        raise ValueError("AQ gamma-modulation distance does not fit unsigned Q8")
+    reference_distance = float(np.float32(distance_q8 / float(1 << 8)))
+
+    def float_chain(source):
+        pre_erosion = aq_contrast_pre_erosion_from_xyb(source)
+        erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+        nonlinear = aq_nonlinear_mask_from_fuzzy_erosion(erosion)
+        hf = aq_hf_modulation_from_xyb(source, nonlinear)
+        color = aq_color_modulation_from_xyb(source, hf, reference_distance)
+        gamma = aq_gamma_modulation_from_xyb(source, color)
+        return erosion, color, gamma
+
+    def fixed_chain(erosion, source_q12):
+        erosion_q16 = np.rint(
+            np.asarray(erosion, dtype=np.float64) * (1 << 16)
+        ).astype(np.int64)
+        shape = erosion_q16.shape
+        fixed_color = np.empty(shape, dtype=np.int64)
+        fixed_gamma = np.empty(shape, dtype=np.int64)
+        for block_y in range(shape[0]):
+            for block_x in range(shape[1]):
+                y0 = block_y * 8
+                x0 = block_x * 8
+                block = source_q12[:, y0 : y0 + 8, x0 : x0 + 8]
+                nonlinear_q24 = fixed_aq_nonlinear_mask_q24(
+                    int(erosion_q16[block_y, block_x])
+                )
+                hf_q24 = fixed_aq_hf_modulation_q24(nonlinear_q24, block[1])
+                fixed_color[block_y, block_x] = fixed_aq_color_modulation_q24(
+                    hf_q24,
+                    distance_q8,
+                    block,
+                )
+                fixed_gamma[block_y, block_x] = fixed_aq_gamma_modulation_q24(
+                    int(fixed_color[block_y, block_x]),
+                    block,
+                )
+        return erosion_q16, fixed_color, fixed_gamma
+
+    xyb = xyb_from_python_port(image)
+    erosion, color, reference = float_chain(xyb)
+    captured_reference = capture_aq_gamma_modulation_from_xyb(
+        xyb, reference_distance
+    )
+    if not np.array_equal(reference, captured_reference):
+        raise RuntimeError(
+            "AQ gamma-modulation reconstruction does not match libjxl-tiny "
+            "`_gamma_modulation`"
+        )
+    tiled_reference = tiled_aq_gamma_modulation_from_xyb(
+        xyb, reference_distance
+    )
+    if not np.array_equal(reference, tiled_reference):
+        raise RuntimeError(
+            "full-frame AQ gamma modulation does not match encoder-style tiled AQ calls"
+        )
+
+    xyb_q12 = np.rint(
+        np.asarray(xyb, dtype=np.float64) * (1 << 12)
+    ).astype(np.int64)
+    quantized_xyb = (
+        xyb_q12.astype(np.float32) / np.float32(1 << 12)
+    ).astype(np.float32)
+    quantized_erosion, _, quantized_reference = float_chain(quantized_xyb)
+
+    input_q8 = np.rint(
+        np.asarray(image, dtype=np.float64) * (1 << 8)
+    ).astype(np.int64)
+    if np.any(input_q8 < np.iinfo(np.int16).min) or np.any(
+        input_q8 > np.iinfo(np.int16).max
+    ):
+        raise ValueError("RGB Q8 fixture does not fit signed 16-bit")
+    input_quantized_rgb = (
+        input_q8.astype(np.float32) / np.float32(1 << 8)
+    ).astype(np.float32)
+    input_quantized_xyb = xyb_from_python_port(input_quantized_rgb)
+    input_quantized_xyb_q12 = np.rint(
+        np.asarray(input_quantized_xyb, dtype=np.float64) * (1 << 12)
+    ).astype(np.int64)
+    input_q8_xyb_q12 = (
+        input_quantized_xyb_q12.astype(np.float32) / np.float32(1 << 12)
+    ).astype(np.float32)
+    input_quantized_pre = aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
+    input_quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(
+        input_quantized_pre
+    )
+
+    erosion_q16, fixed_color, fixed_reference = fixed_chain(erosion, xyb_q12)
+    quantized_erosion_q16, _, fixed_quantized_reference = fixed_chain(
+        quantized_erosion,
+        xyb_q12,
+    )
+    (
+        input_quantized_erosion_q16,
+        input_quantized_fixed_color,
+        input_quantized_fixed_reference,
+    ) = fixed_chain(input_quantized_erosion, input_quantized_xyb_q12)
+
+    color_q24 = np.rint(color.astype(np.float64) * (1 << 24)).astype(np.int64)
+    reference_q24 = np.rint(
+        reference.astype(np.float64) * (1 << 24)
+    ).astype(np.int64)
+    quantized_reference_q24 = np.rint(
+        quantized_reference.astype(np.float64) * (1 << 24)
+    ).astype(np.int64)
+
+    for name, values in (
+        ("AQ fuzzy erosion", erosion_q16),
+        ("quantized-XYB AQ fuzzy erosion", quantized_erosion_q16),
+        ("input-Q8 AQ fuzzy erosion", input_quantized_erosion_q16),
+    ):
+        if np.any(values < 0) or np.any(values > SIGNED_INT32_MAX):
+            raise ValueError(f"{name} Q16 fixture does not fit positive signed 32-bit")
+    for name, values in (
+        ("AQ color modulation", color_q24),
+        ("AQ gamma modulation", reference_q24),
+        ("fixed AQ color modulation", fixed_color),
+        ("fixed AQ gamma modulation", fixed_reference),
+        ("quantized-XYB AQ gamma modulation", quantized_reference_q24),
+        ("fixed quantized-XYB AQ gamma modulation", fixed_quantized_reference),
+        ("input-Q8 fixed AQ color modulation", input_quantized_fixed_color),
+        ("input-Q8 fixed AQ gamma modulation", input_quantized_fixed_reference),
+    ):
+        if np.any(values < SIGNED_INT32_MIN) or np.any(values > SIGNED_INT32_MAX):
+            raise ValueError(f"{name} Q24 fixture does not fit signed 32-bit")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "block",
+                "block_x",
+                "block_y",
+                "distance_q8",
+                "color_modulation_q24",
+                "gamma_modulation_q24",
+                "fixed_color_modulation_q24",
+                "fixed_gamma_modulation_q24",
+                "quantized_xyb_gamma_modulation_q24",
+                "fixed_quantized_xyb_gamma_modulation_q24",
+                "input_q8_fixed_color_modulation_q24",
+                "input_q8_fixed_gamma_modulation_q24",
+            )
+        )
+        block = 0
+        for block_y in range(reference_q24.shape[0]):
+            for block_x in range(reference_q24.shape[1]):
+                writer.writerow(
+                    (
+                        block,
+                        block_x,
+                        block_y,
+                        distance_q8,
+                        int(color_q24[block_y, block_x]),
+                        int(reference_q24[block_y, block_x]),
+                        int(fixed_color[block_y, block_x]),
+                        int(fixed_reference[block_y, block_x]),
+                        int(quantized_reference_q24[block_y, block_x]),
+                        int(fixed_quantized_reference[block_y, block_x]),
+                        int(input_quantized_fixed_color[block_y, block_x]),
                         int(input_quantized_fixed_reference[block_y, block_x]),
                     )
                 )
@@ -2354,6 +2833,11 @@ def main() -> int:
         help="optional signed-Q24 AQ seed after per-block red/blue color modulation",
     )
     parser.add_argument(
+        "--aq-gamma-modulation-q24-csv",
+        type=Path,
+        help="optional signed-Q24 AQ seed after per-block gamma modulation",
+    )
+    parser.add_argument(
         "--dct8x8-npy",
         type=Path,
         help="optional libjxl-tiny raster 8x8 XYB DCT blocks NumPy output path",
@@ -2668,6 +3152,12 @@ def main() -> int:
     if args.aq_color_modulation_q24_csv is not None:
         write_aq_color_modulation_q24_csv(
             args.aq_color_modulation_q24_csv,
+            image,
+            args.distance,
+        )
+    if args.aq_gamma_modulation_q24_csv is not None:
+        write_aq_gamma_modulation_q24_csv(
+            args.aq_gamma_modulation_q24_csv,
             image,
             args.distance,
         )

@@ -233,10 +233,20 @@ Read these libjxl-tiny files before making architectural changes:
   accumulates capped red/blue coverage in Q16, and uses distance-folded Q24
   constants with no runtime divider. Distance above 4 returns the seed exactly.
   `FramePreparedAqColorModulationTraceStage` locks the prepared frame's Q8
-  distance and order. `FrameAqColorModulationTraceStage` reuses the shared
-  scheduler, pipelines HF then color, retains only one block of context, and
-  emits `TraceStage.AqColorModulation` rows with one RGB-to-XYB converter. Use
-  its focused trace route; gamma and power/scale modulation, final AQ-map
+  distance and order. `AqHfColorModulationBlockPipeline` is the reusable
+  prepared-block chain that preserves X/Y context after color, and
+  `FrameAqColorModulationTraceStage` composes it with the shared frame
+  scheduler. It emits `TraceStage.AqColorModulation` rows with one RGB-to-XYB
+  converter.
+- `AqGammaModulationBlock` applies the final log-domain per-block term. It
+  evaluates one red- or green-derived inverse response per cycle, clamps the
+  prepared Q12 response input to `[0, 8]`, uses fine/coarse/HDR Q20 ratio
+  interpolation, averages 128 responses, and applies a normalized Q20
+  `fast_log2f` approximation. Its exact latency is 128 cycles and it contains
+  no runtime divider. `FramePreparedAqGammaModulationTraceStage` is the exact
+  prepared frame boundary; `FrameAqGammaModulationTraceStage` reuses the shared
+  scheduler and HF/color pipeline and emits `TraceStage.AqGammaModulation`
+  rows with one RGB-to-XYB converter. Power/scale modulation, final AQ-map
   assembly, and connection to `FramePreparedAqRawQuantTraceStage` remain work.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive. It should be reused for
   the future 8x8 transform stage instead of writing a separate transform shape
@@ -354,8 +364,8 @@ Read these libjxl-tiny files before making architectural changes:
   prepared AQ value per padded raster block, snapshots frame geometry and scale
   on the first accepted block, and emits backpressure-safe `RawQuantField`
   traces with `traceLast`. It is a real fixed-point AQ seam, not a full AQ
-  implementation: the focused RGB path reaches the color term, but gamma and
-  final AQ-map generation remain software-only, and this stage
+  implementation: the focused RGB path reaches the gamma term, but power/scale
+  and final AQ-map generation remain software-only, and this stage
   is not wired into the RGB or prepared-token tops.
 - `FrameCflMapTraceStage` emits fixed scalar Y-to-X or Y-to-B CFL values, one
   record per 64x64 tile. It is available through focused `HjxlCore` routes
@@ -462,8 +472,8 @@ Read these libjxl-tiny files before making architectural changes:
   `tools/hjxl_compare_tokens.py` fixed-oracle comparison, plus packed
   `AqContrast` stage/index/value fields and final TLAST for the selected AQ
   route plus the focused `AqFuzzyErosion`, `AqStrategyMask`, and signed
-  `AqNonlinearMask`, `AqHfModulation`, and `AqColorModulation` block/TLAST
-  routes.
+  `AqNonlinearMask`, `AqHfModulation`, `AqColorModulation`, and
+  `AqGammaModulation` block/TLAST routes.
 - Use `sbt 'runMain hjxl.ElaborateAxiLiteStream'` for the default AXI-Lite
   controlled stream wrapper and
   `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
@@ -658,6 +668,14 @@ Read these libjxl-tiny files before making architectural changes:
   coverage walker with no runtime divider. The hierarchy must contain one
   shared modulation scheduler and one `RgbToXybApprox`; full-frame X/Y/B
   register storage still requires physical feasibility work.
+- Use `sbt 'runMain hjxl.ElaborateAqGammaModulation'` to generate the composed
+  RGB HF-plus-color-plus-gamma top. It writes
+  `generated-aq-gamma-modulation/`; keep the generated directory out of git.
+  The gamma block alternates ratio-table lookups over 128 cycles and uses no
+  runtime divider. The hierarchy must contain one shared modulation scheduler,
+  one reusable HF/color pipeline, and one `RgbToXybApprox`; the combinational
+  lookup tables and full-frame X/Y/B register storage still require physical
+  feasibility work.
 - `FrameCflMapTraceStage` emits fixed scalar CFL map traces for focused Y-to-X
   and Y-to-B routes. It establishes the per-64x64-tile trace shape used by
   libjxl-tiny metadata for RGB-input fixed-map routes; prepared-DCT
@@ -711,6 +729,15 @@ Read these libjxl-tiny files before making architectural changes:
   backpressure/config lifetime, five fixture families, 65x1/65x65 order, and
   single-scheduler/single-converter elaboration in
   `AqColorModulationSpec`/`AqColorModulationElaborationSpec`.
+- `tools/hjxl_reference.py --aq-gamma-modulation-q24-csv ...` exports native,
+  Q12-rounded, and signed-Q8-input cumulative Q24 seeds after the gamma term.
+  It independently reconstructs the inverse-ratio average and `fast_log2f`,
+  checks the real private function, proves stitched 64x64 equality, and emits
+  the clamped ratio/log fixed model. Keep ratio/log seams, signed saturation,
+  exact 128-cycle prepared results, RGB backpressure/config lifetime, five
+  fixture families, 65x1/65x65 order, and single-scheduler/single-converter
+  elaboration in `AqGammaModulationSpec`/
+  `AqGammaModulationElaborationSpec`.
 - `tools/hjxl_reference.py` can export real libjxl-tiny quant metadata with
   `--raw-quant-field-npy`, `--libjxl-ac-strategy-npy`, `--ytox-map-npy`, and
   `--ytob-map-npy`. Use those artifacts as the oracle before implementing AQ,
@@ -1163,7 +1190,9 @@ Read these libjxl-tiny files before making architectural changes:
   mask when `traceRoute = TraceStage.AqStrategyMask`, or the signed modulation
   seed when `traceRoute = TraceStage.AqNonlinearMask`, or that seed after Y HF
   modulation when `traceRoute = TraceStage.AqHfModulation`, or the cumulative
-  red/blue result when `traceRoute = TraceStage.AqColorModulation`;
+  red/blue result when `traceRoute = TraceStage.AqColorModulation`, or the
+  cumulative log-domain result when
+  `traceRoute = TraceStage.AqGammaModulation`;
   `enableQuant` alone
   selects fixed AC strategy metadata. Do not describe it as an encoder yet;
   these are traceable pipeline slices.
