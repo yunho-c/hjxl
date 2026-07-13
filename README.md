@@ -13,7 +13,7 @@ board-proven FPGA encoder.
 | Area | Current state |
 | --- | --- |
 | Strongest validated boundary | Host-prepared, all-DCT coefficients through quantization and logical token traces, followed by host-side codestream assembly |
-| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and a combined logical-token path; rectangular-strategy parity and RGB-token codestream proof remain incomplete |
+| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and a combined logical-token path; reusable 16x8/8x16 transforms and exact 2x2 strategy decisions are implemented, but entropy scoring, frame scheduling, downstream rectangular quantization/tokens, and RGB-token codestream proof remain incomplete |
 | Hardware output | Trace/token records; entropy optimization and final JPEG XL bitstream assembly remain host software responsibilities |
 | Near-term FPGA top | `HjxlKv260PreparedDctTop`, the direct prepared-DCT variant, is frozen as the first synthesis and bring-up target |
 | Physical validation | Chisel simulation and generated SystemVerilog are covered; Vivado synthesis, timing closure, resource use, bitstream generation, and KV260 execution have not been demonstrated |
@@ -113,11 +113,19 @@ AC-metadata, and AC logical tokens, and supplies the focused core AC-token
 route. Focused `TraceStage.YtoxMap` and `TraceStage.YtobMap` routes expose the
 estimated maps directly. The earlier `FrameAqDctOnly*` and
 `FrameCflMapTraceStage` wrappers remain fixed-CFL diagnostics. Later stages
-still need rectangular strategies, entropy coding, bitstream assembly, and an
-RGB-token-to-codestream parity proof. Standalone
-fixed-point primitives exist for
-approximate RGB-to-XYB, 1D DCT-8, and the scaled 8x8 DCT block layout used by
-libjxl-tiny. The RGB-to-XYB primitive applies the signed matrix at Q26, clamps
+still need strategy-cost evaluation, frame-level rectangular scheduling,
+rectangular quantization/tokens, entropy coding, bitstream assembly, and an
+RGB-token-to-codestream parity proof. `Dct16Approx`, `Dct16x8Approx`, and
+`Dct8x16Approx` now provide the Q12 recursive kernel and both canonical
+rectangular coefficient layouts required by scoring and later quantization.
+`AcStrategyDecisionSelector` implements the reference's exact 2x2 orientation,
+strict replacement, tie, and first/continuation semantics over caller-supplied
+common-scale costs. `tools/hjxl_reference.py --scaled-dct-q12-csv ...` exports
+independent signed fixtures for those transforms. These pieces are reusable
+prerequisites, not a claim that `FrameAcStrategyTraceStage` is adaptive yet.
+Standalone fixed-point primitives also cover approximate RGB-to-XYB, 1D DCT-8,
+and the scaled 8x8 DCT block layout used by libjxl-tiny. The RGB-to-XYB primitive
+applies the signed matrix at Q26, clamps
 the biased mixed absorbance at Q24, normalizes it by powers of eight, and
 linearly interpolates a 225-entry Q5 cube-root table before emitting Q12 XYB
 samples. Unlike the original range-limited LUT, this covers the full positive

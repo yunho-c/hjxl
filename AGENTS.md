@@ -262,6 +262,17 @@ Read these libjxl-tiny files before making architectural changes:
 - `Dct8x8Approx` is the first block-level transform primitive. It uses
   `Dct8Approx` for both dimensions, applies libjxl-tiny's per-dimension 1/8
   scale, and emits the scaled 8x8 coefficient layout used before quantization.
+- `Dct16Approx` is the matching recursive Q12 16-point kernel.
+  `Dct16x8Approx` and `Dct8x16Approx` implement libjxl-tiny's two rectangular
+  transforms with their intentionally different canonical 8x16 layouts. Reuse
+  them for AC-strategy scoring and future rectangular quantization; do not
+  duplicate their orientation logic in a scheduler. Use
+  `tools/hjxl_reference.py --scaled-dct-q12-csv ...` for signed oracle cases.
+- `AcStrategyDecisionSelector` is the exact decision-only tail for one complete
+  2x2 block region. It consumes common-scale nonnegative candidate costs,
+  chooses horizontal on aggregate ties, replaces a rectangle only on a strict
+  win, and emits raster `(rawStrategy << 1) | isFirstBlock` values. It does not
+  calculate entropy costs or schedule a frame.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`, defaulting unsupported values
@@ -738,8 +749,10 @@ Read these libjxl-tiny files before making architectural changes:
   reciprocal hardware belongs only in the quantized and combined-token tops.
 - `FrameAcStrategyTraceStage` emits one default DCT-first AC strategy value per
   padded block. This matches the current all-8x8-DCT transform path but not
-  libjxl-tiny's adaptive 16x8/8x16 strategy search. Its `traceLast` output
-  marks the final padded raster block's strategy record.
+  libjxl-tiny's adaptive 16x8/8x16 strategy search. The reusable rectangular
+  transform and 2x2 decision primitives are present, but entropy scoring and
+  frame/tile traversal are not connected. Its `traceLast` output marks the
+  final padded raster block's strategy record.
 - `tools/hjxl_reference.py --xyb-q12-csv ...` exports padded signed-Q8 RGB rows
   beside libjxl-tiny signed-Q12 XYB values. Keep the gradient, checkerboard, and
   random oracle cases in `RgbToXybApproxSpec` when changing matrix precision,

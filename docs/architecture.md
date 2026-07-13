@@ -251,6 +251,17 @@ owned by the host tools for now.
 - `Dct8x8Approx` composes the 1D kernel into libjxl-tiny's scaled 8x8 DCT
   coefficient layout. It applies the 1/8 scale after each dimension and emits
   the transposed canonical order consumed by later quantization work.
+- `Dct16Approx` extends the same recursive Q12 kernel to 16 samples.
+  `Dct16x8Approx` and `Dct8x16Approx` apply the correct 1/16 and 1/8
+  per-dimension scales and emit libjxl-tiny's canonical 8x16 coefficient
+  layouts. The vertical transform is intentionally transposed; the horizontal
+  transform is not. These are combinational reusable primitives for both
+  strategy scoring and future rectangular quantization, not frame schedulers.
+- `AcStrategyDecisionSelector` implements the exact decision-only tail of
+  `find_best_16x16_transform`: aggregate orientation comparison, horizontal
+  tie selection, strict subregion replacement, and raster first/continuation
+  encoding. It accepts already-scaled unsigned candidate costs; entropy-cost
+  evaluation and frame traversal remain upstream work.
 - `FrameDct8x8TraceStage` is the first transform integration slice. It buffers
   and pads the RGB frame, converts each padded raster 8x8 block to approximate
   XYB, applies `Dct8x8Approx` for all three channels, and emits `RawDct8x8`
@@ -770,8 +781,12 @@ wrappers.
 - `FrameAcStrategyTraceStage` emits one `AcStrategy` value per padded 8x8 block,
   currently always ordinary DCT with the libjxl-tiny encoding
   `(raw_strategy << 1) | is_first_block == 1`. This matches the current
-  DCT-only RTL transform path; it does not yet implement libjxl-tiny's 16x8/8x16
-  search.
+  DCT-only RTL transform path. The rectangular DCT and 2x2 decision primitives
+  now exist, but this scheduler still lacks entropy scoring, 2x2/tile traversal,
+  and adaptive map storage.
+- `tools/hjxl_reference.py --scaled-dct-q12-csv ...` writes signed Q12 DCT-16,
+  16x8, and 8x16 inputs beside independent libjxl-tiny coefficients. The axis
+  ramps guard the two different canonical rectangular layouts.
 - `tools/hjxl_reference.py --default-ac-strategy-npy ...` writes the matching
   default DCT-first strategy map.
 - `tools/hjxl_reference.py --raw-quant-field-npy ...`,

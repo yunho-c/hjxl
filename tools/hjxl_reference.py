@@ -2393,6 +2393,86 @@ def dct8x8_from_python_port(image):
     )
 
 
+def write_scaled_dct_q12_csv(path: Path) -> None:
+    """Write independent Q12 fixtures for the 16-point and rectangular DCTs."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.transforms import (  # pylint: disable=import-outside-toplevel
+        _dct_1d,
+        scaled_dct,
+    )
+
+    scale = 1 << 12
+
+    def one_dimensional_fixture(name: str):
+        if name == "constant":
+            return np.full(16, 1024, dtype=np.int64)
+        if name == "ramp":
+            return np.arange(-15, 17, 2, dtype=np.int64) * 137
+        if name == "alternating":
+            return np.asarray(
+                [1536 if index % 2 == 0 else -1024 for index in range(16)]
+            )
+        if name == "impulse":
+            values = np.zeros(16, dtype=np.int64)
+            values[5] = 3072
+            return values
+        if name == "signed":
+            return np.asarray(
+                [((index * 811 + 173) % 4096) - 2048 for index in range(16)]
+            )
+        raise ValueError(f"unknown DCT-16 fixture: {name}")
+
+    def rectangular_fixture(name: str, rows: int, columns: int):
+        y, x = np.mgrid[0:rows, 0:columns]
+        if name == "constant":
+            return np.full((rows, columns), 1024, dtype=np.int64)
+        if name == "x-ramp":
+            return (x * 233 - (columns - 1) * 117).astype(np.int64)
+        if name == "y-ramp":
+            return (y * 197 - (rows - 1) * 99).astype(np.int64)
+        if name == "impulse":
+            values = np.zeros((rows, columns), dtype=np.int64)
+            values[rows // 3, columns // 2] = 3072
+            return values
+        if name == "signed":
+            return ((y * 811 + x * 509 + 173) % 4096 - 2048).astype(np.int64)
+        raise ValueError(f"unknown rectangular DCT fixture: {name}")
+
+    fixtures = []
+    for name in ("constant", "ramp", "alternating", "impulse", "signed"):
+        inputs = one_dimensional_fixture(name)
+        expected = np.rint(
+            _dct_1d((inputs.astype(np.float32) / np.float32(scale)))
+            * np.float32(scale)
+        ).astype(np.int64)
+        fixtures.append(("dct16", name, inputs.reshape(-1), expected.reshape(-1)))
+
+    for kind, rows, columns in (("dct16x8", 16, 8), ("dct8x16", 8, 16)):
+        for name in ("constant", "x-ramp", "y-ramp", "impulse", "signed"):
+            inputs = rectangular_fixture(name, rows, columns)
+            expected = np.rint(
+                scaled_dct(inputs.astype(np.float32) / np.float32(scale))
+                * np.float32(scale)
+            ).astype(np.int64)
+            fixtures.append((kind, name, inputs.reshape(-1), expected.reshape(-1)))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(("kind", "fixture", "index", "input_q12", "coefficient_q12"))
+        for kind, name, inputs, expected in fixtures:
+            if inputs.shape != expected.shape:
+                raise AssertionError(
+                    f"{kind}/{name}: input and canonical coefficient sizes differ"
+                )
+            for index, (input_q12, coefficient_q12) in enumerate(zip(inputs, expected)):
+                writer.writerow(
+                    (kind, name, index, int(input_q12), int(coefficient_q12))
+                )
+
+
 def default_ac_strategy_from_python_port(image):
     np = _load_numpy()
     padded = padded_input_from_python_port(image)
@@ -3209,6 +3289,11 @@ def main() -> int:
         help="optional libjxl-tiny raster 8x8 XYB DCT blocks NumPy output path",
     )
     parser.add_argument(
+        "--scaled-dct-q12-csv",
+        type=Path,
+        help="optional Q12 DCT-16 and canonical 16x8/8x16 transform fixture",
+    )
+    parser.add_argument(
         "--default-ac-strategy-npy",
         type=Path,
         help="optional default DCT-first AC strategy map NumPy output path",
@@ -3537,6 +3622,8 @@ def main() -> int:
         np = _load_numpy()
         args.dct8x8_npy.parent.mkdir(parents=True, exist_ok=True)
         np.save(args.dct8x8_npy, dct8x8_from_python_port(image))
+    if args.scaled_dct_q12_csv is not None:
+        write_scaled_dct_q12_csv(args.scaled_dct_q12_csv)
     if args.default_ac_strategy_npy is not None:
         np = _load_numpy()
         args.default_ac_strategy_npy.parent.mkdir(parents=True, exist_ok=True)
@@ -3712,6 +3799,7 @@ def main() -> int:
         and args.aq_gamma_modulation_q24_csv is None
         and args.aq_final_map_q24_csv is None
         and args.dct8x8_npy is None
+        and args.scaled_dct_q12_csv is None
         and args.default_ac_strategy_npy is None
         and args.raw_quant_field_npy is None
         and args.libjxl_ac_strategy_npy is None
