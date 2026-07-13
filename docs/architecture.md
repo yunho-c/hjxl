@@ -42,8 +42,11 @@ contract is intentionally simple:
   modulation seed; `TraceStage.AqHfModulation` continues through the first
   8x8-block Y-detail term, and `TraceStage.AqColorModulation` then applies the
   distance-dependent red/blue coverage term. `TraceStage.AqGammaModulation`
-  adds the inverse-response average and log term. The full AC-token route is
-  only instantiated when the core is elaborated with
+  adds the inverse-response average and log term; `TraceStage.AqFinalMap`
+  applies the final exponent/scale/damping operation. A focused
+  `TraceStage.RawQuantField` build uses that completed RGB path when
+  `fixedRawQuant` is zero and retains a nonzero fixed override. The full
+  AC-token route is only instantiated when the core is elaborated with
   `traceRoute = TraceStage.AcTokens`.
 - `RgbPixel` carries fixed-point linear RGB samples and image coordinates.
 - `StageTrace` carries a stage id, group id, element index, and value.
@@ -108,7 +111,10 @@ owned by the host tools for now.
   `TraceStage.AqHfModulation` build emits that seed after the internal Y-edge
   term and a focused `TraceStage.AqColorModulation` build continues through
   red/blue coverage. A focused `TraceStage.AqGammaModulation` build continues
-  through the inverse-response average and log term. The default selector still
+  through the inverse-response average and log term, and a focused
+  `TraceStage.AqFinalMap` build completes the unsigned-Q24 map. The focused
+  raw-quant build converts that map unless a nonzero fixed override is selected.
+  The default selector still
   routes fixed AC strategy.
   The optional compile-time `traceRoute` constructor argument restricts
   elaboration to one route for focused simulation while keeping the same public
@@ -212,17 +218,27 @@ owned by the host tools for now.
   `[0, 8]` range and the datapath has no runtime divider. The prepared frame
   wrapper preserves raster/config/backpressure semantics;
   `FrameAqGammaModulationTraceStage` composes the shared scheduler and reusable
-  HF/color pipeline with one converter. Its oracle matches the private float32
-  function and stitched tile calls. Power/scale, final AQ-map assembly, and the
-  prepared raw-quant conversion connection remain downstream.
+  HF/color/gamma pipeline with one converter. Its oracle matches the private
+  float32 function and stitched tile calls.
+- `AqFastExpQ24` converts the cumulative gamma seed through a normalized
+  257-entry fractional `fast_pow2f` table with explicit exponent saturation.
+  `AqFinalModulationBlock` applies distance-derived unsigned-Q24 scale, damping,
+  base-level addition, and saturation. `FrameAqFinalMapPipeline` combines that
+  operation with the shared cumulative scheduler, applies the distance-1
+  fallback before every per-block operation, and retains the inverse global AC
+  scale for `AqMapToRawQuant`. `FrameAqFinalMapTraceStage` emits the completed
+  unsigned-Q24 map as `AqFinalMap`; `FrameAqRawQuantTraceStage` emits the exact
+  adjusted raw-quant bytes. The public `FrameRawQuantFieldTraceStage` selects
+  this adaptive path when `fixedRawQuant` is zero and the retained fixed path
+  otherwise.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny's
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`; unsupported values currently
   fall back to distance 1, and AXI-Lite controlled shells report that fallback
   at status bit 3. It emits the global AC scale, quantized DC scale, fixed
   raw-quant-5 AC reciprocal, X/Y/B inverse DC factors, X quant-matrix
-  multiplier, and EPF iteration count generated from the current libjxl-tiny
-  Python formula.
+  multiplier, EPF iteration count, and the Q24 AQ scale/damping/inverse-global-
+  scale triplet generated from the current libjxl-tiny Python formulas.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive matching libjxl-tiny's
   recursive scaled-DCT structure within fixed-point tolerance. It is the kernel
   for the future 8x8 and rectangular transform stages.
@@ -343,14 +359,13 @@ wrappers.
   order. Unlike `FramePreparedTokenTraceStage`, it can describe the prepared
   raw-quant and CFL values used during quantization. It exposes `traceLast` on
   the final AC-token trace beat for host capture.
-- `FrameRawQuantFieldTraceStage` emits the current fixed raw-quant field for a
-  padded frame: one adjusted raw-quant value per 8x8 block, defaulting to
-  `QuantizeDct8x8Block.DefaultRawQuant` unless `FrameConfig.fixedRawQuant`
-  overrides it. The raw-quant byte is zero-extended into `StageTrace.value`, so
-  values above 127 remain positive metadata values even though trace values are
-  signed. `HjxlCore` exposes it only as the focused
-  `traceRoute = TraceStage.RawQuantField` route today, keeping the default
-  all-route behavior on the existing AC-strategy metadata path.
+- `FrameRawQuantFieldTraceStage` is the focused raw-quant selector. Zero
+  `FrameConfig.fixedRawQuant` routes RGB through the completed AQ map and exact
+  final converter; a nonzero value selects `FrameFixedRawQuantFieldTraceStage`
+  for explicit fixed metadata experiments. Selection is captured at frame
+  start, and the raw-quant byte is zero-extended into `StageTrace.value`, so
+  values above 127 remain positive despite the signed trace carrier. The
+  default all-route shell omits this now-heavy focused path.
 - `AqMapToRawQuant` is the first fixed-point boundary for real adaptive-
   quantization data. It multiplies an unsigned Q24 AQ-map sample by the
   unsigned Q24 inverse global AC scale, rounds to the nearest integer, and
@@ -359,9 +374,10 @@ wrappers.
   8x8 raster block, snapshots frame geometry and inverse scale on the first
   accepted block, buffers one trace beat for ready/valid stability, and emits
   `RawQuantField` traces with `traceLast` on the final block. This stage moves
-  only the final AQ-map conversion into RTL: the RGB path now reaches the gamma
-  term, but power/scale and final AQ-map production remain host work,
-  and the stage is not yet integrated into the RGB or prepared-token tops.
+  the independently testable final conversion seam. The RGB path now supplies
+  this converter from `FrameAqFinalMapPipeline`; the prepared stage remains for
+  exact arithmetic isolation and is not yet integrated into prepared-token
+  scheduling.
 - `FrameCflMapTraceStage` emits the current fixed scalar CFL maps for a padded
   frame: one Y-to-X or Y-to-B value per 64x64 tile. `HjxlCore` exposes these as
   focused `TraceStage.YtoxMap` and `TraceStage.YtobMap` routes today, giving
@@ -517,12 +533,15 @@ wrappers.
 - `ElaborateAqContrast`, `ElaborateAqFuzzyErosion`,
   `ElaborateAqStrategyMask`, `ElaborateAqNonlinearMask`, and
   `ElaborateAqHfModulation`/`ElaborateAqColorModulation`/
-  `ElaborateAqGammaModulation` generate standalone
+  `ElaborateAqGammaModulation`/`ElaborateAqFinalMap`/
+  `ElaborateAqRawQuant` generate standalone
   RGB AQ diagnostic tops in
   `generated-aq-contrast/`, `generated-aq-fuzzy-erosion/`, and
   `generated-aq-strategy-mask/`, `generated-aq-nonlinear-mask/`, and
   `generated-aq-hf-modulation/`/`generated-aq-color-modulation/`/
-  `generated-aq-gamma-modulation/`. Their
+  `generated-aq-gamma-modulation/`/`generated-aq-final-map/`/
+  `generated-aq-raw-quant/`. `ElaboratePreparedAqFinalModulation` separately
+  emits the narrow prepared-seed final operation. Their
   elaboration specs guard the composed RGB/prepared module boundaries and
   trace/status ports; the strategy-mask and nonlinear-mask specs also reject
   division operators in their sequential arithmetic modules.
@@ -667,7 +686,8 @@ wrappers.
   `tools/hjxl_compare_tokens.py` fixed-oracle comparison, and checks packed
   `AqContrast` stage/index/value fields with final TLAST plus the focused
   `AqFuzzyErosion`, `AqStrategyMask`, signed `AqNonlinearMask`, and signed
-  `AqHfModulation`/`AqColorModulation`/`AqGammaModulation` block/TLAST paths.
+  `AqHfModulation`/`AqColorModulation`/`AqGammaModulation`, plus completed
+  `AqFinalMap`, block/TLAST paths.
   Full AC-token TLAST alignment is covered
   at the token-stage and frame-scheduler levels because the focused AXI AC-token
   simulation is expensive.
@@ -688,9 +708,9 @@ wrappers.
   DC/strategy/metadata/AC trace stream.
 - `PreparedTokenElaborationSpec` guards the generated trace port surface for
   prepared DC, AC-metadata, AC, and combined token tops.
-- Full frame-level quantized-block parity remains open: power/scale AQ
-  modulation, final AQ-map assembly and AQ/CFL map plumbing,
-  distance parameter generation, dynamic reciprocal scaling, rectangular
+- Full frame-level quantized-block parity remains open: adaptive raw-quant/CFL
+  map plumbing into the RGB quantizer and token metadata, broader distance
+  parameter generation, dynamic reciprocal scaling, rectangular
   strategy scheduling, and RGB-path comparison against
   `tools/hjxl_reference.py` DCT-only whole-frame artifacts are still separate
   work. Full token-to-codestream parity also still needs entropy table
@@ -702,9 +722,8 @@ wrappers.
   multiplier division/round/clamp, and tile trace emission. Keep them directly
   tested while future CFL work adds tile DCT traversal, tile-map scheduling,
   and frame integration.
-- `FrameRawQuantFieldTraceStage` emits one fixed adjusted raw-quant value per
-  padded 8x8 block. Treat it as a traceable fixed-metadata scaffold for future
-  AQ work, not as a replacement for libjxl-tiny's adaptive quantization. The
+- `FrameRawQuantFieldTraceStage` selects completed adaptive raw quant at zero
+  `fixedRawQuant` and the retained fixed scaffold for a nonzero override. The
   raw-quant byte is zero-extended into the signed trace-value field.
 - `FrameCflMapTraceStage` emits fixed scalar Y-to-X and Y-to-B CFL map traces,
   one record per 64x64 tile. Treat it as a traceable fixed-metadata scaffold
@@ -731,13 +750,19 @@ wrappers.
   distance and covers its exact early-return behavior above distance 4. The
   gamma artifact covers the clamped Q12 inverse-ratio and normalized Q20 log
   seams used by the 128-cycle prepared block.
+- `tools/hjxl_reference.py --aq-final-map-q24-csv ...` reconstructs the final
+  float32 power/scale/damping operation, proves equality with the real completed
+  AQ map, and records Q24 fixed map/scalar seams plus reference and fixed
+  raw-quant bytes for native, Q12-rounded, and Q8-input paths. It is the oracle
+  for both `FrameAqFinalMapTraceStage` and the adaptive
+  `FrameRawQuantFieldTraceStage` branch.
 - `tools/hjxl_reference.py --dct-only-aq-map-q24-csv ...` exports the
   all-DCT AQ map and inverse global AC scale as unsigned Q24 values alongside
   libjxl-tiny's reference raw-quant bytes and the same fixed-point conversion
   computed in software. Use it as the exact oracle for
-  `FramePreparedAqRawQuantTraceStage`; it does not imply that the upstream
-  gamma output is connected through the remaining power/scale modulation to
-  this final conversion seam.
+  `FramePreparedAqRawQuantTraceStage`; this narrow seam remains useful even
+  though the upstream RGB gamma output is now connected through final
+  modulation to the same converter.
 - `tools/hjxl_reference.py --dct-only-quantized-ac-npy ...`,
   `--dct-only-num-nonzeros-npy ...`, `--dct-only-num-nonzeros-map-npy ...`, and
   `--dct-only-quant-dc-npy ...` write libjxl-tiny quantization outputs while

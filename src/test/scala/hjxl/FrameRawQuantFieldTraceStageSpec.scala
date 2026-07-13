@@ -7,10 +7,10 @@ import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
 
-class FrameRawQuantFieldTraceStageSpec extends AnyFreeSpec with Matchers with ChiselSim {
+class FrameFixedRawQuantFieldTraceStageSpec extends AnyFreeSpec with Matchers with ChiselSim {
   private val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 16)
 
-  private def pokeConfig(dut: FrameRawQuantFieldTraceStage, width: Int, height: Int, fixedRawQuant: Int): Unit = {
+  private def pokeConfig(dut: FrameFixedRawQuantFieldTraceStage, width: Int, height: Int, fixedRawQuant: Int): Unit = {
     dut.io.config.xsize.poke(width.U)
     dut.io.config.ysize.poke(height.U)
     dut.io.config.distanceQ8.poke(256.U)
@@ -26,7 +26,7 @@ class FrameRawQuantFieldTraceStageSpec extends AnyFreeSpec with Matchers with Ch
     dut.io.config.tokenSelect.poke(TokenTraceSelect.Dc.U)
   }
 
-  private def drivePixel(dut: FrameRawQuantFieldTraceStage, x: Int, y: Int): Unit = {
+  private def drivePixel(dut: FrameFixedRawQuantFieldTraceStage, x: Int, y: Int): Unit = {
     dut.io.input.valid.poke(true.B)
     dut.io.input.bits.x.poke(x.U)
     dut.io.input.bits.y.poke(y.U)
@@ -37,8 +37,8 @@ class FrameRawQuantFieldTraceStageSpec extends AnyFreeSpec with Matchers with Ch
     dut.clock.step()
   }
 
-  "FrameRawQuantFieldTraceStage emits default raw quant for each padded block" in {
-    simulate(new FrameRawQuantFieldTraceStage(config)) { dut =>
+  "FrameFixedRawQuantFieldTraceStage emits default raw quant for each padded block" in {
+    simulate(new FrameFixedRawQuantFieldTraceStage(config)) { dut =>
       val width = 9
       val height = 9
       pokeConfig(dut, width, height, fixedRawQuant = 0)
@@ -68,8 +68,8 @@ class FrameRawQuantFieldTraceStageSpec extends AnyFreeSpec with Matchers with Ch
     }
   }
 
-  "FrameRawQuantFieldTraceStage uses fixed raw quant overrides" in {
-    simulate(new FrameRawQuantFieldTraceStage(config)) { dut =>
+  "FrameFixedRawQuantFieldTraceStage uses fixed raw quant overrides" in {
+    simulate(new FrameFixedRawQuantFieldTraceStage(config)) { dut =>
       val fixedRawQuant = 200
       pokeConfig(dut, width = 8, height = 8, fixedRawQuant = fixedRawQuant)
       dut.io.input.valid.poke(false.B)

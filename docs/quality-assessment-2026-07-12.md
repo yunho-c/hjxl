@@ -33,8 +33,11 @@ subtracts a 112-edge Y-detail sum from that seed without repeating XYB
 conversion. The next distance-dependent color term now adds capped Q16 red/blue
 coverage through a shared single-converter block scheduler. The gamma term now
 continues through an averaged inverse response and normalized Q20 log. The
-power/scale step, final-map assembly, and connection to the prepared final-
-conversion boundary remain open.
+normalized Q24 exponent, distance scale/damping, completed final map, and exact
+raw-quant conversion are now connected behind focused RGB routes. A nonzero
+fixed byte remains an explicit override. The resulting raw-quant field is not
+yet plumbed into the RGB DCT quantizer/token metadata path, and real adaptive
+transform-strategy scoring remains open.
 Entropy coding and bitstream assembly also remain software-only, and the most
 parity-ready hardware interface starts after the host has already computed
 prepared DCT blocks.
@@ -93,10 +96,10 @@ Snapshot size is approximately:
 
 | Area | Files | Lines |
 | --- | ---: | ---: |
-| Main HJXL Scala/Chisel | 54 | 11,466 |
-| Scala tests | 63 | 22,783 |
-| Python host/oracle tools | 18 | 12,776 |
-| `README.md` + `docs/architecture.md` + `AGENTS.md` | 3 | 3,738 |
+| Main HJXL Scala/Chisel | 55 | 12,159 |
+| Scala tests | 64 | 23,515 |
+| Python host/oracle tools | 18 | 13,166 |
+| `README.md` + `docs/architecture.md` + `AGENTS.md` | 3 | 3,830 |
 
 The test-to-RTL ratio is a strength, but these counts also reveal where
 complexity has moved: host tooling and test harnesses are now materially larger
@@ -208,7 +211,7 @@ than the RTL implementation.
 
 ### Weaknesses and risks
 
-- The package is flat: 54 HJXL source files and 63 test files all live in one
+- The package is flat: 55 HJXL source files and 64 test files all live in one
   namespace/directory. The naming remains navigable today, but the many
   `FrameDctOnly*`, `FramePrepared*`, `FramePreparedCfl*`, stream, controlled-
   stream, and KV260 variants are beginning to form a combinatorial wrapper
@@ -241,7 +244,7 @@ Verification is the project’s strongest quality dimension.
 
 ### Strong evidence
 
-- The current tree has roughly 22.8k lines of Scala tests for 11.5k lines of
+- The current tree has roughly 23.5k lines of Scala tests for 12.2k lines of
   RTL, plus extensive validation inside the Python tools.
 - Tests span small arithmetic primitives, frame traversal, exact 72-pixel
   capacity boundaries, two-dimensional 72x72 CFL tile ordering, route
@@ -282,9 +285,9 @@ Verification is the project’s strongest quality dimension.
 - Running both complete sbt and Mill test suites in one CI job is useful as a
   build-definition consistency check but expensive. A shared fast gate plus a
   scheduled second-build/full-oracle job would likely give better feedback
-  latency. On this machine, the single `sbt test` run for this assessment took
-  8 minutes 52 seconds, with many separate Verilator models built by the
-  simulator-backed suites.
+  latency. On this machine, the original `sbt test` run for the 2026-07-12
+  assessment took 8 minutes 52 seconds, with many separate Verilator models
+  built by the simulator-backed suites.
 - No Vivado simulation, synthesis, implementation, timing, or board test exists.
   Generated-port checks prove interface shape, not AXI protocol certification
   or FPGA viability.
@@ -301,7 +304,7 @@ Python/NumPy coercion bugs.
 
 The maintainability picture is less strong:
 
-- Python tooling is about 12.8k lines with no `pyproject.toml`, package layout,
+- Python tooling is about 13.2k lines with no `pyproject.toml`, package layout,
   dependency lock, formatter, linter configuration, type checker, or Python
   test runner. Tests are largely driven indirectly from Scala subprocesses.
 - `hjxl_replay_capture.py` and `hjxl_host_metadata_smoke.py` are each roughly
@@ -326,8 +329,8 @@ versions and CI prerequisites are easy to find.
 
 The information architecture is poor, however:
 
-- The README is 1,335 lines, the architecture document 1,178 lines, and the agent
-  guide 1,225 lines. All three repeat long inventories of nearly every module,
+- The README is 1,371 lines, the architecture document 1,203 lines, and the agent
+  guide 1,256 lines. All three repeat long inventories of nearly every module,
   elaborator, tool, format, and regression.
 - The README has only a handful of top-level sections, so it functions as a
   changelog/reference dump rather than an onboarding document.
@@ -391,7 +394,7 @@ Recommended documentation split:
 | Frame padding | Implemented | Exact small-frame and edge-padding tests | Scalable storage architecture |
 | RGB to XYB | Range-normalized Q8 to Q12 approximation with signed Q26 matrix and Q24 absorbance | Exact normalization-boundary/model tests, three libjxl-tiny fixture families within two Q12 units, 100k full signed-range sweep within five, and frame/downstream regressions | Synthesis feasibility, broader real-image evidence, and end-to-end parity |
 | 8x8 DCT | Approximate fixed-point implementation | Primitive and frame tests | Timing/resource architecture and rectangular transforms |
-| Adaptive quantization | RGB-connected quarter-resolution contrast, block-resolution fuzzy erosion, AC-strategy reciprocal mask, signed-Q24 nonlinear `_compute_mask` seed, cumulative Y HF, distance-dependent red/blue color, and gamma/log modulation plus final prepared Q24 AQ-map-to-raw-quant conversion implemented | Gamma/sqrt/four-minimum, reciprocal, nonlinear, 112-edge/Q32 HF, capped Q16 coverage/Q24 color, and clamped inverse-ratio/normalized-Q20-log model boundaries; exact prepared fixtures; five RGB oracle families within two percent; full-frame versus stitched-tile equality; active/zero/early-return distance regimes; 65x1 and two-dimensional 65x65-to-72x72 traversal; backpressure/control and packed-AXI/TLAST tests; one-scheduler/one-converter elaboration; plus exact prepared final-conversion parity | Power/scale modulation, final per-block AQ-map assembly, downstream map plumbing, and real strategy-scoring integration; synthesis feasibility of the combinational square root, minima network, constant erosion division, ratio/log lookup tables, register-backed grids, and full-frame X/Y/B buffer is unproven, while the rational transforms and HF/color/gamma traversals are sequential |
+| Adaptive quantization | RGB-connected quarter-resolution contrast, block-resolution fuzzy erosion, AC-strategy reciprocal mask, signed-Q24 nonlinear `_compute_mask` seed, cumulative Y HF/color/gamma modulation, normalized exponent, distance scale/damping, completed final map, and exact raw-quant conversion implemented | Gamma/sqrt/four-minimum, reciprocal, nonlinear, 112-edge/Q32 HF, capped Q16 coverage/Q24 color, clamped inverse-ratio/normalized-Q20-log, and normalized-Q24-`fast_pow2f` model boundaries; exact prepared fixtures and fixed-model raw bytes; five RGB oracle families within two percent; full-frame versus stitched-tile equality; active/zero/early-return/damping distance regimes; explicit unsupported-distance fallback; 65x1 and two-dimensional 65x65-to-72x72 traversal; backpressure/control and packed-AXI/TLAST tests; one-scheduler/one-converter elaboration | Plumbing the adaptive raw-quant field into RGB DCT quantization/token metadata and real strategy-scoring integration; synthesis feasibility of the combinational square root, minima network, constant erosion division, ratio/log/power lookup tables, multipliers, register-backed grids, and full-frame X/Y/B buffer is unproven, while the rational transforms and HF/color/gamma traversals are sequential |
 | Chroma from luma | Implemented substantially for **prepared DCT** estimated-CFL paths | Primitive, multi-tile, quantization, metadata, stream, and wrapper tests | RGB-path integration, physical implementation quality, broader fixtures |
 | AC strategy | Fixed ordinary 8x8 DCT only | Exact map shape/order tests | 16x8/8x16 search, first-block semantics across strategies, scheduling |
 | Distance parameters | Six Q8 lookup points plus explicit fallback | Exact RTL/host lockstep tests | General supported range or a clearly frozen discrete API |
@@ -573,6 +576,17 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
     stitched 64x64 equality, and covers ratio/log seams, signed saturation,
     backpressure, five patterns, 65x1, and 65x65 order. Power/scale and final-
     map assembly are now the next earliest mismatch.
+    **Final-map follow-up 2026-07-13:** the focused RGB path now completes
+    `_per_block_modulations` through a normalized 257-entry Q24 `fast_pow2f`
+    table, distance-derived scale/damping/base addition, and the existing exact
+    raw-quant converter. Unsupported distances consistently fall back to the
+    shared distance-1 parameters before color/final arithmetic. The final-map
+    oracle matches libjxl-tiny exactly before fixed quantization; deterministic
+    focused tests cover exponent seams, distance-7/14 damping, prepared exact
+    maps, five RGB families, exact fixed-model raw bytes at distances 0.5/1/8, fixed
+    override, backpressure, 65x1, and 65x65 order. The next earliest integration
+    mismatch is feeding these adaptive bytes into the RGB DCT quantizer and AC
+    metadata/token schedulers; real rectangular strategy scoring remains open.
 13. **Expand oracle diversity.** Add several deterministic patterns, signed and
     near-saturation values, supported distances, non-block/tile-aligned sizes,
     multi-tile 2D images, and at least a few small real-image crops. Validate
@@ -599,23 +613,23 @@ The following local checks were run against the current working tree:
 - `python3 -m py_compile tools/*.py` — passed.
 - `python3 tools/hjxl_generate_abi.py --check` — passed.
 - `python3 tools/hjxl_host_metadata_smoke.py` — passed.
-- `sbt test` — passed: 69 suites completed, 266 tests succeeded, 0
-  failed/canceled/ignored/pending, in 8 minutes 52 seconds.
-- `./mill --no-server hjxl.test` — passed the complete same 69-suite tree in 9
-  minutes 46 seconds, confirming the source/tests through the second build
-  definition.
-- Focused sbt execution of the refactored HF/color and new gamma stages, core,
-  route-elaboration, discovery, and AXI-stream suites — passed: 8 suites and 61
-  tests; the full Mill run covers the same suites through the second build.
-- `sbt 'runMain hjxl.ElaborateAqGammaModulation'` — passed and emitted 21
-  SystemVerilog files totaling 31,493 lines. The HF and color blocks are
-  64-cycle sequential walkers, gamma alternates inverse-ratio lookups over 128
-  cycles, none of the gamma ratio/log datapaths has a division operator, and
-  the composed hierarchy contains one shared modulation scheduler, one reusable
-  HF/color pipeline, and one RGB-to-XYB converter. This proves elaboration only;
-  it does not
-  establish timing or resource feasibility for the upstream fixed erosion
-  divide, minima network, square root, or register-backed full-frame grids.
+- `sbt test` — passed: 71 suites completed, 280 tests succeeded, 0
+  failed/canceled/ignored/pending, in 9 minutes 9 seconds.
+- `HJXL_REPO_ROOT=$PWD ./mill --no-server hjxl.test` — passed the complete same
+  71-suite tree in 591 seconds, confirming the sources and tests through the
+  second build definition.
+- Focused sbt execution of the final AQ operation, its cumulative predecessors,
+  prepared conversion, distance lookup, core, route-elaboration, discovery, and
+  AXI-stream suites — passed: 12 suites and 78 tests; the full Mill run covers
+  the same suites through the second build.
+- `sbt 'runMain hjxl.ElaborateAqFinalMap'` — passed and emitted 26 SystemVerilog
+  files totaling 32,804 lines. `sbt 'runMain hjxl.ElaborateAqRawQuant'` also
+  passed and emitted 27 files totaling 32,777 lines. Each composed hierarchy
+  contains one RGB-to-XYB converter; the new exponent/final-map modules have no
+  division operator. These checks prove elaboration and structural intent only;
+  they do not establish timing or resource feasibility for the upstream fixed
+  erosion divide, minima network, square root, lookup tables, multipliers, or
+  register-backed full-frame grids.
 - `sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'` followed by
   `tclsh fpga/vivado/synth.tcl --preflight-only` — passed with the expected 19
   generated RTL files. This is a source/constraint preflight, not synthesis.

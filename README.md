@@ -51,12 +51,13 @@ horizontal/vertical Y edges from each seed. A focused
 distance-dependent baseline plus capped red/blue coverage terms. A focused
 `traceRoute = TraceStage.AqGammaModulation` build continues through the final
 log-domain per-block modulation by averaging the red/green inverse gamma
-responses. A focused
-`traceRoute = TraceStage.RawQuantField` core can also emit the current fixed
-raw-quant field, one adjusted raw-quant
-value per padded 8x8 block, so the quant-metadata trace shape exists before
-adaptive quantization hardware does. `AqMapToRawQuant` and
-`FramePreparedAqRawQuantTraceStage` now form the first real adaptive-
+responses. A focused `traceRoute = TraceStage.AqFinalMap` build exponentiates
+that seed, applies the distance-derived Q24 scale and high-distance damping,
+and emits the completed unsigned-Q24 AQ map. A focused
+`traceRoute = TraceStage.RawQuantField` core now converts that RGB-derived map
+to the adjusted raw-quant byte for each padded 8x8 block; a nonzero
+`fixedRawQuant` selects the retained fixed override instead. `AqMapToRawQuant` and
+`FramePreparedAqRawQuantTraceStage` retain the narrow prepared adaptive-
 quantization seam: the host supplies libjxl-tiny's image-dependent AQ map and
 inverse global AC scale as unsigned Q24 values, and RTL performs the exact
 nearest-integer conversion, `[1, 255]` clamp, raster trace ordering, and frame
@@ -86,8 +87,13 @@ emits cumulative `AqColorModulation` traces without a runtime divider.
 next stage; `AqGammaModulationBlock` alternates red- and green-derived inverse
 ratio lookups over 128 cycles, averages them in Q20, applies a normalized Q20
 `fast_log2f` approximation, and emits cumulative signed-Q24
-`AqGammaModulation` traces. Power/scale, final-map assembly, and connection to
-the prepared final-conversion seam remain open. Focused
+`AqGammaModulation` traces. `AqHfColorGammaModulationBlockPipeline` retains the
+remaining distance/block metadata; `AqFastExpQ24` uses normalized fractional
+`fast_pow2f` interpolation, and `AqFinalModulationBlock` applies Q24
+scale/dampen/add arithmetic to emit `AqFinalMap`. `FrameAqFinalMapPipeline`
+shares that completed chain between the final-map trace and real
+`RawQuantField` conversion without repeating RGB-to-XYB or frame storage.
+Focused
 `TraceStage.YtoxMap` and
 `TraceStage.YtobMap` routes emit the current fixed scalar CFL tile maps, one
 record per 64x64 tile. Later stages will replace the fixed quantization
@@ -104,9 +110,11 @@ for common Q8 distances `64`, `128`, `256`, `512`, `1024`, and `2048`, with
 unsupported values falling back to distance 1 and AXI-Lite status bit 3
 reporting that fallback. The fixed DCT-only quant/token frame schedulers use
 those distance-derived AC/DC scalar parameters, including the fixed raw-quant-5
-AC reciprocal, while `fixedPointScale` plus
+AC reciprocal. The same lookup now carries the exact Q24 AQ scale, damping, and
+inverse global AC scale, so unsupported distances fall back consistently across
+the whole final AQ path. `fixedPointScale` plus
 `fixedInvQacQ16` remain AC-scale overrides for trace experiments. `fixedRawQuant`
-can override the default adjusted raw quant 5 globally for fixed-path traces, and
+can override the adaptive raw-quant route with one global byte, and
 `fixedYtox`/`fixedYtob` provide signed 8-bit scalar CFL map overrides for
 focused RGB-input metadata-route experiments; prepared-DCT routes now have
 separate estimated-CFL wrappers.
@@ -212,8 +220,9 @@ default all-route shell smaller.
 simulation tests to instantiate only the selected route.
 `HjxlCoreRouteElaborationSpec` checks that the focused AC-token core includes
 the heavy scheduler while the default all-route shell omits it, and that the
-focused raw-quant and CFL-map routes elaborate `FrameRawQuantFieldTraceStage`
-and `FrameCflMapTraceStage` without the AC-strategy route. The direct AC-token
+focused final-map/raw-quant routes elaborate one shared cumulative AQ chain
+while the fixed raw-quant override remains available; focused CFL-map routes
+elaborate `FrameCflMapTraceStage` without the AC-strategy route. The direct AC-token
 scheduler behavior is covered by `FrameDctOnlyAcTokenTraceStageSpec`. The
 default still builds the all-route integration shell.
 Every current frame trace scheduler/top exposes a `traceLast` sideband on its
@@ -300,8 +309,8 @@ sbt 'runMain hjxl.Elaborate'
 ```
 
 Generate the standalone RGB-input AQ contrast, fuzzy-erosion, strategy-mask,
-nonlinear-mask, HF/color/gamma-modulation, and prepared final-AQ conversion
-tops:
+nonlinear-mask, cumulative modulation/final-map/raw-quant, and prepared final
+operation/conversion tops:
 
 ```sh
 sbt 'runMain hjxl.ElaborateAqContrast'
@@ -311,6 +320,9 @@ sbt 'runMain hjxl.ElaborateAqNonlinearMask'
 sbt 'runMain hjxl.ElaborateAqHfModulation'
 sbt 'runMain hjxl.ElaborateAqColorModulation'
 sbt 'runMain hjxl.ElaborateAqGammaModulation'
+sbt 'runMain hjxl.ElaborateAqFinalMap'
+sbt 'runMain hjxl.ElaborateAqRawQuant'
+sbt 'runMain hjxl.ElaboratePreparedAqFinalModulation'
 sbt 'runMain hjxl.ElaboratePreparedAqRawQuant'
 ```
 
@@ -395,6 +407,7 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --aq-hf-modulation-q24-csv build-codex/fixtures/gradient-17x9-aq-hf-modulation-q24.csv \
   --aq-color-modulation-q24-csv build-codex/fixtures/gradient-17x9-aq-color-modulation-q24.csv \
   --aq-gamma-modulation-q24-csv build-codex/fixtures/gradient-17x9-aq-gamma-modulation-q24.csv \
+  --aq-final-map-q24-csv build-codex/fixtures/gradient-17x9-aq-final-map-q24.csv \
   --dct8x8-npy build-codex/fixtures/gradient-17x9-dct8x8.npy \
   --default-ac-strategy-npy build-codex/fixtures/gradient-17x9-ac-strategy.npy \
   --raw-quant-field-npy build-codex/fixtures/gradient-17x9-raw-qf.npy \
@@ -509,13 +522,27 @@ saturation. `AqGammaModulationSpec` covers table seams and clamps, exact
 128-cycle prepared output, float32 error, backpressure/config lifetime, five RGB
 families, and 65x1/65x65 traversal. The composed elaboration contains one shared
 scheduler, one reusable HF/color pipeline, and one RGB-to-XYB converter. The
-final power/scale step remains downstream.
+completed final-map pipeline consumes this stage directly.
+
+The `--aq-final-map-q24-csv` artifact records the cumulative gamma seed, the
+completed unsigned-Q24 AQ map, the distance-derived scale/dampen/inverse-global-
+scale triplet, and reference/fixed raw-quant bytes. Its independent float32
+power/scale reconstruction matches libjxl-tiny's final AQ map exactly before
+quantization. The fixed model uses a 257-entry normalized `fast_pow2f` table,
+Q24 interpolation/multiplication, explicit unsigned saturation, and the existing
+nearest/clamped raw-quant converter. `AqFinalModulationSpec` covers exponent
+seams, high-distance damping, exact prepared output and fixed-model raw bytes, five RGB
+families, unsupported-distance fallback, backpressure, 65x1, and 65x65 order.
+`fixedRawQuant=0` selects this adaptive route; a nonzero value remains the
+explicit fixed override.
 
 The `--dct-only-aq-map-q24-csv` artifact records each real all-DCT AQ-map
 sample, the frame-level inverse global AC scale, libjxl-tiny's raw-quant byte,
 and the independently fixed-point-converted byte. Both fixed-point inputs use
 unsigned Q24. `AdaptiveQuantizationSpec` exercises these rows through
-`FramePreparedAqRawQuantTraceStage` and requires exact byte parity.
+`FramePreparedAqRawQuantTraceStage` and requires exact byte parity. This remains
+the narrow prepared seam used to isolate final conversion arithmetic even
+though the RGB path is now connected end to end through the same converter.
 
 Assemble a frame and bare codestream from precomputed logical token arrays:
 
@@ -903,15 +930,15 @@ replay-capture input-stream, trace-layout, and AXI-Lite expectation guards.
 | `0x0c` | `distanceQ8` | distance in Q8 |
 | `0x10` | `fixedPointScale` | explicit AC scale override, zero selects lookup |
 | `0x14` | `fixedInvQacQ16` | explicit reciprocal AC scale |
-| `0x18` | `fixedRawQuant` | raw-quant override, zero selects default |
+| `0x18` | `fixedRawQuant` | raw-quant override; zero selects adaptive AQ on the focused raw route and the existing default on fixed DCT/token routes |
 | `0x1c` | flags | bit 0 `enableXyb`, bit 1 `enableDct`, bit 2 `enableQuant`, bit 3 `enableTokenize`, bits 9:8 `tokenSelect` (`Dc=0`, `AcMetadata=1`, `AcTokens=2`, `AqContrast=3`) |
 | `0x20` | `fixedYtox` | signed 8-bit scalar Y-to-X CFL override |
 | `0x24` | `fixedYtob` | signed 8-bit scalar Y-to-B CFL override |
 | `0x28` | identity | read-only ASCII `HJXL` magic (`0x484a584c`) |
-| `0x2c` | ABI version | read-only `major << 16 | minor`; currently 1.7 |
+| `0x2c` | ABI version | read-only `major << 16 | minor`; currently 1.8 |
 | `0x30` | capabilities | read-only target capability mask defined in `abi/hjxl_abi.json` |
 | `0x34` | maximum frame geometry | read-only maximum height in bits 31:16 and width in bits 15:0 |
-| `0x38` | active route | read-only trace stage 0–19, direct prepared route 128, or estimated-CFL prepared route 129 |
+| `0x38` | active route | read-only trace stage 0–20, direct prepared route 128, or estimated-CFL prepared route 129 |
 | `0x3c` | build ID | read-only contract build identifier; currently `0x20260712` |
 
 The AXI-Lite wrapper returns OKAY for mapped registers and DECERR for unmapped
@@ -1263,8 +1290,17 @@ and 65x1/65x65 traversal. `AqGammaModulationElaborationSpec` verifies the
 sequential HF/color/gamma chain, divider-free gamma arithmetic, one shared frame
 scheduler, and one RGB-to-XYB converter.
 
-`AdaptiveQuantizationSpec` checks the prepared final-AQ seam independently of
-the still-missing per-block image heuristics. It validates Q24 multiplication,
+`AqFinalModulationSpec` locks the final power/scale/dampen operation and its
+connection to raw quantization. It checks normalized `fast_pow2f` exponent
+seams, exact fixed-model output, float32 error, saturation and backpressure,
+distance-7/14 damping boundaries at the prepared seam, supported RGB distance
+parameters, five RGB families, exact fixed-model raw-quant bytes, explicit fixed override,
+unsupported-distance fallback, and 65x1/65x65 traversal.
+`AqFinalModulationElaborationSpec` verifies one cumulative scheduler/converter
+chain and rejects division operators in the new exponent/final-map datapaths.
+
+`AdaptiveQuantizationSpec` keeps the prepared final-AQ conversion seam isolated
+from the now-connected RGB heuristics. It validates Q24 multiplication,
 nearest rounding, low/high clamping, exact `RawQuantField` traces from multiple
 libjxl-tiny patterns and distances, output stability under backpressure, frame
 control snapshots, invalid geometry, and standalone SystemVerilog elaboration.

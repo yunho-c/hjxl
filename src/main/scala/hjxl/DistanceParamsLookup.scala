@@ -9,6 +9,9 @@ case class DistanceParamsEntry(
     distanceQ8: Int,
     scaleQ16: Int,
     invQacQ16: Int,
+    aqScaleQ24: Int,
+    aqDampenQ24: Int,
+    aqInvGlobalScaleQ24: Long,
     quantDc: Int,
     invDcFactorQ16: Seq[Int],
     xQmMultiplierQ16: Int,
@@ -20,18 +23,86 @@ case class DistanceParamsEntry(
 object DistanceParamsLookup {
   val Distance1Q8 = 256
 
-  // Generated from libjxl-tiny python/jxl_tiny/quantization.py
-  // compute_distance_params plus K_INV_DC_QUANT for common development
-  // distances. Unsupported runtime distances currently fall back to distance 1.
+  // Generated from libjxl-tiny python/jxl_tiny/quantization.py and
+  // adaptive_quantization.py for common development distances. Unsupported
+  // runtime distances currently fall back to distance 1.
   // invQacQ16 is floor(2^32 / (scaleQ16 * rawQuant5)) for the current fixed
-  // all-DCT raw quant value.
+  // all-DCT raw quant value. The three aq* fields are the Q24 per-block scale,
+  // high-distance damping, and inverse global AC scale used by the final
+  // adaptive-quantization map and raw-quant conversion.
   val Entries: Seq[DistanceParamsEntry] = Seq(
-    DistanceParamsEntry(64, 29360, 29257, 10, Seq(1202585600, 150323200, 75161600), 81920, 0),
-    DistanceParamsEntry(128, 14680, 58514, 10, Seq(601292800, 75161600, 37580800), 65536, 0),
-    DistanceParamsEntry(256, 7340, 117029, 10, Seq(300646400, 37580800, 18790400), 65536, 1),
-    DistanceParamsEntry(512, 3670, 234058, 10, Seq(150323200, 18790400, 9395200), 81920, 2),
-    DistanceParamsEntry(1024, 2107, 407685, 10, Seq(86302720, 10787840, 5393920), 81920, 3),
-    DistanceParamsEntry(2048, 1310, 655720, 11, Seq(59023360, 7377920, 3688960), 81920, 3)
+    DistanceParamsEntry(
+      64,
+      29360,
+      29257,
+      55660092,
+      16777216,
+      37449308L,
+      10,
+      Seq(1202585600, 150323200, 75161600),
+      81920,
+      0
+    ),
+    DistanceParamsEntry(
+      128,
+      14680,
+      58514,
+      27830046,
+      16777216,
+      74898616L,
+      10,
+      Seq(601292800, 75161600, 37580800),
+      65536,
+      0
+    ),
+    DistanceParamsEntry(
+      256,
+      7340,
+      117029,
+      13915023,
+      16777216,
+      149797232L,
+      10,
+      Seq(300646400, 37580800, 18790400),
+      65536,
+      1
+    ),
+    DistanceParamsEntry(
+      512,
+      3670,
+      234058,
+      6957512,
+      16777216,
+      299594464L,
+      10,
+      Seq(150323200, 18790400, 9395200),
+      81920,
+      2
+    ),
+    DistanceParamsEntry(
+      1024,
+      2107,
+      407685,
+      3478756,
+      16777216,
+      521837504L,
+      10,
+      Seq(86302720, 10787840, 5393920),
+      81920,
+      3
+    ),
+    DistanceParamsEntry(
+      2048,
+      1310,
+      655720,
+      1739378,
+      14380471,
+      839321856L,
+      11,
+      Seq(59023360, 7377920, 3688960),
+      81920,
+      3
+    )
   )
 
   val Default: DistanceParamsEntry =
@@ -41,6 +112,9 @@ object DistanceParamsLookup {
 class DistanceParamsOutput extends Bundle {
   val scaleQ16 = UInt(16.W)
   val invQacQ16 = UInt(32.W)
+  val aqScaleQ24 = UInt(32.W)
+  val aqDampenQ24 = UInt(25.W)
+  val aqInvGlobalScaleQ24 = UInt(32.W)
   val quantDc = UInt(16.W)
   val invDcFactorQ16 = Vec(3, UInt(32.W))
   val xQmMultiplierQ16 = UInt(32.W)
@@ -58,6 +132,9 @@ class DistanceParamsLookup extends Module {
     val wire = Wire(new DistanceParamsOutput)
     wire.scaleQ16 := entry.scaleQ16.U
     wire.invQacQ16 := entry.invQacQ16.U
+    wire.aqScaleQ24 := entry.aqScaleQ24.U
+    wire.aqDampenQ24 := entry.aqDampenQ24.U
+    wire.aqInvGlobalScaleQ24 := entry.aqInvGlobalScaleQ24.U
     wire.quantDc := entry.quantDc.U
     for (channel <- 0 until 3) {
       wire.invDcFactorQ16(channel) := entry.invDcFactorQ16(channel).U

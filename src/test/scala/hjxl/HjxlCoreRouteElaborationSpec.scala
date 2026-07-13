@@ -187,11 +187,34 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     converterInstances mustBe 1
   }
 
-  "HjxlCore focused raw-quant route elaborates the raw quant-field scheduler" in {
+  "HjxlCore focused AQ final-map route completes one shared cumulative chain" in {
+    val files = emittedSystemVerilog(TraceStage.AqFinalMap)
+    val text = combinedText(files)
+    text must include("module HjxlCore")
+    text must include("module FrameAqFinalMapTraceStage")
+    text must include("module FrameAqFinalMapPipeline")
+    text must include("module AqHfColorGammaModulationBlockPipeline")
+    text must include("module AqFinalModulationBlock")
+    text must include("module AqFastExpQ24")
+    text must include("module DistanceParamsLookup")
+    text must include("io_traceLast")
+    text must not include "module FrameDct8x8TraceStage"
+    text must not include "module FrameAcStrategyTraceStage"
+    val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r
+      .findAllMatchIn(text)
+      .length
+    converterInstances mustBe 1
+  }
+
+  "HjxlCore focused raw-quant route selects adaptive AQ with an explicit fixed override" in {
     val files = emittedSystemVerilog(TraceStage.RawQuantField)
     val text = combinedText(files)
     text must include("module HjxlCore")
     text must include("module FrameRawQuantFieldTraceStage")
+    text must include("module FrameFixedRawQuantFieldTraceStage")
+    text must include("module FrameAqRawQuantTraceStage")
+    text must include("module FrameAqFinalMapPipeline")
+    text must include("module AqMapToRawQuant")
     text must include("io_trace_bits_stage")
     text must include("io_traceLast")
     text must not include "module FrameAcStrategyTraceStage"

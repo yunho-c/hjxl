@@ -94,6 +94,7 @@ object HjxlAbiGenerated {
       val AqHfModulation = 17
       val AqColorModulation = 18
       val AqGammaModulation = 19
+      val AqFinalMap = 20
     }
   }
 
@@ -107,8 +108,8 @@ object HjxlAbiGenerated {
   object Discovery {
     val Identity = 1212831820L
     val AbiMajor = 1
-    val AbiMinor = 7
-    val AbiVersion = 65543L
+    val AbiMinor = 8
+    val AbiVersion = 65544L
     val BuildId = 539363090L
 
     object CapabilityBit {

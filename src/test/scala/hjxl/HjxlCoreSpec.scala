@@ -353,6 +353,37 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
+  "HjxlCore exposes the completed RGB AQ map in a focused build" in {
+    simulate(new HjxlCore(config, traceRoute = TraceStage.AqFinalMap)) { dut =>
+      pokeConfig(
+        dut,
+        enableXyb = true,
+        enableQuant = true,
+        tokenSelect = TokenTraceSelect.AqContrast
+      )
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+
+      driveOnePixel(dut)
+      var waitCycles = 0
+      while (dut.io.trace.valid.peekValue().asBigInt == 0 && waitCycles < 800) {
+        dut.clock.step()
+        waitCycles += 1
+      }
+      waitCycles must be < 800
+      dut.io.trace.bits.stage.expect(TraceStage.AqFinalMap.U)
+      dut.io.trace.bits.group.expect(0.U)
+      dut.io.trace.bits.index.expect(0.U)
+      dut.io.trace.bits.value.peekValue().asBigInt must be > BigInt(0)
+      dut.io.traceLast.expect(true.B)
+      dut.clock.step()
+      dut.io.trace.valid.expect(false.B)
+      dut.io.busy.expect(false.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
   "HjxlCore routes to AC strategy trace when quantization metadata is enabled" in {
     simulate(new HjxlCore(config, traceRoute = TraceStage.AcStrategy)) { dut =>
       pokeConfig(dut, enableXyb = true, enableQuant = true)
@@ -384,6 +415,28 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.trace.bits.stage.expect(TraceStage.RawQuantField.U)
       dut.io.trace.bits.index.expect(0.U)
       dut.io.trace.bits.value.expect(11.S)
+      dut.io.traceLast.expect(true.B)
+    }
+  }
+
+  "HjxlCore focused raw quant route uses adaptive quantization when the override is zero" in {
+    simulate(new HjxlCore(config, traceRoute = TraceStage.RawQuantField)) { dut =>
+      pokeConfig(dut, enableXyb = true, enableQuant = true)
+      dut.io.config.fixedRawQuant.poke(0.U)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+
+      driveOnePixel(dut)
+      var waitCycles = 0
+      while (dut.io.trace.valid.peekValue().asBigInt == 0 && waitCycles < 800) {
+        dut.clock.step()
+        waitCycles += 1
+      }
+      waitCycles must be < 800
+      dut.io.trace.bits.stage.expect(TraceStage.RawQuantField.U)
+      dut.io.trace.bits.index.expect(0.U)
+      dut.io.trace.bits.value.peekValue().asBigInt must be > BigInt(0)
       dut.io.traceLast.expect(true.B)
     }
   }

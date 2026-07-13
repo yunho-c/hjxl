@@ -811,6 +811,164 @@ def fixed_aq_gamma_modulation_q24(seed_q24: int, xyb_q12) -> int:
     return max(SIGNED_INT32_MIN, min(SIGNED_INT32_MAX, result))
 
 
+def _aq_fast_pow2_float32(value):
+    """Independent float32 reconstruction of libjxl-tiny `fast_pow2f`."""
+    np = _load_numpy()
+    input_value = np.float32(value)
+    floor_value = math.floor(float(input_value))
+    exponent_bits = np.int32(np.int32(floor_value + 127) << np.int32(23))
+    exponent = np.asarray(exponent_bits, dtype=np.int32).view(np.float32)[()]
+    fraction = np.float32(input_value - np.float32(floor_value))
+    numerator = np.float32(fraction + np.float32(1.01749063e1))
+    numerator = np.float32(
+        np.float32(numerator * fraction) + np.float32(4.88687798e1)
+    )
+    numerator = np.float32(
+        np.float32(numerator * fraction) + np.float32(9.85506591e1)
+    )
+    numerator = np.float32(numerator * exponent)
+    denominator = np.float32(
+        np.float32(fraction * np.float32(2.10242958e-1))
+        + np.float32(-2.22328856e-2)
+    )
+    denominator = np.float32(
+        np.float32(denominator * fraction) + np.float32(-1.94414990e1)
+    )
+    denominator = np.float32(
+        np.float32(denominator * fraction) + np.float32(9.85506633e1)
+    )
+    return np.float32(numerator / denominator)
+
+
+def aq_final_modulation_from_gamma(gamma_modulation, distance: float):
+    """Apply libjxl-tiny's final power/scale/dampen operation."""
+    np = _load_numpy()
+    seeds = np.asarray(gamma_modulation, dtype=np.float32)
+    reference_distance = float(np.float32(distance))
+    scale = np.float32(np.float32(0.8294) / np.float32(reference_distance))
+    base_level = np.float32(np.float32(0.5) * scale)
+    dampen = np.float32(1.0)
+    if reference_distance >= 7.0:
+        dampen = np.float32(
+            1.0 - ((reference_distance - 7.0) / (14.0 - 7.0))
+        )
+        if dampen < 0:
+            dampen = np.float32(0.0)
+    multiplier = np.float32(scale * dampen)
+    add = np.float32(np.float32(np.float32(1.0) - dampen) * base_level)
+    output = np.empty_like(seeds)
+    for index in np.ndindex(seeds.shape):
+        power = _aq_fast_pow2_float32(
+            np.float32(seeds[index] * np.float32(1.442695041))
+        )
+        output[index] = np.float32(np.float32(power * multiplier) + add)
+    return output
+
+
+@lru_cache(maxsize=1)
+def _aq_fast_pow2_q24_table():
+    np = _load_numpy()
+    return tuple(
+        int(
+            math.floor(
+                float(_aq_fast_pow2_float32(np.float32(index / 256.0)))
+                * (1 << 24)
+                + 0.5
+            )
+        )
+        for index in range(257)
+    )
+
+
+def _round_shift_signed(value: int, shift: int) -> int:
+    if value >= 0:
+        return (value + (1 << (shift - 1))) >> shift
+    return -(((-value) + (1 << (shift - 1))) >> shift)
+
+
+def fixed_aq_fast_exp_q24(seed_q24: int) -> int:
+    """Approximate `fast_pow2f(seed * log2(e))` as unsigned Q24."""
+    if seed_q24 < SIGNED_INT32_MIN or seed_q24 > SIGNED_INT32_MAX:
+        raise ValueError("AQ final-modulation seed must fit signed 32-bit Q24")
+    log2_q24 = _round_shift_signed(int(seed_q24) * 24204406, 24)
+    exponent = log2_q24 >> 24
+    fraction = log2_q24 - (exponent << 24)
+    index = fraction >> 16
+    interpolation = fraction & 0xFFFF
+    table = _aq_fast_pow2_q24_table()
+    mantissa = (
+        table[index] * (65536 - interpolation)
+        + table[index + 1] * interpolation
+        + 32768
+    ) >> 16
+    if exponent >= 0:
+        shifted = mantissa << exponent
+    elif -exponent > 26:
+        shifted = 0
+    else:
+        shifted = (mantissa + (1 << (-exponent - 1))) >> -exponent
+    return min((1 << 32) - 1, shifted)
+
+
+def fixed_aq_final_scalars_q24(distance: float) -> tuple[int, int, int]:
+    """Return Q24 scale, dampen, and inverse global AC scale."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.adaptive_quantization import (  # pylint: disable=import-outside-toplevel
+        inverse_global_ac_scale,
+    )
+
+    reference_distance = float(np.float32(distance))
+    scale = np.float32(np.float32(0.8294) / np.float32(reference_distance))
+    dampen = np.float32(1.0)
+    if reference_distance >= 7.0:
+        dampen = np.float32(
+            1.0 - ((reference_distance - 7.0) / (14.0 - 7.0))
+        )
+        if dampen < 0:
+            dampen = np.float32(0.0)
+    inv_global_scale = inverse_global_ac_scale(reference_distance)
+
+    def q24(value) -> int:
+        return int(math.floor(float(value) * (1 << 24) + 0.5))
+
+    values = q24(scale), q24(dampen), q24(inv_global_scale)
+    if any(value < 0 or value > np.iinfo(np.uint32).max for value in values):
+        raise ValueError("AQ final-modulation scalar does not fit unsigned Q24")
+    return values
+
+
+def fixed_aq_final_modulation_q24(
+    seed_q24: int,
+    scale_q24: int,
+    dampen_q24: int,
+) -> int:
+    """Apply HJXL's fixed final power/scale/dampen operation."""
+    maximum = (1 << 32) - 1
+    if scale_q24 < 0 or scale_q24 > maximum:
+        raise ValueError("AQ final scale must fit unsigned Q24")
+    if dampen_q24 < 0 or dampen_q24 > (1 << 24):
+        raise ValueError("AQ final dampen must be in Q24 [0, 1]")
+
+    def multiply_q24(left: int, right: int) -> int:
+        return min(maximum, (left * right + (1 << 23)) >> 24)
+
+    power_q24 = fixed_aq_fast_exp_q24(seed_q24)
+    base_level_q24 = (scale_q24 + 1) >> 1
+    multiplier_q24 = multiply_q24(scale_q24, dampen_q24)
+    add_q24 = multiply_q24((1 << 24) - dampen_q24, base_level_q24)
+    return min(maximum, multiply_q24(power_q24, multiplier_q24) + add_q24)
+
+
+def fixed_aq_raw_quant(aq_map_q24: int, inv_global_scale_q24: int) -> int:
+    """Convert one fixed final AQ-map sample to the adjusted raw-quant byte."""
+    rounded = (
+        int(aq_map_q24) * int(inv_global_scale_q24) + (1 << 47)
+    ) >> 48
+    return min(255, max(1, rounded))
+
+
 def capture_aq_nonlinear_mask_from_xyb(
     xyb,
     block_x0: int = 0,
@@ -2014,6 +2172,203 @@ def write_aq_gamma_modulation_q24_csv(
                 block += 1
 
 
+def write_aq_final_map_q24_csv(
+    path: Path,
+    image,
+    distance: float,
+) -> None:
+    """Write completed AQ-map and raw-quant evidence for the RGB chain."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.adaptive_quantization import (  # pylint: disable=import-outside-toplevel
+        compute_adaptive_quantization,
+    )
+
+    distance_q8 = int(round(float(distance) * (1 << 8)))
+    if distance_q8 <= 0 or distance_q8 > np.iinfo(np.uint16).max:
+        raise ValueError("AQ final-map distance must fit positive unsigned Q8")
+    reference_distance = float(np.float32(distance_q8 / float(1 << 8)))
+    scale_q24, dampen_q24, inv_global_scale_q24 = fixed_aq_final_scalars_q24(
+        reference_distance
+    )
+
+    def float_chain(source):
+        pre_erosion = aq_contrast_pre_erosion_from_xyb(source)
+        erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+        nonlinear = aq_nonlinear_mask_from_fuzzy_erosion(erosion)
+        hf = aq_hf_modulation_from_xyb(source, nonlinear)
+        color = aq_color_modulation_from_xyb(source, hf, reference_distance)
+        gamma = aq_gamma_modulation_from_xyb(source, color)
+        final_map = aq_final_modulation_from_gamma(gamma, reference_distance)
+        return erosion, gamma, final_map
+
+    def fixed_chain(erosion, source_q12):
+        erosion_q16 = np.rint(
+            np.asarray(erosion, dtype=np.float64) * (1 << 16)
+        ).astype(np.int64)
+        shape = erosion_q16.shape
+        fixed_gamma = np.empty(shape, dtype=np.int64)
+        fixed_map = np.empty(shape, dtype=np.int64)
+        fixed_raw = np.empty(shape, dtype=np.uint8)
+        for block_y in range(shape[0]):
+            for block_x in range(shape[1]):
+                y0 = block_y * 8
+                x0 = block_x * 8
+                block = source_q12[:, y0 : y0 + 8, x0 : x0 + 8]
+                nonlinear_q24 = fixed_aq_nonlinear_mask_q24(
+                    int(erosion_q16[block_y, block_x])
+                )
+                hf_q24 = fixed_aq_hf_modulation_q24(nonlinear_q24, block[1])
+                color_q24 = fixed_aq_color_modulation_q24(
+                    hf_q24,
+                    distance_q8,
+                    block,
+                )
+                gamma_q24 = fixed_aq_gamma_modulation_q24(color_q24, block)
+                map_q24 = fixed_aq_final_modulation_q24(
+                    gamma_q24,
+                    scale_q24,
+                    dampen_q24,
+                )
+                fixed_gamma[block_y, block_x] = gamma_q24
+                fixed_map[block_y, block_x] = map_q24
+                fixed_raw[block_y, block_x] = fixed_aq_raw_quant(
+                    map_q24,
+                    inv_global_scale_q24,
+                )
+        return erosion_q16, fixed_gamma, fixed_map, fixed_raw
+
+    xyb = xyb_from_python_port(image)
+    erosion, gamma, reference_map = float_chain(xyb)
+    direct = compute_adaptive_quantization(xyb, reference_distance)
+    if not np.array_equal(reference_map, direct.aq_map):
+        raise RuntimeError(
+            "AQ final-map reconstruction does not match libjxl-tiny "
+            "`_per_block_modulations`"
+        )
+
+    xyb_q12 = np.rint(
+        np.asarray(xyb, dtype=np.float64) * (1 << 12)
+    ).astype(np.int64)
+    quantized_xyb = (
+        xyb_q12.astype(np.float32) / np.float32(1 << 12)
+    ).astype(np.float32)
+    quantized_erosion, _, quantized_reference_map = float_chain(quantized_xyb)
+
+    input_q8 = np.rint(
+        np.asarray(image, dtype=np.float64) * (1 << 8)
+    ).astype(np.int64)
+    if np.any(input_q8 < np.iinfo(np.int16).min) or np.any(
+        input_q8 > np.iinfo(np.int16).max
+    ):
+        raise ValueError("RGB Q8 fixture does not fit signed 16-bit")
+    input_quantized_rgb = (
+        input_q8.astype(np.float32) / np.float32(1 << 8)
+    ).astype(np.float32)
+    input_quantized_xyb = xyb_from_python_port(input_quantized_rgb)
+    input_quantized_xyb_q12 = np.rint(
+        np.asarray(input_quantized_xyb, dtype=np.float64) * (1 << 12)
+    ).astype(np.int64)
+    input_q8_xyb_q12 = (
+        input_quantized_xyb_q12.astype(np.float32) / np.float32(1 << 12)
+    ).astype(np.float32)
+    input_quantized_pre = aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
+    input_quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(
+        input_quantized_pre
+    )
+
+    _, fixed_gamma, fixed_map, fixed_raw = fixed_chain(erosion, xyb_q12)
+    _, _, fixed_quantized_map, _ = fixed_chain(
+        quantized_erosion,
+        xyb_q12,
+    )
+    (
+        input_quantized_erosion_q16,
+        input_quantized_fixed_gamma,
+        input_quantized_fixed_map,
+        input_quantized_fixed_raw,
+    ) = fixed_chain(input_quantized_erosion, input_quantized_xyb_q12)
+
+    gamma_q24 = np.rint(gamma.astype(np.float64) * (1 << 24)).astype(np.int64)
+    reference_map_q24 = np.rint(
+        reference_map.astype(np.float64) * (1 << 24)
+    ).astype(np.int64)
+    quantized_reference_map_q24 = np.rint(
+        quantized_reference_map.astype(np.float64) * (1 << 24)
+    ).astype(np.int64)
+
+    for name, values in (
+        ("AQ fuzzy erosion", input_quantized_erosion_q16),
+        ("AQ final map", reference_map_q24),
+        ("fixed AQ final map", fixed_map),
+        ("quantized-XYB AQ final map", quantized_reference_map_q24),
+        ("fixed quantized-XYB AQ final map", fixed_quantized_map),
+        ("input-Q8 fixed AQ final map", input_quantized_fixed_map),
+    ):
+        if np.any(values < 0) or np.any(values > np.iinfo(np.uint32).max):
+            raise ValueError(f"{name} fixture does not fit unsigned Q24")
+    for name, values in (
+        ("AQ gamma modulation", gamma_q24),
+        ("fixed AQ gamma modulation", fixed_gamma),
+        ("input-Q8 fixed AQ gamma modulation", input_quantized_fixed_gamma),
+    ):
+        if np.any(values < SIGNED_INT32_MIN) or np.any(values > SIGNED_INT32_MAX):
+            raise ValueError(f"{name} fixture does not fit signed Q24")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "block",
+                "block_x",
+                "block_y",
+                "distance_q8",
+                "gamma_modulation_q24",
+                "aq_map_q24",
+                "fixed_gamma_modulation_q24",
+                "fixed_aq_map_q24",
+                "quantized_xyb_aq_map_q24",
+                "fixed_quantized_xyb_aq_map_q24",
+                "input_q8_fixed_gamma_modulation_q24",
+                "input_q8_fixed_aq_map_q24",
+                "aq_scale_q24",
+                "aq_dampen_q24",
+                "inv_global_scale_q24",
+                "reference_raw_quant",
+                "fixed_raw_quant",
+                "input_q8_fixed_raw_quant",
+            )
+        )
+        block = 0
+        for block_y in range(reference_map_q24.shape[0]):
+            for block_x in range(reference_map_q24.shape[1]):
+                writer.writerow(
+                    (
+                        block,
+                        block_x,
+                        block_y,
+                        distance_q8,
+                        int(gamma_q24[block_y, block_x]),
+                        int(reference_map_q24[block_y, block_x]),
+                        int(fixed_gamma[block_y, block_x]),
+                        int(fixed_map[block_y, block_x]),
+                        int(quantized_reference_map_q24[block_y, block_x]),
+                        int(fixed_quantized_map[block_y, block_x]),
+                        int(input_quantized_fixed_gamma[block_y, block_x]),
+                        int(input_quantized_fixed_map[block_y, block_x]),
+                        scale_q24,
+                        dampen_q24,
+                        inv_global_scale_q24,
+                        int(direct.raw_quant_field[block_y, block_x]),
+                        int(fixed_raw[block_y, block_x]),
+                        int(input_quantized_fixed_raw[block_y, block_x]),
+                    )
+                )
+                block += 1
+
+
 def dct8x8_from_python_port(image):
     np = _load_numpy()
     root = _libjxl_tiny_root()
@@ -2366,6 +2721,9 @@ def distance_params_from_python_port(distance: float, fixed_raw_quant: int = 5):
         for value in K_INV_DC_QUANT
     ]
     x_qm_multiplier_q16 = int(round(math.pow(1.25, params.x_qm_scale - 2.0) * (1 << 16)))
+    aq_scale_q24, aq_dampen_q24, aq_inv_global_scale_q24 = (
+        fixed_aq_final_scalars_q24(distance)
+    )
     return {
         "format": "hjxl.distance_params.v1",
         "distance": float(distance),
@@ -2375,6 +2733,9 @@ def distance_params_from_python_port(distance: float, fixed_raw_quant: int = 5):
         "scale_q16": int(params.global_scale),
         "fixed_raw_quant": int(fixed_raw_quant),
         "inv_qac_q16": int((1 << 32) // (int(params.global_scale) * int(fixed_raw_quant))),
+        "aq_scale_q24": aq_scale_q24,
+        "aq_dampen_q24": aq_dampen_q24,
+        "aq_inv_global_scale_q24": aq_inv_global_scale_q24,
         "scale": float(params.scale),
         "scale_dc": float(params.scale_dc),
         "inv_dc_factor_q16": inv_dc_factor_q16,
@@ -2838,6 +3199,11 @@ def main() -> int:
         help="optional signed-Q24 AQ seed after per-block gamma modulation",
     )
     parser.add_argument(
+        "--aq-final-map-q24-csv",
+        type=Path,
+        help="optional completed unsigned-Q24 AQ map and raw-quant evidence",
+    )
+    parser.add_argument(
         "--dct8x8-npy",
         type=Path,
         help="optional libjxl-tiny raster 8x8 XYB DCT blocks NumPy output path",
@@ -3161,6 +3527,12 @@ def main() -> int:
             image,
             args.distance,
         )
+    if args.aq_final_map_q24_csv is not None:
+        write_aq_final_map_q24_csv(
+            args.aq_final_map_q24_csv,
+            image,
+            args.distance,
+        )
     if args.dct8x8_npy is not None:
         np = _load_numpy()
         args.dct8x8_npy.parent.mkdir(parents=True, exist_ok=True)
@@ -3330,6 +3702,15 @@ def main() -> int:
         and args.jxl is None
         and args.input_padded_npy is None
         and args.xyb_npy is None
+        and args.xyb_q12_csv is None
+        and args.aq_contrast_q16_csv is None
+        and args.aq_fuzzy_erosion_q16_csv is None
+        and args.aq_strategy_mask_q16_csv is None
+        and args.aq_nonlinear_mask_q24_csv is None
+        and args.aq_hf_modulation_q24_csv is None
+        and args.aq_color_modulation_q24_csv is None
+        and args.aq_gamma_modulation_q24_csv is None
+        and args.aq_final_map_q24_csv is None
         and args.dct8x8_npy is None
         and args.default_ac_strategy_npy is None
         and args.raw_quant_field_npy is None
@@ -3337,6 +3718,7 @@ def main() -> int:
         and args.ytox_map_npy is None
         and args.ytob_map_npy is None
         and args.dct_only_raw_quant_field_npy is None
+        and args.dct_only_aq_map_q24_csv is None
         and args.dct_only_ytox_map_npy is None
         and args.dct_only_ytob_map_npy is None
         and args.dct_only_quantized_ac_npy is None

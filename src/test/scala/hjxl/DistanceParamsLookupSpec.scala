@@ -4,11 +4,16 @@ package hjxl
 
 import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
+import java.nio.file.Files
+import java.nio.file.Path
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
 import scala.sys.process.Process
 
 class DistanceParamsLookupSpec extends AnyFreeSpec with Matchers with ChiselSim {
+  private val libjxlTinyRoot =
+    Path.of(sys.env.getOrElse("LIBJXL_TINY", "/Users/yunhocho/GitHub/libjxl-tiny"))
+
   private def hostDistanceMetadata(): (Int, Seq[Int]) = {
     val script =
       """import json, sys
@@ -45,6 +50,9 @@ class DistanceParamsLookupSpec extends AnyFreeSpec with Matchers with ChiselSim 
           dut.io.supported.expect(true.B)
           dut.io.params.scaleQ16.expect(entry.scaleQ16.U)
           dut.io.params.invQacQ16.expect(entry.invQacQ16.U)
+          dut.io.params.aqScaleQ24.expect(entry.aqScaleQ24.U)
+          dut.io.params.aqDampenQ24.expect(entry.aqDampenQ24.U)
+          dut.io.params.aqInvGlobalScaleQ24.expect(entry.aqInvGlobalScaleQ24.U)
           dut.io.params.quantDc.expect(entry.quantDc.U)
           dut.io.params.xQmMultiplierQ16.expect(entry.xQmMultiplierQ16.U)
           dut.io.params.epfIters.expect(entry.epfIters.U)
@@ -64,6 +72,9 @@ class DistanceParamsLookupSpec extends AnyFreeSpec with Matchers with ChiselSim 
       dut.io.supported.expect(false.B)
       dut.io.params.scaleQ16.expect(fallback.scaleQ16.U)
       dut.io.params.invQacQ16.expect(fallback.invQacQ16.U)
+      dut.io.params.aqScaleQ24.expect(fallback.aqScaleQ24.U)
+      dut.io.params.aqDampenQ24.expect(fallback.aqDampenQ24.U)
+      dut.io.params.aqInvGlobalScaleQ24.expect(fallback.aqInvGlobalScaleQ24.U)
       dut.io.params.quantDc.expect(fallback.quantDc.U)
       dut.io.params.xQmMultiplierQ16.expect(fallback.xQmMultiplierQ16.U)
       dut.io.params.epfIters.expect(fallback.epfIters.U)
@@ -78,5 +89,34 @@ class DistanceParamsLookupSpec extends AnyFreeSpec with Matchers with ChiselSim 
 
     fallback mustBe DistanceParamsLookup.Default.distanceQ8
     supported mustBe DistanceParamsLookup.Entries.map(_.distanceQ8)
+  }
+
+  "adaptive-quantization distance scalars mirror libjxl-tiny" in {
+    assume(Files.isDirectory(libjxlTinyRoot.resolve("python")))
+    val distances = DistanceParamsLookup.Entries.map(_.distanceQ8).mkString(",")
+    val script =
+      s"""import sys
+         |sys.path.insert(0, "tools")
+         |from hjxl_reference import fixed_aq_final_scalars_q24
+         |for q8 in [$distances]:
+         |    print(q8, *fixed_aq_final_scalars_q24(q8 / 256.0))
+         |""".stripMargin
+    val rows = Process(
+      Seq("python3", "-c", script),
+      TestPaths.repoRoot.toFile,
+      "LIBJXL_TINY" -> libjxlTinyRoot.toString,
+      "PYTHONDONTWRITEBYTECODE" -> "1"
+    ).!!.linesIterator.map { line =>
+      val values = line.split(" ").map(_.toLong)
+      values.length mustBe 4
+      values
+    }.toSeq
+
+    for ((entry, values) <- DistanceParamsLookup.Entries.zip(rows)) {
+      values(0) mustBe entry.distanceQ8.toLong
+      values(1) mustBe entry.aqScaleQ24.toLong
+      values(2) mustBe entry.aqDampenQ24.toLong
+      values(3) mustBe entry.aqInvGlobalScaleQ24
+    }
   }
 }

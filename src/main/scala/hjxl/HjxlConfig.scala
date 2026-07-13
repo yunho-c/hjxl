@@ -55,6 +55,7 @@ object TraceStage {
   val AqHfModulation = HjxlAbiGenerated.Trace.Stage.AqHfModulation
   val AqColorModulation = HjxlAbiGenerated.Trace.Stage.AqColorModulation
   val AqGammaModulation = HjxlAbiGenerated.Trace.Stage.AqGammaModulation
+  val AqFinalMap = HjxlAbiGenerated.Trace.Stage.AqFinalMap
 }
 
 object TokenTraceSelect {

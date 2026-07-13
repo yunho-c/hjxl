@@ -1208,6 +1208,11 @@ def main() -> int:
         focused_route=TRACE_STAGES["aq-gamma-modulation"],
     ) != TRACE_STAGES["aq-gamma-modulation"]:
         raise AssertionError("RGB host route selection missed focused AQ gamma modulation")
+    if rgb_active_route(
+        flags=aq_flags,
+        focused_route=TRACE_STAGES["aq-final-map"],
+    ) != TRACE_STAGES["aq-final-map"]:
+        raise AssertionError("RGB host route selection missed focused AQ final map")
 
     with tempfile.TemporaryDirectory(prefix="hjxl-host-metadata-smoke-") as temp_name:
         temp = Path(temp_name)

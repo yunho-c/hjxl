@@ -461,14 +461,73 @@ class FramePreparedAqGammaModulationTraceStage(c: HjxlConfig = HjxlConfig()) ext
   }
 }
 
+class AqHfColorGammaModulationBlockOutput extends Bundle {
+  import AqGammaModulationFixedPoint._
+
+  val valueQ24 = SInt(OutputValueBits.W)
+  val distanceQ8 = UInt(16.W)
+  val fixedRawQuant = UInt(8.W)
+  val blockIndex = UInt(32.W)
+  val blockLast = Bool()
+}
+
+/** Shared cumulative prepared-block pipeline through HF, color, and gamma. */
+class AqHfColorGammaModulationBlockPipeline extends Module {
+  val io = IO(new Bundle {
+    val input = Flipped(Decoupled(new AqModulationBlockInput))
+    val output = Decoupled(new AqHfColorGammaModulationBlockOutput)
+    val busy = Output(Bool())
+  })
+
+  val color = Module(new AqHfColorModulationBlockPipeline)
+  color.io.input <> io.input
+
+  val gamma = Module(new AqGammaModulationBlock)
+  gamma.io.input.bits.seedQ24 := color.io.output.bits.valueQ24
+  gamma.io.input.bits.xybXQ12 := color.io.output.bits.xybXQ12
+  gamma.io.input.bits.xybYQ12 := color.io.output.bits.xybYQ12
+  gamma.io.input.valid := color.io.output.valid
+  color.io.output.ready := gamma.io.input.ready
+
+  val contextValid = RegInit(false.B)
+  val distanceQ8 = RegInit(0.U(16.W))
+  val fixedRawQuant = RegInit(0.U(8.W))
+  val blockIndex = RegInit(0.U(32.W))
+  val blockLast = RegInit(false.B)
+
+  when(gamma.io.input.fire) {
+    assert(!contextValid, "AQ HF/color/gamma pipeline accepted overlapping metadata")
+    contextValid := true.B
+    distanceQ8 := color.io.output.bits.distanceQ8
+    fixedRawQuant := color.io.output.bits.fixedRawQuant
+    blockIndex := color.io.output.bits.blockIndex
+    blockLast := color.io.output.bits.blockLast
+  }
+
+  io.output.valid := gamma.io.output.valid && contextValid
+  io.output.bits.valueQ24 := gamma.io.output.bits
+  io.output.bits.distanceQ8 := distanceQ8
+  io.output.bits.fixedRawQuant := fixedRawQuant
+  io.output.bits.blockIndex := blockIndex
+  io.output.bits.blockLast := blockLast
+  gamma.io.output.ready := io.output.ready && contextValid
+  io.busy := color.io.busy || gamma.io.busy || contextValid
+
+  when(io.output.fire) {
+    assert(contextValid, "AQ HF/color/gamma pipeline emitted without metadata")
+    contextValid := false.B
+    distanceQ8 := 0.U
+    fixedRawQuant := 0.U
+    blockLast := false.B
+  }
+}
+
 /** RGB-connected cumulative AQ path through `_gamma_modulation`.
   *
-  * The shared frame scheduler captures XYB once. The reusable HF/color block
-  * pipeline feeds the 128-cycle gamma walker while retaining block metadata;
-  * no second RGB-to-XYB converter or frame buffer is instantiated.
+  * The shared frame scheduler captures XYB once. The reusable cumulative block
+  * pipeline retains block metadata without a second converter or frame buffer.
   */
 class FrameAqGammaModulationTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
-  import AqGammaModulationFixedPoint._
 
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
@@ -485,41 +544,17 @@ class FrameAqGammaModulationTraceStage(c: HjxlConfig = HjxlConfig()) extends Mod
   scheduler.io.input <> io.input
   io.xybAccepted := scheduler.io.xybAccepted
 
-  val colorPipeline = Module(new AqHfColorModulationBlockPipeline)
-  colorPipeline.io.input <> scheduler.io.block
+  val pipeline = Module(new AqHfColorGammaModulationBlockPipeline)
+  pipeline.io.input <> scheduler.io.block
 
-  val gamma = Module(new AqGammaModulationBlock)
-  gamma.io.input.bits.seedQ24 := colorPipeline.io.output.bits.valueQ24
-  gamma.io.input.bits.xybXQ12 := colorPipeline.io.output.bits.xybXQ12
-  gamma.io.input.bits.xybYQ12 := colorPipeline.io.output.bits.xybYQ12
-  gamma.io.input.valid := colorPipeline.io.output.valid
-  colorPipeline.io.output.ready := gamma.io.input.ready
-
-  val activeBlockValid = RegInit(false.B)
-  val activeBlockIndex = RegInit(0.U(32.W))
-  val activeBlockLast = RegInit(false.B)
-
-  when(gamma.io.input.fire) {
-    assert(!activeBlockValid, "AQ gamma modulation accepted overlapping block metadata")
-    activeBlockValid := true.B
-    activeBlockIndex := colorPipeline.io.output.bits.blockIndex
-    activeBlockLast := colorPipeline.io.output.bits.blockLast
-  }
-
-  io.trace.valid := gamma.io.output.valid
+  io.trace.valid := pipeline.io.output.valid
   io.trace.bits.stage := TraceStage.AqGammaModulation.U
   io.trace.bits.group := 0.U
-  io.trace.bits.index := activeBlockIndex
-  io.trace.bits.value := gamma.io.output.bits
-  gamma.io.output.ready := io.trace.ready
-  io.traceLast := gamma.io.output.valid && activeBlockLast
-  scheduler.io.frameDone := io.trace.fire && activeBlockLast
-  io.busy := scheduler.io.busy || colorPipeline.io.busy || gamma.io.busy || activeBlockValid
+  io.trace.bits.index := pipeline.io.output.bits.blockIndex
+  io.trace.bits.value := pipeline.io.output.bits.valueQ24
+  pipeline.io.output.ready := io.trace.ready
+  io.traceLast := pipeline.io.output.valid && pipeline.io.output.bits.blockLast
+  scheduler.io.frameDone := io.trace.fire && pipeline.io.output.bits.blockLast
+  io.busy := scheduler.io.busy || pipeline.io.busy
   io.overflow := scheduler.io.overflow
-
-  when(io.trace.fire) {
-    assert(activeBlockValid, "AQ gamma modulation emitted without block metadata")
-    activeBlockValid := false.B
-    activeBlockLast := false.B
-  }
 }

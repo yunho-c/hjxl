@@ -124,6 +124,18 @@ object ElaboratePreparedAqRawQuant extends App {
   )
 }
 
+object ElaboratePreparedAqFinalModulation extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FramePreparedAqFinalModulationTraceStage(),
+    args = Array("--target-dir", "generated-prepared-aq-final-modulation"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaborateAqContrast extends App {
   ChiselStage.emitSystemVerilogFile(
     new FrameAqContrastTraceStage(),
@@ -200,6 +212,30 @@ object ElaborateAqGammaModulation extends App {
   ChiselStage.emitSystemVerilogFile(
     new FrameAqGammaModulationTraceStage(),
     args = Array("--target-dir", "generated-aq-gamma-modulation"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAqFinalMap extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqFinalMapTraceStage(),
+    args = Array("--target-dir", "generated-aq-final-map"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAqRawQuant extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqRawQuantTraceStage(),
+    args = Array("--target-dir", "generated-aq-raw-quant"),
     firtoolOpts = Array(
       "-disable-all-randomization",
       "-strip-debug-info",
