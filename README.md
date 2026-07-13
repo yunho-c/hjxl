@@ -49,8 +49,11 @@ record per 64x64 tile. Later stages will replace the fixed quantization
 defaults with adaptive quantization/CFL metadata, entropy coding, and bitstream
 assembly. Standalone fixed-point primitives exist for
 approximate RGB-to-XYB, 1D DCT-8, and the scaled 8x8 DCT block layout used by
-libjxl-tiny. The RGB-to-XYB primitive keeps Q10 mixed-absorbance precision and
-linearly interpolates a Q8 cube-root table before emitting Q12 XYB samples.
+libjxl-tiny. The RGB-to-XYB primitive applies the signed matrix at Q26, clamps
+the biased mixed absorbance at Q24, normalizes it by powers of eight, and
+linearly interpolates a 225-entry Q5 cube-root table before emitting Q12 XYB
+samples. Unlike the original range-limited LUT, this covers the full positive
+signed-16/Q8 RGB domain without saturating absorbance above 2.0.
 `DistanceParamsLookup` provides the first hardware distance-parameter boundary
 for common Q8 distances `64`, `128`, `256`, `512`, `1024`, and `2048`, with
 unsupported values falling back to distance 1 and AXI-Lite status bit 3
@@ -324,6 +327,7 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --pfm build-codex/fixtures/gradient-17x9.pfm \
   --input-padded-npy build-codex/fixtures/gradient-17x9-input-padded.npy \
   --xyb-npy build-codex/fixtures/gradient-17x9-xyb.npy \
+  --xyb-q12-csv build-codex/fixtures/gradient-17x9-xyb-q12.csv \
   --dct8x8-npy build-codex/fixtures/gradient-17x9-dct8x8.npy \
   --default-ac-strategy-npy build-codex/fixtures/gradient-17x9-ac-strategy.npy \
   --raw-quant-field-npy build-codex/fixtures/gradient-17x9-raw-qf.npy \
@@ -361,6 +365,13 @@ Set `LIBJXL_TINY` if the reference checkout is not at
 The fixed all-DCT oracle flags default to raw quant 5 and zero CFL maps;
 `--fixed-ytox` and `--fixed-ytob` may override the scalar Y-to-X/Y-to-B CFL map
 values with signed 8-bit integers.
+
+The `--xyb-q12-csv` artifact first rounds the deterministic RGB fixture to the
+RTL's signed Q8 input contract, then records the padded Q8 pixels beside
+libjxl-tiny's signed Q12 XYB results. `RgbToXybApproxSpec` requires the RTL to
+stay within two Q12 units on gradient, checkerboard, and random fixtures. It
+also checks every normalization boundary and a deterministic 100,000-vector
+full signed-16/Q8 sweep against an independent formula with a five-unit bound.
 
 The `--dct-only-aq-map-q24-csv` artifact records each real all-DCT AQ-map
 sample, the frame-level inverse global AC scale, libjxl-tiny's raw-quant byte,
@@ -1041,6 +1052,12 @@ counts, signed-32 coefficients, block/tile geometry, and optional AC block
 `block_x`/`block_y` and `tile_x`/`tile_y` coordinates before writing simulator
 CSVs. Floating-point JSON numbers are rejected for integer fields instead of
 being truncated.
+
+`RgbToXybApproxSpec` locks the earliest active RGB-path arithmetic boundary.
+It covers normalized cube-root scale transitions, signed-matrix ordering,
+high-dynamic-range inputs that exceeded the former LUT range, independent
+libjxl-tiny Q8-to-Q12 CSV fixtures, ready/valid flow control, and the broad
+signed input sweep described above.
 
 `AdaptiveQuantizationSpec` checks the prepared AQ seam independently of the
 still-software image heuristics. It validates Q24 multiplication, nearest

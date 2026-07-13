@@ -47,26 +47,8 @@ class FrameDctOnlyQuantizeTraceStageSpec extends AnyFreeSpec with Matchers with 
     dut.clock.step()
   }
 
-  private def mixedLutIndex(r: Int, g: Int, b: Int, m0: Int, m1: Int, m2: Int): Int = {
-    val shift = RgbToXybApprox.CoefficientFractionBits +
-      RgbToXybApprox.InputFractionBits - RgbToXybApprox.LutInputFractionBits
-    val sum = r * m0 + g * m1 + b * m2
-    val rounded = (sum + (1 << (shift - 1))) >> shift
-    math.min(RgbToXybApprox.LutInputMax, rounded + RgbToXybApprox.BiasQLut)
-  }
-
-  private def xybExact(r: Int, g: Int, b: Int): (Int, Int, Int) = {
-    val tm0 = RgbToXybApprox.cbrtPlusBiasFromLutIndex(
-      mixedLutIndex(r, g, b, RgbToXybApprox.M00, RgbToXybApprox.M01, RgbToXybApprox.M02)
-    )
-    val tm1 = RgbToXybApprox.cbrtPlusBiasFromLutIndex(
-      mixedLutIndex(r, g, b, RgbToXybApprox.M10, RgbToXybApprox.M11, RgbToXybApprox.M12)
-    )
-    val tm2 = RgbToXybApprox.cbrtPlusBiasFromLutIndex(
-      mixedLutIndex(r, g, b, RgbToXybApprox.M20, RgbToXybApprox.M21, RgbToXybApprox.M22)
-    )
-    ((tm0 - tm1) >> 1, (tm0 + tm1) >> 1, tm2)
-  }
+  private def xybExact(r: Int, g: Int, b: Int): (Int, Int, Int) =
+    RgbToXybApprox.rgbToXybQ12(r, g, b)
 
   private def roundFixedToInt(value: BigInt, fractionBits: Int): BigInt = {
     val half = BigInt(1) << (fractionBits - 1)

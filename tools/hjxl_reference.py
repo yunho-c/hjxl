@@ -102,6 +102,54 @@ def xyb_from_python_port(image):
     return to_xyb(copy_and_pad_image(image))
 
 
+def write_xyb_q12_csv(path: Path, image) -> None:
+    """Write the signed-Q8 RGB to signed-Q12 XYB hardware oracle seam."""
+    np = _load_numpy()
+    rgb_q8 = np.rint(np.asarray(image, dtype=np.float64) * (1 << 8)).astype(np.int64)
+    if np.any(rgb_q8 < np.iinfo(np.int16).min) or np.any(rgb_q8 > np.iinfo(np.int16).max):
+        raise ValueError("RGB Q8 fixture does not fit signed 16-bit")
+    quantized_rgb = (rgb_q8.astype(np.float32) / np.float32(1 << 8)).astype(np.float32)
+    padded_rgb = padded_input_from_python_port(quantized_rgb)
+    xyb_q12 = np.rint(xyb_from_python_port(quantized_rgb) * np.float32(1 << 12)).astype(
+        np.int64
+    )
+    padded_rgb_q8 = np.rint(padded_rgb * np.float32(1 << 8)).astype(np.int64)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "raster",
+                "x",
+                "y",
+                "r_q8",
+                "g_q8",
+                "b_q8",
+                "xyb_x_q12",
+                "xyb_y_q12",
+                "xyb_b_q12",
+            )
+        )
+        raster = 0
+        for y in range(padded_rgb.shape[1]):
+            for x in range(padded_rgb.shape[2]):
+                writer.writerow(
+                    (
+                        raster,
+                        x,
+                        y,
+                        int(padded_rgb_q8[0, y, x]),
+                        int(padded_rgb_q8[1, y, x]),
+                        int(padded_rgb_q8[2, y, x]),
+                        int(xyb_q12[0, y, x]),
+                        int(xyb_q12[1, y, x]),
+                        int(xyb_q12[2, y, x]),
+                    )
+                )
+                raster += 1
+
+
 def dct8x8_from_python_port(image):
     np = _load_numpy()
     root = _libjxl_tiny_root()
@@ -886,6 +934,11 @@ def main() -> int:
     )
     parser.add_argument("--xyb-npy", type=Path, help="optional libjxl-tiny XYB NumPy output path")
     parser.add_argument(
+        "--xyb-q12-csv",
+        type=Path,
+        help="optional signed-Q8 RGB to signed-Q12 XYB fixed-point fixture",
+    )
+    parser.add_argument(
         "--dct8x8-npy",
         type=Path,
         help="optional libjxl-tiny raster 8x8 XYB DCT blocks NumPy output path",
@@ -1185,6 +1238,8 @@ def main() -> int:
         np = _load_numpy()
         args.xyb_npy.parent.mkdir(parents=True, exist_ok=True)
         np.save(args.xyb_npy, xyb_from_python_port(image))
+    if args.xyb_q12_csv is not None:
+        write_xyb_q12_csv(args.xyb_q12_csv, image)
     if args.dct8x8_npy is not None:
         np = _load_numpy()
         args.dct8x8_npy.parent.mkdir(parents=True, exist_ok=True)

@@ -376,7 +376,7 @@ Recommended documentation split:
 | --- | --- | --- | --- |
 | Linear RGB/PFM host input | Implemented for fixtures and stream generation | Parser/packing/manifest tests | General image decode/integration and production driver |
 | Frame padding | Implemented | Exact small-frame and edge-padding tests | Scalable storage architecture |
-| RGB to XYB | Approximate Q8 to Q12 implementation | Directed tolerance tests and frame traces | Accuracy tuning, range analysis, synthesis feasibility, end-to-end parity |
+| RGB to XYB | Range-normalized Q8 to Q12 approximation with signed Q26 matrix and Q24 absorbance | Exact normalization-boundary/model tests, three libjxl-tiny fixture families within two Q12 units, 100k full signed-range sweep within five, and frame/downstream regressions | Synthesis feasibility, broader real-image evidence, and end-to-end parity |
 | 8x8 DCT | Approximate fixed-point implementation | Primitive and frame tests | Timing/resource architecture and rectangular transforms |
 | Adaptive quantization | Final prepared Q24 AQ-map to raw-quant conversion implemented; image heuristics remain software-only | Exact multi-pattern/distance oracle, clamp, ordering, backpressure, control-lifetime, and elaboration tests | Contrast/erosion/HF/color/gamma pipeline, RGB integration, and downstream map plumbing |
 | Chroma from luma | Implemented substantially for **prepared DCT** estimated-CFL paths | Primitive, multi-tile, quantization, metadata, stream, and wrapper tests | RGB-path integration, physical implementation quality, broader fixtures |
@@ -501,6 +501,10 @@ not demonstrated a complete RGB-to-JXL FPGA encoder.
     libjxl-tiny raw-quant bytes exactly across deterministic patterns and
     distances. The upstream image heuristics and pipeline integration remain
     open.
+    **XYB follow-up 2026-07-13:** signed mixing now clamps after bias like the
+    reference, Q24 absorbance plus normalized cube-root interpolation removes
+    the former range saturation, and independent fixtures lock the Q12 error
+    bound. AQ contrast-map integration remains the next earliest mismatch.
 13. **Expand oracle diversity.** Add several deterministic patterns, signed and
     near-saturation values, supported distances, non-block/tile-aligned sizes,
     multi-tile 2D images, and at least a few small real-image crops. Validate
@@ -527,10 +531,10 @@ The following local checks were run against the current working tree:
 - `python3 -m py_compile tools/*.py` — passed.
 - `python3 tools/hjxl_generate_abi.py --check` — passed.
 - `python3 tools/hjxl_host_metadata_smoke.py` — passed.
-- `sbt test` — passed: 56 suites completed, 199 tests succeeded, 0
-  failed/canceled/ignored/pending, in 15 minutes 47 seconds.
-- `HJXL_REPO_ROOT=$PWD ./mill hjxl.compile` and focused Mill execution of
-  `AdaptiveQuantizationSpec`/`AdaptiveQuantizationElaborationSpec` — passed,
+- `sbt test` — passed: 56 suites completed, 202 tests succeeded, 0
+  failed/canceled/ignored/pending, in 7 minutes 53 seconds.
+- `HJXL_REPO_ROOT=$PWD ./mill hjxl.compile` and focused Mill execution of the
+  seven changed RGB-to-XYB/downstream suites — passed: 23 tests succeeded,
   confirming the new source and tests through the second build definition.
 - `sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'` followed by
   `tclsh fpga/vivado/synth.tcl --preflight-only` — passed with the expected 19

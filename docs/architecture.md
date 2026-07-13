@@ -97,10 +97,17 @@ owned by the host tools for now.
 - `tools/hjxl_reference.py --input-padded-npy ...` writes the matching
   libjxl-tiny padded-input oracle artifact for small fixtures.
 - `RgbToXybApprox` is a standalone Q8-to-Q12 fixed-point approximation of
-  libjxl-tiny XYB conversion. It keeps Q10 precision for the mixed absorbance
-  values and linearly interpolates a Q8 cube-root lookup table before emitting
-  Q12 XYB samples. `tools/hjxl_reference.py --xyb-npy ...` writes the
-  floating-point oracle artifact used to tune and validate future stage tests.
+  libjxl-tiny XYB conversion. It performs signed RGB mixing with Q26 matrix
+  coefficients, adds the opsin bias before clamping like the reference, keeps
+  Q24 mixed absorbance, and uses `CbrtApproxQ12` to normalize by powers of
+  eight before interpolating a 225-entry Q5 table over `[1, 8)`. This removes
+  the former source-clamp mismatch and absorbance saturation above roughly 2.0
+  while keeping the cube-root table smaller than the former range-limited
+  table. It remains an approximation, but
+  `tools/hjxl_reference.py --xyb-q12-csv ...` now provides an independent
+  fixed-point oracle: three fixture families stay within two Q12 units, and a
+  deterministic 100,000-vector full signed-16/Q8 model sweep is bounded to five
+  units. `--xyb-npy ...` remains the floating-point array export.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny's
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`; unsupported values currently

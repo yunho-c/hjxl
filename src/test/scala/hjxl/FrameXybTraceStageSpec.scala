@@ -46,7 +46,7 @@ class FrameXybTraceStageSpec extends AnyFreeSpec with Matchers with ChiselSim {
   }
 
   private def reference(rQ8: Int, gQ8: Int, bQ8: Int): Seq[Int] = {
-    def source(v: Int): Double = math.max(v, 0).toDouble / (1 << RgbToXybApprox.InputFractionBits)
+    def source(v: Int): Double = v.toDouble / (1 << RgbToXybApprox.InputFractionBits)
     val r = source(rQ8)
     val g = source(gQ8)
     val b = source(bQ8)

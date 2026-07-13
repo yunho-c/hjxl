@@ -162,9 +162,13 @@ Read these libjxl-tiny files before making architectural changes:
   replication to the next 8x8 block boundary. Its `traceLast` output marks the
   final padded B-channel sample.
 - `RgbToXybApprox` is a standalone Q8 linear-RGB to Q12 XYB approximation. It
-  computes mixed absorbance at Q10 precision, linearly interpolates a Q8
-  cube-root lookup table, then emits Q12 XYB. Treat it as an accuracy-tunable
-  first pass, not final bit-exact libjxl-tiny parity.
+  performs the signed matrix at Q26, adds the opsin bias and then clamps at
+  Q24, and uses `CbrtApproxQ12` to normalize by powers of eight before
+  interpolating a 225-entry Q5 cube-root table over `[1, 8)`. It covers the
+  full positive signed-16/Q8 range without the former absorbance saturation
+  above roughly 2.0. The libjxl-tiny Q8-to-Q12 fixture bound is two Q12 units
+  and the deterministic 100,000-vector full signed-range model bound is five;
+  treat it as a locked approximation, not bit-exact XYB parity.
 - `FrameXybTraceStage` buffers and pads the frame, reuses `RgbToXybApprox`, and
   emits channel-first XYB trace samples. Its `traceLast` output marks the final
   padded B-channel sample. `HjxlCore` selects this stage when
@@ -568,6 +572,10 @@ Read these libjxl-tiny files before making architectural changes:
   padded block. This matches the current all-8x8-DCT transform path but not
   libjxl-tiny's adaptive 16x8/8x16 strategy search. Its `traceLast` output
   marks the final padded raster block's strategy record.
+- `tools/hjxl_reference.py --xyb-q12-csv ...` exports padded signed-Q8 RGB rows
+  beside libjxl-tiny signed-Q12 XYB values. Keep the gradient, checkerboard, and
+  random oracle cases in `RgbToXybApproxSpec` when changing matrix precision,
+  clamping, normalization, or the cube-root table.
 - `tools/hjxl_reference.py` can export real libjxl-tiny quant metadata with
   `--raw-quant-field-npy`, `--libjxl-ac-strategy-npy`, `--ytox-map-npy`, and
   `--ytob-map-npy`. Use those artifacts as the oracle before implementing AQ,
