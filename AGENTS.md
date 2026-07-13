@@ -187,7 +187,9 @@ Read these libjxl-tiny files before making architectural changes:
   disabled; the default token selector preserves the existing AC-strategy
   route. It snapshots geometry on the first accepted beat;
   later control changes apply to the next frame. The global grid deliberately
-  avoids duplicate 4-pixel tile halos. Do not describe this trace as final
+  avoids duplicate 4-pixel tile halos. Its passive `xybAccepted` sideband marks
+  the converted sample stored for each accepted input, allowing later AQ
+  modulation stages to share the same converter. Do not describe this trace as final
   AQ-map or raw-quant parity.
 - `AqFuzzyErosionSample` selects the four smallest positive Q16 values from a
   clamped 3x3 contrast neighborhood and adds the center a second time.
@@ -214,8 +216,17 @@ Read these libjxl-tiny files before making architectural changes:
   preserves raster order/config lifetime and `FrameAqNonlinearMaskTraceStage`
   composes it after the existing contrast/erosion path. Use the focused
   `traceRoute = TraceStage.AqNonlinearMask`; do not call this the final AQ map.
-  Per-block HF/color/gamma and power/scale modulations, final AQ-map assembly,
-  and connection to `FramePreparedAqRawQuantTraceStage` remain separate work.
+- `AqHfModulationBlock` adds libjxl-tiny's first per-block modulation to a
+  signed-Q24 nonlinear seed. It walks one signed-Q12 8x8 Y block over exactly
+  64 cycles, sums all 112 internal horizontal/vertical absolute differences,
+  and applies the Q32 coefficient without a divider or wide combinational edge
+  tree. `FramePreparedAqHfModulationTraceStage` provides the exact prepared
+  boundary. `FrameAqHfModulationTraceStage` stores the accepted-XYB tap from the
+  shared upstream converter, applies right/bottom edge replication, and emits
+  raster `TraceStage.AqHfModulation` rows. Use the focused
+  `traceRoute = TraceStage.AqHfModulation`; do not call this the final AQ map.
+  Per-block color/gamma and power/scale modulations, final AQ-map assembly, and
+  connection to `FramePreparedAqRawQuantTraceStage` remain separate work.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive. It should be reused for
   the future 8x8 transform stage instead of writing a separate transform shape
   from scratch.
@@ -332,9 +343,9 @@ Read these libjxl-tiny files before making architectural changes:
   prepared AQ value per padded raster block, snapshots frame geometry and scale
   on the first accepted block, and emits backpressure-safe `RawQuantField`
   traces with `traceLast`. It is a real fixed-point AQ seam, not a full AQ
-  implementation: contrast, erosion, HF/color/gamma modulation, and AQ-map
-  generation remain software-only, and this stage is not wired into the RGB or
-  prepared-token tops.
+  implementation: the focused RGB path reaches the HF term, but color/gamma
+  modulation and final AQ-map generation remain software-only, and this stage
+  is not wired into the RGB or prepared-token tops.
 - `FrameCflMapTraceStage` emits fixed scalar Y-to-X or Y-to-B CFL values, one
   record per 64x64 tile. It is available through focused `HjxlCore` routes
   `TraceStage.YtoxMap` and `TraceStage.YtobMap`; do not describe it as
@@ -440,7 +451,7 @@ Read these libjxl-tiny files before making architectural changes:
   `tools/hjxl_compare_tokens.py` fixed-oracle comparison, plus packed
   `AqContrast` stage/index/value fields and final TLAST for the selected AQ
   route plus the focused `AqFuzzyErosion`, `AqStrategyMask`, and signed
-  `AqNonlinearMask` block/TLAST routes.
+  `AqNonlinearMask` and `AqHfModulation` block/TLAST routes.
 - Use `sbt 'runMain hjxl.ElaborateAxiLiteStream'` for the default AXI-Lite
   controlled stream wrapper and
   `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
@@ -624,6 +635,11 @@ Read these libjxl-tiny files before making architectural changes:
   generated directory out of git. The evaluator shares a sequential divider,
   but the upstream register grids and remaining AQ arithmetic still require
   physical feasibility work.
+- Use `sbt 'runMain hjxl.ElaborateAqHfModulation'` to generate the composed RGB
+  HF-modulation top. It writes `generated-aq-hf-modulation/`; keep the generated
+  directory out of git. The HF block is a 64-cycle sequential edge walker and
+  the composed top must contain exactly one `RgbToXybApprox`, but its full-frame
+  register storage still requires physical feasibility work.
 - `FrameCflMapTraceStage` emits fixed scalar CFL map traces for focused Y-to-X
   and Y-to-B routes. It establishes the per-64x64-tile trace shape used by
   libjxl-tiny metadata for RGB-input fixed-map routes; prepared-DCT
@@ -661,6 +677,13 @@ Read these libjxl-tiny files before making architectural changes:
   stitched 64x64 tile calls. Keep directed/random fixed-model and exact-
   latency checks, signed backpressure, five RGB families, 65x1 crossing, and
   65x65 tiled order in `AqNonlinearMaskSpec`.
+- `tools/hjxl_reference.py --aq-hf-modulation-q24-csv ...` exports native,
+  Q12-rounded, and signed-Q8-input cumulative signed-Q24 seeds after the Y HF
+  term. It independently reconstructs the float32 edge order, checks the real
+  private `_hf_modulation`, and proves full-frame equality with stitched 64x64
+  calls. Keep exact 64-cycle/model/backpressure checks, five RGB families,
+  65x1 crossing, 65x65 order, and single-converter elaboration in
+  `AqHfModulationSpec`/`AqHfModulationElaborationSpec`.
 - `tools/hjxl_reference.py` can export real libjxl-tiny quant metadata with
   `--raw-quant-field-npy`, `--libjxl-ac-strategy-npy`, `--ytox-map-npy`, and
   `--ytob-map-npy`. Use those artifacts as the oracle before implementing AQ,
@@ -1111,7 +1134,8 @@ Read these libjxl-tiny files before making architectural changes:
   tokenization selects the AQ contrast grid in the all-route core, the fuzzy
   erosion grid when `traceRoute = TraceStage.AqFuzzyErosion`, and the strategy
   mask when `traceRoute = TraceStage.AqStrategyMask`, or the signed modulation
-  seed when `traceRoute = TraceStage.AqNonlinearMask`; `enableQuant` alone
+  seed when `traceRoute = TraceStage.AqNonlinearMask`, or that seed after Y HF
+  modulation when `traceRoute = TraceStage.AqHfModulation`; `enableQuant` alone
   selects fixed AC strategy metadata. Do not describe it as an encoder yet;
   these are traceable pipeline slices.
 

@@ -39,7 +39,8 @@ contract is intentionally simple:
   emit the next AQ intermediate, and `TraceStage.AqStrategyMask` continues to
   the mask consumed by strategy scoring. The parallel focused
   `TraceStage.AqNonlinearMask` route emits the signed-Q24 `_compute_mask`
-  modulation seed. The full AC-token route is only instantiated when the core
+  modulation seed; `TraceStage.AqHfModulation` continues through the first
+  8x8-block Y-detail term. The full AC-token route is only instantiated when the core
   is elaborated with `traceRoute = TraceStage.AcTokens`.
 - `RgbPixel` carries fixed-point linear RGB samples and image coordinates.
 - `StageTrace` carries a stage id, group id, element index, and value.
@@ -100,7 +101,9 @@ owned by the host tools for now.
   emits the erosion-derived block grid and a focused `TraceStage.AqStrategyMask`
   build emits its reciprocal strategy mask. A focused
   `TraceStage.AqNonlinearMask` build emits the separate signed-Q24 log-domain
-  seed that starts final AQ-map modulation. The default selector still routes
+  seed that starts final AQ-map modulation, while a focused
+  `TraceStage.AqHfModulation` build emits that seed after the internal Y-edge
+  term. The default selector still routes
   fixed AC strategy.
   The optional compile-time `traceRoute` constructor argument restricts
   elaboration to one route for focused simulation while keeping the same public
@@ -172,9 +175,19 @@ owned by the host tools for now.
   frame contract and `FrameAqNonlinearMaskTraceStage` composes it after the
   existing RGB contrast/erosion path. The oracle independently reconstructs
   the float32 private function, checks full-frame versus stitched 64x64 calls,
-  and supplies the fixed model. HF/color/gamma additions, power/scale, final AQ
-  map assembly, and the prepared raw-quant conversion connection remain
-  downstream.
+  and supplies the fixed model.
+- `AqHfModulationBlock` consumes one signed-Q24 nonlinear seed plus one 8x8
+  signed-Q12 Y block. It visits one pixel per cycle, accumulates the 112
+  internal horizontal/vertical absolute differences, and subtracts their Q32-
+  coefficient-weighted magnitude after an exact 64-cycle latency. The prepared
+  frame stage provides raster/config/backpressure semantics.
+  `FrameAqHfModulationTraceStage` captures the passive accepted-XYB tap exposed
+  by the existing contrast stage, so the composed RGB path shares one
+  `RgbToXybApprox` instance. It buffers that Y plane, edge-replicates partial
+  blocks, and emits signed-Q24 `AqHfModulation` rows. The oracle independently
+  reconstructs the private float32 function and proves full-frame equality
+  with stitched 64x64 calls. Color/gamma additions, power/scale, final AQ map
+  assembly, and the prepared raw-quant conversion connection remain downstream.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny's
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`; unsupported values currently
@@ -319,8 +332,8 @@ wrappers.
   8x8 raster block, snapshots frame geometry and inverse scale on the first
   accepted block, buffers one trace beat for ready/valid stability, and emits
   `RawQuantField` traces with `traceLast` on the final block. This stage moves
-  only the final AQ-map conversion into RTL: contrast measurement, fuzzy
-  erosion, HF/color/gamma modulation, and AQ-map production remain host work,
+  only the final AQ-map conversion into RTL: the RGB path now reaches the HF
+  term, but color/gamma modulation and final AQ-map production remain host work,
   and the stage is not yet integrated into the RGB or prepared-token tops.
 - `FrameCflMapTraceStage` emits the current fixed scalar CFL maps for a padded
   frame: one Y-to-X or Y-to-B value per 64x64 tile. `HjxlCore` exposes these as
@@ -475,10 +488,12 @@ wrappers.
   or `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
   full-AC-token controlled shell.
 - `ElaborateAqContrast`, `ElaborateAqFuzzyErosion`,
-  `ElaborateAqStrategyMask`, and `ElaborateAqNonlinearMask` generate standalone
+  `ElaborateAqStrategyMask`, `ElaborateAqNonlinearMask`, and
+  `ElaborateAqHfModulation` generate standalone
   RGB AQ diagnostic tops in
   `generated-aq-contrast/`, `generated-aq-fuzzy-erosion/`, and
-  `generated-aq-strategy-mask/`, and `generated-aq-nonlinear-mask/`. Their
+  `generated-aq-strategy-mask/`, `generated-aq-nonlinear-mask/`, and
+  `generated-aq-hf-modulation/`. Their
   elaboration specs guard the composed RGB/prepared module boundaries and
   trace/status ports; the strategy-mask and nonlinear-mask specs also reject
   division operators in their sequential arithmetic modules.
@@ -622,9 +637,10 @@ wrappers.
   `tools/hjxl_trace_tokens.py` metadata-grid extraction and
   `tools/hjxl_compare_tokens.py` fixed-oracle comparison, and checks packed
   `AqContrast` stage/index/value fields with final TLAST plus the focused
-  `AqFuzzyErosion`, `AqStrategyMask`, and signed `AqNonlinearMask` block/TLAST
-  paths. Full AC-token TLAST alignment is covered at the token-stage and frame-
-  scheduler levels because the focused AXI AC-token simulation is expensive.
+  `AqFuzzyErosion`, `AqStrategyMask`, signed `AqNonlinearMask`, and signed
+  `AqHfModulation` block/TLAST paths. Full AC-token TLAST alignment is covered
+  at the token-stage and frame-scheduler levels because the focused AXI AC-token
+  simulation is expensive.
 - `HjxlAxiStreamElaborationSpec` guards the generated stream-shell port surface
   and checks that the focused AC-token stream top includes the full AC-token
   scheduler while the default stream top omits it.
@@ -642,7 +658,7 @@ wrappers.
   DC/strategy/metadata/AC trace stream.
 - `PreparedTokenElaborationSpec` guards the generated trace port surface for
   prepared DC, AC-metadata, AC, and combined token tops.
-- Full frame-level quantized-block parity remains open: HF/color/gamma and
+- Full frame-level quantized-block parity remains open: color/gamma and
   power/scale AQ modulation, final AQ-map assembly and AQ/CFL map plumbing,
   distance parameter generation, dynamic reciprocal scaling, rectangular
   strategy scheduling, and RGB-path comparison against
@@ -681,7 +697,7 @@ wrappers.
   libjxl-tiny's reference raw-quant bytes and the same fixed-point conversion
   computed in software. Use it as the exact oracle for
   `FramePreparedAqRawQuantTraceStage`; it does not imply that the upstream
-  erosion output is connected through the remaining HF/color/gamma/mask
+  HF output is connected through the remaining color/gamma/power/scale
   modulations to this final conversion seam.
 - `tools/hjxl_reference.py --dct-only-quantized-ac-npy ...`,
   `--dct-only-num-nonzeros-npy ...`, `--dct-only-num-nonzeros-map-npy ...`, and

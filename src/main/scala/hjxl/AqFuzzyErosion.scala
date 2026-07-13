@@ -266,6 +266,7 @@ class FrameAqFuzzyErosionTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
+    val xybAccepted = Output(Valid(new XybPixel(c)))
     val trace = Decoupled(new StageTrace(c))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
@@ -284,6 +285,7 @@ class FrameAqFuzzyErosionTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   contrast.io.input.bits := io.input.bits
   contrast.io.input.valid := io.input.valid && !contrastDone
   io.input.ready := contrast.io.input.ready && !contrastDone
+  io.xybAccepted := contrast.io.xybAccepted
 
   erosion.io.config := activeConfig
   erosion.io.input.valid := contrast.io.trace.valid

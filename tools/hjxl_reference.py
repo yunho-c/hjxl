@@ -359,6 +359,78 @@ def fixed_aq_nonlinear_mask_q24(fuzzy_erosion_q16: int) -> int:
     return result
 
 
+def aq_hf_modulation_from_xyb(xyb, nonlinear_mask):
+    """Add libjxl-tiny's per-block Y high-frequency term to AQ seeds."""
+    np = _load_numpy()
+    source = np.asarray(xyb, dtype=np.float32)
+    seeds = np.asarray(nonlinear_mask, dtype=np.float32)
+    if source.ndim != 3 or source.shape[0] != 3:
+        raise ValueError("expected channel-first XYB image with shape (3, y, x)")
+    if source.shape[1] % 8 or source.shape[2] % 8:
+        raise ValueError("AQ HF modulation input dimensions must be multiples of eight")
+    expected_shape = (source.shape[1] // 8, source.shape[2] // 8)
+    if seeds.shape != expected_shape:
+        raise ValueError(
+            f"AQ HF modulation seeds must have shape {expected_shape}, got {seeds.shape}"
+        )
+
+    multiplier = np.float32(-2.0052193233688884 / 112.0)
+    output = np.empty_like(seeds)
+    for block_y in range(expected_shape[0]):
+        for block_x in range(expected_shape[1]):
+            total = np.float32(0.0)
+            pixel_y0 = block_y * 8
+            pixel_x0 = block_x * 8
+            for local_y in range(8):
+                y = pixel_y0 + local_y
+                for local_x in range(8):
+                    x = pixel_x0 + local_x
+                    if local_x != 7:
+                        total = np.float32(
+                            total
+                            + abs(np.float32(source[1, y, x] - source[1, y, x + 1]))
+                        )
+                    if local_y != 7:
+                        total = np.float32(
+                            total
+                            + abs(np.float32(source[1, y, x] - source[1, y + 1, x]))
+                        )
+            output[block_y, block_x] = np.float32(
+                np.float32(total * multiplier) + seeds[block_y, block_x]
+            )
+    return output
+
+
+def fixed_aq_hf_modulation_q24(seed_q24: int, xyb_y_q12) -> int:
+    """Apply the HJXL Q32 HF coefficient to one prepared Q12 Y block."""
+    np = _load_numpy()
+    if seed_q24 < SIGNED_INT32_MIN or seed_q24 > SIGNED_INT32_MAX:
+        raise ValueError("AQ HF modulation seed must fit signed 32-bit Q24")
+    samples = np.asarray(xyb_y_q12)
+    if samples.shape != (8, 8):
+        raise ValueError(f"AQ HF modulation Y block must have shape (8, 8), got {samples.shape}")
+    if not np.issubdtype(samples.dtype, np.integer):
+        raise ValueError("AQ HF modulation Y block must contain integer Q12 samples")
+    if np.any(samples < SIGNED_INT32_MIN) or np.any(samples > SIGNED_INT32_MAX):
+        raise ValueError("AQ HF modulation Y samples must fit signed 32-bit Q12")
+
+    total_q12 = 0
+    for local_y in range(8):
+        for local_x in range(8):
+            center = int(samples[local_y, local_x])
+            if local_x != 7:
+                total_q12 += abs(center - int(samples[local_y, local_x + 1]))
+            if local_y != 7:
+                total_q12 += abs(center - int(samples[local_y + 1, local_x]))
+
+    multiplier_q32 = 76895992
+    product_shift = 20
+    magnitude_q24 = (
+        total_q12 * multiplier_q32 + (1 << (product_shift - 1))
+    ) >> product_shift
+    return max(SIGNED_INT32_MIN, min(SIGNED_INT32_MAX, seed_q24 - magnitude_q24))
+
+
 def capture_aq_nonlinear_mask_from_xyb(
     xyb,
     block_x0: int = 0,
@@ -408,6 +480,55 @@ def capture_aq_nonlinear_mask_from_xyb(
     return np.asarray(captured, dtype=np.float32).reshape(block_height, block_width)
 
 
+def capture_aq_hf_modulation_from_xyb(
+    xyb,
+    block_x0: int = 0,
+    block_y0: int = 0,
+    block_width: int | None = None,
+    block_height: int | None = None,
+):
+    """Capture real `_hf_modulation` outputs from one reference AQ rectangle."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny import adaptive_quantization  # pylint: disable=import-outside-toplevel
+
+    source = np.asarray(xyb, dtype=np.float32)
+    if block_width is None:
+        block_width = source.shape[2] // 8 - block_x0
+    if block_height is None:
+        block_height = source.shape[1] // 8 - block_y0
+
+    captured = []
+    original_hf_modulation = adaptive_quantization._hf_modulation
+
+    def capture_hf_modulation(xyb_y, block_x, block_y, out_val):
+        result = original_hf_modulation(xyb_y, block_x, block_y, out_val)
+        captured.append(result)
+        return result
+
+    adaptive_quantization._hf_modulation = capture_hf_modulation
+    try:
+        adaptive_quantization.compute_adaptive_quantization(
+            source,
+            distance=1.0,
+            block_x0=block_x0,
+            block_y0=block_y0,
+            block_width=block_width,
+            block_height=block_height,
+        )
+    finally:
+        adaptive_quantization._hf_modulation = original_hf_modulation
+
+    expected_count = block_width * block_height
+    if len(captured) != expected_count:
+        raise RuntimeError(
+            f"libjxl-tiny AQ captured {len(captured)} HF-modulation values; "
+            f"expected {expected_count}"
+        )
+    return np.asarray(captured, dtype=np.float32).reshape(block_height, block_width)
+
+
 def tiled_aq_nonlinear_mask_from_xyb(xyb):
     """Stitch `_compute_mask` outputs from encoder-shaped 64x64 AQ calls."""
     np = _load_numpy()
@@ -424,6 +545,31 @@ def tiled_aq_nonlinear_mask_from_xyb(xyb):
                 block_y0 : block_y0 + block_height,
                 block_x0 : block_x0 + block_width,
             ] = capture_aq_nonlinear_mask_from_xyb(
+                source,
+                block_x0=block_x0,
+                block_y0=block_y0,
+                block_width=block_width,
+                block_height=block_height,
+            )
+    return output
+
+
+def tiled_aq_hf_modulation_from_xyb(xyb):
+    """Stitch HF-modulated AQ seeds from encoder-shaped 64x64 AQ calls."""
+    np = _load_numpy()
+    source = np.asarray(xyb, dtype=np.float32)
+    y_blocks = source.shape[1] // 8
+    x_blocks = source.shape[2] // 8
+    tile_blocks = 8
+    output = np.empty((y_blocks, x_blocks), dtype=np.float32)
+    for block_y0 in range(0, y_blocks, tile_blocks):
+        block_height = min(tile_blocks, y_blocks - block_y0)
+        for block_x0 in range(0, x_blocks, tile_blocks):
+            block_width = min(tile_blocks, x_blocks - block_x0)
+            output[
+                block_y0 : block_y0 + block_height,
+                block_x0 : block_x0 + block_width,
+            ] = capture_aq_hf_modulation_from_xyb(
                 source,
                 block_x0=block_x0,
                 block_y0=block_y0,
@@ -786,6 +932,185 @@ def write_aq_nonlinear_mask_q24_csv(path: Path, image) -> None:
                         int(fixed_reference_q24[block_y, block_x]),
                         int(quantized_erosion_q16[block_y, block_x]),
                         int(quantized_reference_q24[block_y, block_x]),
+                    )
+                )
+                block += 1
+
+
+def write_aq_hf_modulation_q24_csv(path: Path, image) -> None:
+    """Write the cumulative signed-Q24 AQ seed after Y HF modulation."""
+    np = _load_numpy()
+    xyb = xyb_from_python_port(image)
+    pre_erosion = aq_contrast_pre_erosion_from_xyb(xyb)
+    erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+    nonlinear = aq_nonlinear_mask_from_fuzzy_erosion(erosion)
+    reference = aq_hf_modulation_from_xyb(xyb, nonlinear)
+    captured_reference = capture_aq_hf_modulation_from_xyb(xyb)
+    if not np.array_equal(reference, captured_reference):
+        raise RuntimeError(
+            "AQ HF-modulation reconstruction does not match libjxl-tiny `_hf_modulation`"
+        )
+    tiled_reference = tiled_aq_hf_modulation_from_xyb(xyb)
+    if not np.array_equal(reference, tiled_reference):
+        raise RuntimeError(
+            "full-frame AQ HF modulation does not match encoder-style tiled AQ calls"
+        )
+
+    quantized_xyb_q12 = np.rint(
+        np.asarray(xyb, dtype=np.float64) * (1 << 12)
+    ).astype(np.int64)
+    quantized_xyb = (
+        quantized_xyb_q12.astype(np.float32) / np.float32(1 << 12)
+    ).astype(np.float32)
+    quantized_pre = aq_contrast_pre_erosion_from_xyb(quantized_xyb)
+    quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(quantized_pre)
+    quantized_nonlinear = aq_nonlinear_mask_from_fuzzy_erosion(quantized_erosion)
+    quantized_reference = aq_hf_modulation_from_xyb(
+        quantized_xyb, quantized_nonlinear
+    )
+
+    input_q8 = np.rint(
+        np.asarray(image, dtype=np.float64) * (1 << 8)
+    ).astype(np.int64)
+    input_quantized_rgb = (
+        input_q8.astype(np.float32) / np.float32(1 << 8)
+    ).astype(np.float32)
+    input_quantized_xyb = xyb_from_python_port(input_quantized_rgb)
+    input_quantized_xyb_q12 = np.rint(
+        np.asarray(input_quantized_xyb, dtype=np.float64) * (1 << 12)
+    ).astype(np.int64)
+    input_q8_xyb_q12 = (
+        input_quantized_xyb_q12.astype(np.float32) / np.float32(1 << 12)
+    ).astype(np.float32)
+    input_quantized_pre = aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
+    input_quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(
+        input_quantized_pre
+    )
+    input_quantized_erosion_q16 = np.rint(
+        input_quantized_erosion.astype(np.float64) * (1 << 16)
+    ).astype(np.int64)
+
+    erosion_q16 = np.rint(erosion.astype(np.float64) * (1 << 16)).astype(np.int64)
+    nonlinear_q24 = np.rint(nonlinear.astype(np.float64) * (1 << 24)).astype(np.int64)
+    reference_q24 = np.rint(reference.astype(np.float64) * (1 << 24)).astype(np.int64)
+    xyb_y_q12 = np.rint(
+        np.asarray(xyb[1], dtype=np.float64) * (1 << 12)
+    ).astype(np.int64)
+    fixed_nonlinear_q24 = np.empty(reference_q24.shape, dtype=np.int64)
+    fixed_reference_q24 = np.empty(reference_q24.shape, dtype=np.int64)
+
+    quantized_erosion_q16 = np.rint(
+        quantized_erosion.astype(np.float64) * (1 << 16)
+    ).astype(np.int64)
+    quantized_nonlinear_q24 = np.rint(
+        quantized_nonlinear.astype(np.float64) * (1 << 24)
+    ).astype(np.int64)
+    quantized_reference_q24 = np.rint(
+        quantized_reference.astype(np.float64) * (1 << 24)
+    ).astype(np.int64)
+    fixed_quantized_reference_q24 = np.empty(reference_q24.shape, dtype=np.int64)
+    input_quantized_fixed_nonlinear_q24 = np.empty(
+        reference_q24.shape, dtype=np.int64
+    )
+    input_quantized_fixed_reference_q24 = np.empty(
+        reference_q24.shape, dtype=np.int64
+    )
+
+    for block_y in range(reference_q24.shape[0]):
+        for block_x in range(reference_q24.shape[1]):
+            y0 = block_y * 8
+            x0 = block_x * 8
+            fixed_nonlinear_q24[block_y, block_x] = fixed_aq_nonlinear_mask_q24(
+                int(erosion_q16[block_y, block_x])
+            )
+            fixed_reference_q24[block_y, block_x] = fixed_aq_hf_modulation_q24(
+                int(fixed_nonlinear_q24[block_y, block_x]),
+                xyb_y_q12[y0 : y0 + 8, x0 : x0 + 8],
+            )
+            fixed_quantized_seed_q24 = fixed_aq_nonlinear_mask_q24(
+                int(quantized_erosion_q16[block_y, block_x])
+            )
+            fixed_quantized_reference_q24[block_y, block_x] = (
+                fixed_aq_hf_modulation_q24(
+                    fixed_quantized_seed_q24,
+                    quantized_xyb_q12[1, y0 : y0 + 8, x0 : x0 + 8],
+                )
+            )
+            input_quantized_fixed_nonlinear_q24[block_y, block_x] = (
+                fixed_aq_nonlinear_mask_q24(
+                    int(input_quantized_erosion_q16[block_y, block_x])
+                )
+            )
+            input_quantized_fixed_reference_q24[block_y, block_x] = (
+                fixed_aq_hf_modulation_q24(
+                    int(input_quantized_fixed_nonlinear_q24[block_y, block_x]),
+                    input_quantized_xyb_q12[1, y0 : y0 + 8, x0 : x0 + 8],
+                )
+            )
+
+    for name, values in (
+        ("AQ fuzzy erosion", erosion_q16),
+        ("quantized-XYB AQ fuzzy erosion", quantized_erosion_q16),
+        ("input-Q8 AQ fuzzy erosion", input_quantized_erosion_q16),
+    ):
+        if np.any(values < 0) or np.any(values > SIGNED_INT32_MAX):
+            raise ValueError(f"{name} Q16 fixture does not fit positive signed 32-bit")
+    for name, values in (
+        ("AQ nonlinear mask", nonlinear_q24),
+        ("AQ HF modulation", reference_q24),
+        ("fixed AQ nonlinear mask", fixed_nonlinear_q24),
+        ("fixed AQ HF modulation", fixed_reference_q24),
+        ("quantized-XYB AQ nonlinear mask", quantized_nonlinear_q24),
+        ("quantized-XYB AQ HF modulation", quantized_reference_q24),
+        ("fixed quantized-XYB AQ HF modulation", fixed_quantized_reference_q24),
+        ("input-Q8 fixed AQ nonlinear mask", input_quantized_fixed_nonlinear_q24),
+        ("input-Q8 fixed AQ HF modulation", input_quantized_fixed_reference_q24),
+    ):
+        if np.any(values < SIGNED_INT32_MIN) or np.any(values > SIGNED_INT32_MAX):
+            raise ValueError(f"{name} Q24 fixture does not fit signed 32-bit")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "block",
+                "block_x",
+                "block_y",
+                "fuzzy_erosion_q16",
+                "nonlinear_mask_q24",
+                "hf_modulation_q24",
+                "fixed_nonlinear_mask_q24",
+                "fixed_hf_modulation_q24",
+                "quantized_xyb_fuzzy_erosion_q16",
+                "quantized_xyb_nonlinear_mask_q24",
+                "quantized_xyb_hf_modulation_q24",
+                "fixed_quantized_xyb_hf_modulation_q24",
+                "input_q8_fuzzy_erosion_q16",
+                "input_q8_fixed_nonlinear_mask_q24",
+                "input_q8_fixed_hf_modulation_q24",
+            )
+        )
+        block = 0
+        for block_y in range(reference_q24.shape[0]):
+            for block_x in range(reference_q24.shape[1]):
+                writer.writerow(
+                    (
+                        block,
+                        block_x,
+                        block_y,
+                        int(erosion_q16[block_y, block_x]),
+                        int(nonlinear_q24[block_y, block_x]),
+                        int(reference_q24[block_y, block_x]),
+                        int(fixed_nonlinear_q24[block_y, block_x]),
+                        int(fixed_reference_q24[block_y, block_x]),
+                        int(quantized_erosion_q16[block_y, block_x]),
+                        int(quantized_nonlinear_q24[block_y, block_x]),
+                        int(quantized_reference_q24[block_y, block_x]),
+                        int(fixed_quantized_reference_q24[block_y, block_x]),
+                        int(input_quantized_erosion_q16[block_y, block_x]),
+                        int(input_quantized_fixed_nonlinear_q24[block_y, block_x]),
+                        int(input_quantized_fixed_reference_q24[block_y, block_x]),
                     )
                 )
                 block += 1
@@ -1600,6 +1925,11 @@ def main() -> int:
         help="optional signed-Q24 `_compute_mask` AQ modulation-seed fixture",
     )
     parser.add_argument(
+        "--aq-hf-modulation-q24-csv",
+        type=Path,
+        help="optional signed-Q24 AQ seed after per-block Y HF modulation",
+    )
+    parser.add_argument(
         "--dct8x8-npy",
         type=Path,
         help="optional libjxl-tiny raster 8x8 XYB DCT blocks NumPy output path",
@@ -1909,6 +2239,8 @@ def main() -> int:
         write_aq_strategy_mask_q16_csv(args.aq_strategy_mask_q16_csv, image)
     if args.aq_nonlinear_mask_q24_csv is not None:
         write_aq_nonlinear_mask_q24_csv(args.aq_nonlinear_mask_q24_csv, image)
+    if args.aq_hf_modulation_q24_csv is not None:
+        write_aq_hf_modulation_q24_csv(args.aq_hf_modulation_q24_csv, image)
     if args.dct8x8_npy is not None:
         np = _load_numpy()
         args.dct8x8_npy.parent.mkdir(parents=True, exist_ok=True)

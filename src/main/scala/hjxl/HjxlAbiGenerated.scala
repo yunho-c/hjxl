@@ -91,6 +91,7 @@ object HjxlAbiGenerated {
       val AqFuzzyErosion = 14
       val AqStrategyMask = 15
       val AqNonlinearMask = 16
+      val AqHfModulation = 17
     }
   }
 
@@ -104,8 +105,8 @@ object HjxlAbiGenerated {
   object Discovery {
     val Identity = 1212831820L
     val AbiMajor = 1
-    val AbiMinor = 4
-    val AbiVersion = 65540L
+    val AbiMinor = 5
+    val AbiVersion = 65541L
     val BuildId = 539363090L
 
     object CapabilityBit {

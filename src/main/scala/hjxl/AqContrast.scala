@@ -317,6 +317,7 @@ class FrameAqContrastTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
+    val xybAccepted = Output(Valid(new XybPixel(c)))
     val trace = Decoupled(new StageTrace(c))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
@@ -368,6 +369,8 @@ class FrameAqContrastTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   converter.io.input.valid := io.input.valid && canReceive
   converter.io.output.ready := canReceive
   io.input.ready := converter.io.input.ready && canReceive
+  io.xybAccepted.valid := converter.io.output.fire
+  io.xybAccepted.bits := converter.io.output.bits
 
   val cellBaseX = (currentCellX << log2Ceil(cellDim))(widthBits - 1, 0)
   val cellBaseY = (currentCellY << log2Ceil(cellDim))(heightBits - 1, 0)

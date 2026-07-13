@@ -362,6 +362,7 @@ class FrameAqNonlinearMaskTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
+    val xybAccepted = Output(Valid(new XybPixel(c)))
     val trace = Decoupled(new StageTrace(c))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
@@ -380,6 +381,7 @@ class FrameAqNonlinearMaskTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
   fuzzyErosion.io.input.bits := io.input.bits
   fuzzyErosion.io.input.valid := io.input.valid && !fuzzyErosionDone
   io.input.ready := fuzzyErosion.io.input.ready && !fuzzyErosionDone
+  io.xybAccepted := fuzzyErosion.io.xybAccepted
 
   nonlinearMask.io.config := activeConfig
   nonlinearMask.io.input.valid := fuzzyErosion.io.trace.valid
