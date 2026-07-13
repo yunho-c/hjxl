@@ -244,6 +244,42 @@ object ElaborateAqRawQuant extends App {
   )
 }
 
+object ElaborateAqDctOnlyQuantize extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqDctOnlyQuantizeTraceStage(),
+    args = Array("--target-dir", "generated-aq-dct-only-quantize"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAqDctOnlyAcMetadataTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqDctOnlyAcMetadataTokenTraceStage(),
+    args = Array("--target-dir", "generated-aq-dct-only-ac-metadata-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAqDctOnlyQuantizeTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqDctOnlyQuantizeTokenTraceStage(),
+    args = Array("--target-dir", "generated-aq-dct-only-quantize-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaboratePreparedDctOnlyQuantizeTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedDctOnlyQuantizeTokenTraceStage(),

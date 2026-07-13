@@ -82,7 +82,11 @@ class AqModulationBlockInput extends Bundle {
 
   val seedQ24 = SInt(SeedValueBits.W)
   val distanceQ8 = UInt(16.W)
+  val fixedPointScale = UInt(16.W)
+  val fixedInvQacQ16 = UInt(32.W)
   val fixedRawQuant = UInt(8.W)
+  val fixedYtox = SInt(8.W)
+  val fixedYtob = SInt(8.W)
   val blockIndex = UInt(32.W)
   val blockLast = Bool()
   val xybXQ12 = Vec(SamplesPerBlock, SInt(XybValueBits.W))
@@ -365,7 +369,11 @@ class FrameAqModulationBlockStage(
 
   io.block.bits.seedQ24 := nonlinear.io.trace.bits.value
   io.block.bits.distanceQ8 := latchedConfig.distanceQ8
+  io.block.bits.fixedPointScale := latchedConfig.fixedPointScale
+  io.block.bits.fixedInvQacQ16 := latchedConfig.fixedInvQacQ16
   io.block.bits.fixedRawQuant := latchedConfig.fixedRawQuant
+  io.block.bits.fixedYtox := latchedConfig.fixedYtox
+  io.block.bits.fixedYtob := latchedConfig.fixedYtob
   io.block.bits.blockIndex := nonlinear.io.trace.bits.index
   io.block.bits.blockLast := nonlinear.io.traceLast
   for (sample <- 0 until SamplesPerBlock) {

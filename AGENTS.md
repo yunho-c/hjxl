@@ -252,9 +252,9 @@ Read these libjxl-tiny files before making architectural changes:
   `fast_pow2f` table with explicit exponent saturation; the latter applies the
   Q24 distance scale, high-distance damping, base-level add, and unsigned
   saturation. `FrameAqFinalMapPipeline` shares one completed cumulative chain
-  between `FrameAqFinalMapTraceStage` and `FrameAqRawQuantTraceStage`, applies
-  the distance-1 fallback before color/final arithmetic, and retains the
-  inverse global scale for raw-quant conversion. `TraceStage.AqFinalMap` is the
+  between final-map, raw-quant, DCT-quantization, and token consumers, applies
+  the distance-1 fallback before color/final arithmetic, and retains the X/Y/B
+  Q12 block plus all quantization scalars. `TraceStage.AqFinalMap` is the
   completed unsigned-Q24 diagnostic seam.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive. It should be reused for
   the future 8x8 transform stage instead of writing a separate transform shape
@@ -376,12 +376,32 @@ Read these libjxl-tiny files before making architectural changes:
   traces with `traceLast`. It remains the narrow prepared arithmetic seam; the
   RGB final-map pipeline now feeds the same converter directly. Prepared-token
   scheduling still consumes host-prepared raw quant metadata.
+- `AdaptiveInvQacQ16` is the 33-cycle restoring divider for adaptive
+  quantization's per-block reciprocal AC scale. It emits nearest
+  `round(2^32 / (scaleQ16 * rawQuant))`, saturates a zero divisor, holds output
+  stable under backpressure, and must elaborate without a division operator.
+  `FrameAqDctOnlyBlockStage` combines the completed AQ map/raw byte, one retained
+  Q12 X/Y/B block, three `Dct8x8Approx` instances, the dynamic reciprocal, and
+  distance-derived DC/QM parameters into the structured prepared-quantizer
+  contract. Nonzero `fixedRawQuant` bypasses the divider result and uses the
+  caller's matching `fixedInvQacQ16`; zero recomputes the reciprocal even when
+  `fixedPointScale` overrides the lookup scale.
+- `FrameAqDctOnlyQuantizeTraceStage` is the current `HjxlCore` RGB quantized
+  route. It reuses `FramePreparedDctOnlyQuantizeTraceStage` at Q12 and emits
+  adaptive `QuantizedAc`, `QuantDc`, and `NumNonzeros` records.
+  `FrameAqDctOnlyAcMetadataTokenTraceStage` is the current core AC-metadata
+  route; it forwards adaptive raw quant and fixed scalar CFL directly into the
+  prepared metadata scheduler and deliberately omits DCT/reciprocal hardware.
+  `FrameAqDctOnlyQuantizeTokenTraceStage` is the standalone combined RGB path
+  for DC, all-DCT strategy, adaptive metadata, and AC logical traces. Do not
+  describe these as full RGB parity: XYB/DCT remain approximate, CFL remains
+  scalar, and rectangular strategy search is absent.
 - `FrameCflMapTraceStage` emits fixed scalar Y-to-X or Y-to-B CFL values, one
   record per 64x64 tile. It is available through focused `HjxlCore` routes
   `TraceStage.YtoxMap` and `TraceStage.YtobMap`; do not describe it as
   chroma-from-luma parity.
-- `FrameDctOnlyQuantizeTraceStage` is the current frame-level quant trace
-  scheduler. It buffers/pads RGB, computes approximate XYB and DCT per raster
+- `FrameDctOnlyQuantizeTraceStage` is the retained fixed frame-level quant
+  diagnostic. It buffers/pads RGB, computes approximate XYB and DCT per raster
   8x8 block, then emits 192 `QuantizedAc`, three `QuantDc`, and three
   `NumNonzeros` records per block. It intentionally still uses one global
   adjusted raw quant value and scalar fixed CFL multipliers, but it now consumes
@@ -695,6 +715,16 @@ Read these libjxl-tiny files before making architectural changes:
   final exponent and scale/dampen datapaths contain no runtime divider, but the
   fractional lookup table, multipliers, and full-frame storage still need
   physical feasibility evidence.
+- Use `sbt 'runMain hjxl.ElaborateAqDctOnlyQuantize'` for adaptive RGB
+  quantized traces, `sbt 'runMain hjxl.ElaborateAqDctOnlyAcMetadataTokens'` for
+  the lightweight adaptive metadata path, and
+  `sbt 'runMain hjxl.ElaborateAqDctOnlyQuantizeTokens'` for the combined
+  adaptive logical-token path. They write
+  `generated-aq-dct-only-quantize/`,
+  `generated-aq-dct-only-ac-metadata-tokens/`, and
+  `generated-aq-dct-only-quantize-tokens/`; keep all three out of git. The
+  quant/token hierarchies must contain one RGB-to-XYB converter and three DCTs;
+  metadata must contain one converter and no DCT/reciprocal hardware.
 - `FrameCflMapTraceStage` emits fixed scalar CFL map traces for focused Y-to-X
   and Y-to-B routes. It establishes the per-64x64-tile trace shape used by
   libjxl-tiny metadata for RGB-input fixed-map routes; prepared-DCT
@@ -1185,10 +1215,10 @@ Read these libjxl-tiny files before making architectural changes:
   metadata path with horizontal 72x8, vertical 8x72, and two-dimensional 72x72
   tile grids. Keep the 72x72 case when changing CFL-map prediction; it is the
   focused regression for the northwest tile-neighbor branch.
-- `HjxlCore` currently exposes padded-input, XYB, raw-DCT, fixed-parameter
-  quantized-DCT, fixed-parameter DC-token, fixed AC-metadata-token, or default
-  AC-strategy, AQ-contrast, focused AQ-fuzzy-erosion, and focused AQ-strategy-
-  mask trace streams.
+- `HjxlCore` currently exposes padded-input, XYB, raw-DCT, adaptive-raw-quant
+  quantized-DCT, fixed-parameter DC-token, adaptive-raw-quant/fixed-CFL
+  AC-metadata-token, or default AC-strategy, AQ-contrast, focused
+  AQ-fuzzy-erosion, and focused AQ-strategy-mask trace streams.
   `FrameConfig.tokenSelect` chooses
   `Dc`, `AcMetadata`, or `AcTokens` for token routes; the reserved
   `AqContrast` value selects the RGB contrast extension when XYB and
@@ -1209,10 +1239,11 @@ Read these libjxl-tiny files before making architectural changes:
   the heavy full-AC-token scheduler while `traceRoute = TraceStage.AcTokens`
   includes it behind the normal core IO.
   `enableDct && enableQuant && enableTokenize && tokenSelect=Dc` selects the
-  DC-token frame trace; `enableDct && enableQuant` selects the quantized-DCT
-  frame trace; `enableDct` alone selects raw DCT;
-  `enableQuant && enableTokenize && tokenSelect=AcMetadata` selects AC metadata
-  tokens; `enableXyb && enableQuant && tokenSelect=AqContrast` without DCT or
+  DC-token frame trace; `enableDct && enableQuant` selects the adaptive-
+  raw-quant DCT frame trace; `enableDct` alone selects raw DCT;
+  `enableQuant && enableTokenize && tokenSelect=AcMetadata` selects adaptive
+  raw-quant AC metadata with fixed scalar CFL; `enableXyb && enableQuant &&
+  tokenSelect=AqContrast` without DCT or
   tokenization selects the AQ contrast grid in the all-route core, the fuzzy
   erosion grid when `traceRoute = TraceStage.AqFuzzyErosion`, and the strategy
   mask when `traceRoute = TraceStage.AqStrategyMask`, or the signed modulation

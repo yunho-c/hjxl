@@ -14,7 +14,13 @@ import chisel3.util._
   * directly into the dedicated frame schedulers that own those stores, avoiding
   * duplicate frame arrays before emission in libjxl-tiny order.
   */
-class FramePreparedDctOnlyQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FramePreparedDctOnlyQuantizeTokenTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBitsOverride: Option[Int] = None
+) extends Module {
+  private val activeCoefficientFractionBits =
+    coefficientFractionBitsOverride.getOrElse(c.preparedDctCoefficientFractionBits)
+  require(activeCoefficientFractionBits > 0, "coefficientFractionBits must be positive")
   private val blockDim = HjxlConstants.BlockDim
   private val maxXBlocks = c.maxFrameWidth / blockDim
   private val maxYBlocks = c.maxFrameHeight / blockDim
@@ -67,7 +73,7 @@ class FramePreparedDctOnlyQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig()) 
       activeConfig.xsize > c.maxFrameWidth.U || activeConfig.ysize > c.maxFrameHeight.U ||
       nextXBlocks > maxXBlocks.U || nextYBlocks > maxYBlocks.U
 
-  val quantizer = Module(new DctOnlyQuantizeBlock(c, c.preparedDctCoefficientFractionBits))
+  val quantizer = Module(new DctOnlyQuantizeBlock(c, activeCoefficientFractionBits))
   quantizer.io.input.valid :=
     io.input.valid && state === receiving && !configOutOfRange && receivedBlocks < activeTotalBlocks
   quantizer.io.input.bits := io.input.bits

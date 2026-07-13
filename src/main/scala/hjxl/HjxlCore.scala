@@ -48,10 +48,10 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   val rawQuantTrace = if (includeRawQuant) Some(Module(new FrameRawQuantFieldTraceStage(c))) else None
   val ytoxTrace = if (includeYtoxMap) Some(Module(new FrameCflMapTraceStage(c, TraceStage.YtoxMap))) else None
   val ytobTrace = if (includeYtobMap) Some(Module(new FrameCflMapTraceStage(c, TraceStage.YtobMap))) else None
-  val quantTrace = if (includeQuant) Some(Module(new FrameDctOnlyQuantizeTraceStage(c))) else None
+  val quantTrace = if (includeQuant) Some(Module(new FrameAqDctOnlyQuantizeTraceStage(c))) else None
   val dcTokenTrace = if (includeDcToken) Some(Module(new FrameDctOnlyDcTokenTraceStage(c))) else None
   val acMetadataTokenTrace =
-    if (includeAcMetadataToken) Some(Module(new FrameDctOnlyAcMetadataTokenTraceStage(c))) else None
+    if (includeAcMetadataToken) Some(Module(new FrameAqDctOnlyAcMetadataTokenTraceStage(c))) else None
   val acTokenTrace = if (includeAcToken) Some(Module(new FrameDctOnlyAcTokenTraceStage(c))) else None
   val acStrategyTrace = if (includeAcStrategy) Some(Module(new FrameAcStrategyTraceStage(c))) else None
   val aqContrastTrace = if (includeAqContrast) Some(Module(new FrameAqContrastTraceStage(c))) else None

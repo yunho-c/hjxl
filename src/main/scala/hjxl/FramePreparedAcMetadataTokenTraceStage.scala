@@ -65,6 +65,9 @@ class FramePreparedAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) exten
   private def tileIndex(value: UInt): UInt =
     value(tileIndexBits - 1, 0)
 
+  private def rawQuantAt(value: UInt): UInt =
+    if (maxBlocks == 1) rawQuant(0) else rawQuant(blockIndex(value))
+
   private def ytoxAt(value: UInt): SInt =
     if (maxTiles == 1) ytox(0) else ytox(tileIndex(value))
 
@@ -126,12 +129,12 @@ class FramePreparedAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) exten
   )
   val cflResidual = currentCfl - DcTokenize.clampedGradient(northCfl, westCfl, northwestCfl)
 
-  val rawQuantCurrent = rawQuant(blockIndex(quantOrdinal))
+  val rawQuantCurrent = rawQuantAt(quantOrdinal)
   val quantCurrent = Cat(0.U(1.W), rawQuantCurrent - 1.U).asSInt
   val quantLeftValue = Mux(
     quantOrdinal === 0.U,
     Tokenize.DctStrategyCode.U,
-    rawQuant(blockIndex(quantOrdinal - 1.U)) - 1.U
+    rawQuantAt(quantOrdinal - 1.U) - 1.U
   )
   val quantResidual = quantCurrent - Cat(0.U(1.W), quantLeftValue).asSInt
 
@@ -164,7 +167,11 @@ class FramePreparedAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig()) exten
     received := 0.U
     state := receiving
   }.elsewhen(io.input.fire) {
-    rawQuant(blockIndex(received)) := io.input.bits.rawQuant
+    if (maxBlocks == 1) {
+      rawQuant(0) := io.input.bits.rawQuant
+    } else {
+      rawQuant(blockIndex(received)) := io.input.bits.rawQuant
+    }
     if (maxTiles == 1) {
       ytox(0) := io.input.bits.ytox
       ytob(0) := io.input.bits.ytob

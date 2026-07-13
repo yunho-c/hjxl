@@ -13,7 +13,7 @@ board-proven FPGA encoder.
 | Area | Current state |
 | --- | --- |
 | Strongest validated boundary | Host-prepared, all-DCT coefficients through quantization and logical token traces, followed by host-side codestream assembly |
-| RGB-input pipeline | Frame padding, approximate XYB/DCT, fixed quantization metadata, and selected token routes; adaptive quantization and full RGB-path CFL/strategy parity remain incomplete |
+| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization through quantized traces and AC metadata, plus a standalone combined logical-token path; RGB-path CFL estimation and rectangular-strategy parity remain incomplete |
 | Hardware output | Trace/token records; entropy optimization and final JPEG XL bitstream assembly remain host software responsibilities |
 | Near-term FPGA top | `HjxlKv260PreparedDctTop`, the direct prepared-DCT variant, is frozen as the first synthesis and bring-up target |
 | Physical validation | Chisel simulation and generated SystemVerilog are covered; Vivado synthesis, timing closure, resource use, bitstream generation, and KV260 execution have not been demonstrated |
@@ -28,11 +28,12 @@ baseline.
 Current RTL status: the top-level buffers a small RGB frame and emits one of
 several trace streams: libjxl-tiny-compatible `input_padded`, padded
 channel-first XYB when only `enableXyb` is set, raster 8x8-block raw scaled-DCT
-coefficients when `enableDct` is set, fixed-parameter DCT-only quantized block
-records when `enableDct && enableQuant` are set, DC residual tokens when
+coefficients when `enableDct` is set, adaptive-raw-quant DCT-only block records
+when `enableDct && enableQuant` are set, DC residual tokens when
 `enableDct && enableQuant && enableTokenize && tokenSelect=Dc` are set, fixed
-AC-metadata tokens when `enableQuant && enableTokenize &&
-tokenSelect=AcMetadata` are set, or the current all-DCT AC strategy map when
+scalar-CFL AC-metadata tokens carrying the adaptive raw-quant field when
+`enableQuant && enableTokenize && tokenSelect=AcMetadata` are set, or the
+current all-DCT AC strategy map when
 only `enableQuant` is set. When `enableXyb && enableQuant` are set without DCT
 or tokenization and `tokenSelect=AqContrast`, the RGB core emits the first
 image-dependent adaptive-quantization seam: global quarter-resolution
@@ -88,17 +89,29 @@ next stage; `AqGammaModulationBlock` alternates red- and green-derived inverse
 ratio lookups over 128 cycles, averages them in Q20, applies a normalized Q20
 `fast_log2f` approximation, and emits cumulative signed-Q24
 `AqGammaModulation` traces. `AqHfColorGammaModulationBlockPipeline` retains the
-remaining distance/block metadata; `AqFastExpQ24` uses normalized fractional
+X/Y/B block plus the remaining distance/configuration metadata;
+`AqFastExpQ24` uses normalized fractional
 `fast_pow2f` interpolation, and `AqFinalModulationBlock` applies Q24
 scale/dampen/add arithmetic to emit `AqFinalMap`. `FrameAqFinalMapPipeline`
-shares that completed chain between the final-map trace and real
-`RawQuantField` conversion without repeating RGB-to-XYB or frame storage.
+shares that completed chain between the final-map trace, real `RawQuantField`
+conversion, and downstream DCT quantization without repeating RGB-to-XYB or
+frame storage. `FrameAqDctOnlyBlockStage` converts each completed AQ block to
+one structured Q12 all-DCT record, computing a matching per-block inverse AC
+scale with the 33-cycle `AdaptiveInvQacQ16` restoring divider. Nonzero
+`fixedRawQuant` retains the explicit byte/`fixedInvQacQ16` experiment contract;
+zero selects adaptive raw quant and ignores the fixed reciprocal.
+`FrameAqDctOnlyQuantizeTraceStage` feeds those records through the exact
+prepared quantizer for `QuantizedAc`/`QuantDc`/`NumNonzeros` output.
+`FrameAqDctOnlyAcMetadataTokenTraceStage` uses a lighter final-map-to-metadata
+path that deliberately omits DCT and reciprocal hardware.
+`FrameAqDctOnlyQuantizeTokenTraceStage` is the standalone combined RGB path for
+DC, all-DCT strategy, adaptive AC-metadata, and AC logical token traces.
 Focused
 `TraceStage.YtoxMap` and
 `TraceStage.YtobMap` routes emit the current fixed scalar CFL tile maps, one
-record per 64x64 tile. Later stages will replace the fixed quantization
-defaults with adaptive quantization/CFL metadata, entropy coding, and bitstream
-assembly. Standalone fixed-point primitives exist for
+record per 64x64 tile. Later stages still need RGB-derived CFL maps,
+rectangular strategies, entropy coding, and bitstream assembly. Standalone
+fixed-point primitives exist for
 approximate RGB-to-XYB, 1D DCT-8, and the scaled 8x8 DCT block layout used by
 libjxl-tiny. The RGB-to-XYB primitive applies the signed matrix at Q26, clamps
 the biased mixed absorbance at Q24, normalizes it by powers of eight, and
@@ -108,9 +121,10 @@ signed-16/Q8 RGB domain without saturating absorbance above 2.0.
 `DistanceParamsLookup` provides the first hardware distance-parameter boundary
 for common Q8 distances `64`, `128`, `256`, `512`, `1024`, and `2048`, with
 unsupported values falling back to distance 1 and AXI-Lite status bit 3
-reporting that fallback. The fixed DCT-only quant/token frame schedulers use
-those distance-derived AC/DC scalar parameters, including the fixed raw-quant-5
-AC reciprocal. The same lookup now carries the exact Q24 AQ scale, damping, and
+reporting that fallback. RGB adaptive quantization now uses the lookup's AC/DC
+scalars and recomputes the inverse AC scale for each adaptive raw-quant byte;
+the retained fixed schedulers still use the raw-quant-5 reciprocal. The same
+lookup carries the exact Q24 AQ scale, damping, and
 inverse global AC scale, so unsupported distances fall back consistently across
 the whole final AQ path. `fixedPointScale` plus
 `fixedInvQacQ16` remain AC-scale overrides for trace experiments. `fixedRawQuant`
@@ -162,7 +176,8 @@ emits frame-shaped `QuantizedAc`, `QuantDc`, and `NumNonzeros` traces with
 `traceLast` on the final prepared quantization record. The
 prepared-DCT frame boundary uses Q16 DCT coefficients by default so its CFL and
 quantization path can match libjxl-tiny's float reference on the oracle fixture;
-the RGB-input DCT path still emits Q12 coefficients.
+the new RGB adaptive handoff explicitly reuses the same prepared schedulers at
+Q12.
 `FramePreparedDctOnlyQuantizeTokenTraceStage` bridges the same prepared-DCT
 input boundary directly into fixed all-DCT logical token traces by internally
 retaining DC values for plane reordering while streaming quantized AC/nonzero
@@ -174,9 +189,10 @@ trace beat, so generated prepared-token RTL has a concrete frame delimiter for
 host capture.
 Standalone prepared DC, AC-metadata, and AC-token tops also expose `traceLast`,
 and `PreparedTokenElaborationSpec` checks that generated trace port surface.
-`FrameDctOnlyQuantizeTraceStage` schedules padded raster blocks through that
-path with fixed distance-1 quantization defaults so future token stages have a
-frame-shaped trace source before full AQ/CFL hardware is available.
+`FrameDctOnlyQuantizeTraceStage` remains as a focused fixed-parameter diagnostic.
+The `HjxlCore` quantized route now selects
+`FrameAqDctOnlyQuantizeTraceStage`, while the standalone combined adaptive
+token wrapper reuses the exact prepared token schedulers downstream.
 `FrameDctOnlyDcTokenTraceStage` emits the first logical token stream: DC
 predictor contexts and packed residuals in libjxl-tiny Y/X/B plane order, with
 `traceLast` on the final DC token.
@@ -322,6 +338,9 @@ sbt 'runMain hjxl.ElaborateAqColorModulation'
 sbt 'runMain hjxl.ElaborateAqGammaModulation'
 sbt 'runMain hjxl.ElaborateAqFinalMap'
 sbt 'runMain hjxl.ElaborateAqRawQuant'
+sbt 'runMain hjxl.ElaborateAqDctOnlyQuantize'
+sbt 'runMain hjxl.ElaborateAqDctOnlyAcMetadataTokens'
+sbt 'runMain hjxl.ElaborateAqDctOnlyQuantizeTokens'
 sbt 'runMain hjxl.ElaboratePreparedAqFinalModulation'
 sbt 'runMain hjxl.ElaboratePreparedAqRawQuant'
 ```

@@ -47,13 +47,15 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     dut.io.input.valid.poke(false.B)
   }
 
-  private def waitForTraceValid(dut: HjxlCore): Unit = {
+  private def waitForTraceValid(dut: HjxlCore, maxCycles: Int = 32): Unit = {
     var cycles = 0
-    while (dut.io.trace.valid.peekValue().asBigInt == 0 && cycles < 32) {
+    while (dut.io.trace.valid.peekValue().asBigInt == 0 && cycles < maxCycles) {
       dut.clock.step()
       cycles += 1
     }
-    cycles must be < 32
+    withClue("trace-valid latency") {
+      cycles must be < maxCycles
+    }
   }
 
   private def expectTraceLastOnlyOnFinalBeat(
@@ -436,7 +438,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       waitCycles must be < 800
       dut.io.trace.bits.stage.expect(TraceStage.RawQuantField.U)
       dut.io.trace.bits.index.expect(0.U)
-      dut.io.trace.bits.value.peekValue().asBigInt must be > BigInt(0)
+      dut.io.trace.bits.value.expect(6.S)
       dut.io.traceLast.expect(true.B)
     }
   }
@@ -484,6 +486,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
 
       driveOnePixel(dut)
       dut.io.trace.ready.poke(true.B)
+      waitForTraceValid(dut, maxCycles = 2000)
       dut.io.trace.valid.expect(true.B)
       dut.io.trace.bits.stage.expect(TraceStage.QuantizedAc.U)
       dut.io.trace.bits.index.expect(0.U)
@@ -540,6 +543,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
 
       driveOnePixel(dut)
       dut.io.trace.ready.poke(true.B)
+      waitForTraceValid(dut, maxCycles = 2000)
       dut.io.trace.valid.expect(true.B)
       dut.io.trace.bits.stage.expect(TraceStage.AcMetadataTokens.U)
       dut.io.trace.bits.group.expect(0.U)
@@ -549,7 +553,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       val expectedRemaining = Seq(
         (1, 1, 22, false),
         (2, 10, 0, false),
-        (3, 6, 8, false),
+        (3, 6, 10, false), // raw quant 6 -> residual 5 -> packed signed value 10
         (4, 0, 8, true)
       )
       for ((group, index, value, traceLast) <- expectedRemaining) {

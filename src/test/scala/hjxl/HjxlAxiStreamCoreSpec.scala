@@ -694,6 +694,106 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
+  "HjxlAxiStreamCore packs adaptive RGB quantized traces with final-only TLAST" in {
+    simulate(new HjxlAxiStreamCore(config, traceRoute = TraceStage.QuantizedAc)) { dut =>
+      pokeConfig(dut, width = 1, height = 1)
+      dut.io.config.enableXyb.poke(true.B)
+      dut.io.config.enableDct.poke(true.B)
+      dut.io.config.enableQuant.poke(true.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.io.input.valid.poke(false.B)
+      dut.clock.step()
+
+      drivePixel(dut, rgb(64, 128, 192), last = true)
+      dut.io.input.valid.poke(false.B)
+      dut.io.protocolError.expect(false.B)
+
+      var waitCycles = 0
+      while (!dut.io.trace.valid.peek().litToBoolean && waitCycles < 2000) {
+        dut.clock.step()
+        waitCycles += 1
+      }
+      withClue("adaptive quantized AXI first trace") {
+        waitCycles must be < 2000
+      }
+
+      val firstData = dut.io.trace.bits.data.peekValue().asBigInt
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step(3)
+      dut.io.trace.valid.expect(true.B)
+      dut.io.trace.bits.data.expect(firstData.U)
+      dut.io.trace.bits.last.expect(false.B)
+      dut.io.trace.ready.poke(true.B)
+
+      for (ordinal <- 0 until 198) {
+        dut.io.trace.valid.expect(true.B)
+        val (stage, group, index, _) = unpackTraceData(dut.io.trace.bits.data.peekValue().asBigInt)
+        val expectedStage =
+          if (ordinal < 192) TraceStage.QuantizedAc
+          else if (ordinal < 195) TraceStage.QuantDc
+          else TraceStage.NumNonzeros
+        stage mustBe expectedStage
+        group mustBe 0
+        if (ordinal == 0) index mustBe 0
+        if (ordinal == 197) index mustBe 2
+        dut.io.trace.bits.last.expect((ordinal == 197).B)
+        dut.clock.step()
+      }
+      dut.io.trace.valid.expect(false.B)
+      dut.io.busy.expect(false.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
+  "HjxlAxiStreamCore packs adaptive AC-metadata tokens from the RGB quant field" in {
+    simulate(new HjxlAxiStreamCore(config, traceRoute = TraceStage.AcMetadataTokens)) { dut =>
+      pokeConfig(dut, width = 1, height = 1)
+      dut.io.config.enableXyb.poke(true.B)
+      dut.io.config.enableQuant.poke(true.B)
+      dut.io.config.enableTokenize.poke(true.B)
+      dut.io.config.tokenSelect.poke(TokenTraceSelect.AcMetadata.U)
+      dut.io.config.fixedYtox.poke((-7).S)
+      dut.io.config.fixedYtob.poke(11.S)
+      dut.io.trace.ready.poke(true.B)
+      dut.io.input.valid.poke(false.B)
+      dut.clock.step()
+
+      drivePixel(dut, rgb(64, 128, 192), last = true)
+      dut.io.input.valid.poke(false.B)
+      dut.io.protocolError.expect(false.B)
+
+      var waitCycles = 0
+      while (!dut.io.trace.valid.peek().litToBoolean && waitCycles < 2000) {
+        dut.clock.step()
+        waitCycles += 1
+      }
+      withClue("adaptive AC-metadata AXI first trace") {
+        waitCycles must be < 2000
+      }
+
+      val expected = Seq(
+        (0, 2, 13, false),
+        (1, 1, 22, false),
+        (2, 10, 0, false),
+        (3, 6, 10, false),
+        (4, 0, 8, true)
+      )
+      for ((groupExpected, indexExpected, valueExpected, lastExpected) <- expected) {
+        dut.io.trace.valid.expect(true.B)
+        val (stage, group, index, value) = unpackTraceData(dut.io.trace.bits.data.peekValue().asBigInt)
+        stage mustBe TraceStage.AcMetadataTokens
+        group mustBe groupExpected
+        index mustBe indexExpected
+        value mustBe valueExpected
+        dut.io.trace.bits.last.expect(lastExpected.B)
+        dut.clock.step()
+      }
+      dut.io.trace.valid.expect(false.B)
+      dut.io.busy.expect(false.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
   "HjxlAxiStreamCore metadata trace routes feed host metadata-grid extraction" in {
     requireNumpy()
 

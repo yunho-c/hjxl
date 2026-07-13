@@ -65,13 +65,48 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must include("io_busy")
     text must include("io_overflow")
     text must include("module FrameAqContrastTraceStage")
+    text must include("module FrameAqDctOnlyQuantizeTraceStage")
+    text must include("module FrameAqDctOnlyAcMetadataTokenTraceStage")
+    text must include("module FrameAqDctOnlyBlockStage")
+    text must include("module AdaptiveInvQacQ16")
     text must not include "module FrameDctOnlyAcTokenTraceStage"
-    text must not include "module FrameAqFuzzyErosionTraceStage"
     text must not include "module FrameAqStrategyMaskTraceStage"
-    text must not include "module FrameAqNonlinearMaskTraceStage"
     text must not include "module FrameAqHfModulationTraceStage"
     text must not include "module FrameAqColorModulationTraceStage"
     text must not include "module FrameAqGammaModulationTraceStage"
+  }
+
+  "HjxlCore focused quantized route uses one adaptive block source" in {
+    val files = emittedSystemVerilog(TraceStage.QuantizedAc)
+    val text = combinedText(files)
+    text must include("module HjxlCore")
+    text must include("module FrameAqDctOnlyQuantizeTraceStage")
+    text must include("module FrameAqDctOnlyBlockStage")
+    text must include("module FrameAqFinalMapPipeline")
+    text must include("module AdaptiveInvQacQ16")
+    text must include("module FramePreparedDctOnlyQuantizeTraceStage")
+    text must include("module Dct8x8Approx")
+    text must not include "module FrameDctOnlyQuantizeTraceStage"
+    text must not include "module FrameAqDctOnlyAcMetadataTokenTraceStage"
+    val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r.findAllMatchIn(text).length
+    converterInstances mustBe 1
+    val dctInstances = """Dct8x8Approx\s+\w+\s*\(""".r.findAllMatchIn(text).length
+    dctInstances mustBe 3
+  }
+
+  "HjxlCore focused AC-metadata route avoids DCT and reciprocal hardware" in {
+    val files = emittedSystemVerilog(TraceStage.AcMetadataTokens)
+    val text = combinedText(files)
+    text must include("module HjxlCore")
+    text must include("module FrameAqDctOnlyAcMetadataTokenTraceStage")
+    text must include("module FrameAqFinalMapPipeline")
+    text must include("module AqMapToRawQuant")
+    text must include("module FramePreparedAcMetadataTokenTraceStage")
+    text must not include "module FrameAqDctOnlyBlockStage"
+    text must not include "module AdaptiveInvQacQ16"
+    text must not include "module Dct8x8Approx"
+    val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r.findAllMatchIn(text).length
+    converterInstances mustBe 1
   }
 
   "HjxlCore focused AQ-contrast route elaborates only the image contrast scheduler" in {

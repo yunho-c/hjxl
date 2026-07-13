@@ -308,9 +308,18 @@ class AqFinalMapFrameOutput extends Bundle {
 
   val aqMapQ24 = UInt(ValueBits.W)
   val invGlobalScaleQ24 = UInt(ValueBits.W)
+  val scaleQ16 = UInt(16.W)
+  val fixedInvQacQ16 = UInt(32.W)
   val fixedRawQuant = UInt(8.W)
+  val invDcFactorQ16 = Vec(3, UInt(32.W))
+  val xQmMultiplierQ16 = UInt(32.W)
+  val fixedYtox = SInt(8.W)
+  val fixedYtob = SInt(8.W)
   val blockIndex = UInt(32.W)
   val blockLast = Bool()
+  val xybXQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
+  val xybYQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
+  val xybBQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
 }
 
 /** Shared RGB pipeline from raster pixels through the final per-block AQ map.
@@ -363,25 +372,56 @@ class FrameAqFinalMapPipeline(c: HjxlConfig = HjxlConfig()) extends Module {
 
   val contextValid = RegInit(false.B)
   val invGlobalScaleQ24 = RegInit(0.U(32.W))
+  val scaleQ16 = RegInit(0.U(16.W))
+  val fixedInvQacQ16 = RegInit(0.U(32.W))
   val fixedRawQuant = RegInit(0.U(8.W))
+  val invDcFactorQ16 = Reg(Vec(3, UInt(32.W)))
+  val xQmMultiplierQ16 = RegInit(0.U(32.W))
+  val fixedYtox = RegInit(0.S(8.W))
+  val fixedYtob = RegInit(0.S(8.W))
   val blockIndex = RegInit(0.U(32.W))
   val blockLast = RegInit(false.B)
+  val xybXQ12 = Reg(Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W)))
+  val xybYQ12 = Reg(Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W)))
+  val xybBQ12 = Reg(Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W)))
 
   when(finalModulation.io.input.fire) {
     assert(!contextValid, "AQ final-map pipeline accepted overlapping metadata")
     contextValid := true.B
     invGlobalScaleQ24 := selectedDistance.io.params.aqInvGlobalScaleQ24
+    scaleQ16 := Mux(
+      cumulative.io.output.bits.fixedPointScale === 0.U,
+      selectedDistance.io.params.scaleQ16,
+      cumulative.io.output.bits.fixedPointScale
+    )
+    fixedInvQacQ16 := cumulative.io.output.bits.fixedInvQacQ16
     fixedRawQuant := cumulative.io.output.bits.fixedRawQuant
+    invDcFactorQ16 := selectedDistance.io.params.invDcFactorQ16
+    xQmMultiplierQ16 := selectedDistance.io.params.xQmMultiplierQ16
+    fixedYtox := cumulative.io.output.bits.fixedYtox
+    fixedYtob := cumulative.io.output.bits.fixedYtob
     blockIndex := cumulative.io.output.bits.blockIndex
     blockLast := cumulative.io.output.bits.blockLast
+    xybXQ12 := cumulative.io.output.bits.xybXQ12
+    xybYQ12 := cumulative.io.output.bits.xybYQ12
+    xybBQ12 := cumulative.io.output.bits.xybBQ12
   }
 
   io.output.valid := finalModulation.io.output.valid && contextValid
   io.output.bits.aqMapQ24 := finalModulation.io.output.bits
   io.output.bits.invGlobalScaleQ24 := invGlobalScaleQ24
+  io.output.bits.scaleQ16 := scaleQ16
+  io.output.bits.fixedInvQacQ16 := fixedInvQacQ16
   io.output.bits.fixedRawQuant := fixedRawQuant
+  io.output.bits.invDcFactorQ16 := invDcFactorQ16
+  io.output.bits.xQmMultiplierQ16 := xQmMultiplierQ16
+  io.output.bits.fixedYtox := fixedYtox
+  io.output.bits.fixedYtob := fixedYtob
   io.output.bits.blockIndex := blockIndex
   io.output.bits.blockLast := blockLast
+  io.output.bits.xybXQ12 := xybXQ12
+  io.output.bits.xybYQ12 := xybYQ12
+  io.output.bits.xybBQ12 := xybBQ12
   finalModulation.io.output.ready := io.output.ready && contextValid
   scheduler.io.frameDone := io.output.fire && blockLast
   io.busy := scheduler.io.busy || cumulative.io.busy || finalModulation.io.busy || contextValid
@@ -391,7 +431,12 @@ class FrameAqFinalMapPipeline(c: HjxlConfig = HjxlConfig()) extends Module {
     assert(contextValid, "AQ final-map pipeline emitted without metadata")
     contextValid := false.B
     invGlobalScaleQ24 := 0.U
+    scaleQ16 := 0.U
+    fixedInvQacQ16 := 0.U
     fixedRawQuant := 0.U
+    xQmMultiplierQ16 := 0.U
+    fixedYtox := 0.S
+    fixedYtob := 0.S
     blockLast := false.B
   }
 }

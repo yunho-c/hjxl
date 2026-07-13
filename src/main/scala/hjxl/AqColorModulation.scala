@@ -376,19 +376,24 @@ class AqHfColorModulationBlockOutput extends Bundle {
 
   val valueQ24 = SInt(OutputValueBits.W)
   val distanceQ8 = UInt(16.W)
+  val fixedPointScale = UInt(16.W)
+  val fixedInvQacQ16 = UInt(32.W)
   val fixedRawQuant = UInt(8.W)
+  val fixedYtox = SInt(8.W)
+  val fixedYtob = SInt(8.W)
   val blockIndex = UInt(32.W)
   val blockLast = Bool()
   val xybXQ12 = Vec(SamplesPerBlock, SInt(XybValueBits.W))
   val xybYQ12 = Vec(SamplesPerBlock, SInt(XybValueBits.W))
+  val xybBQ12 = Vec(SamplesPerBlock, SInt(XybValueBits.W))
 }
 
 /** Shared prepared-block pipeline through `_hf_modulation` and
   * `_color_modulation`.
   *
-  * The retained X/Y context is part of the output contract so the cumulative
-  * gamma stage can continue without rereading or reconverting the frame. The B
-  * samples are consumed by color modulation and are not carried farther.
+  * The retained X/Y/B context is part of the output contract so cumulative AQ
+  * and downstream DCT stages can continue without rereading or reconverting
+  * the frame.
   */
 class AqHfColorModulationBlockPipeline extends Module {
   import AqColorModulationFixedPoint._
@@ -417,11 +422,16 @@ class AqHfColorModulationBlockPipeline extends Module {
   val color = Module(new AqColorModulationBlock)
   val outputContextValid = RegInit(false.B)
   val outputDistanceQ8 = RegInit(0.U(16.W))
+  val outputFixedPointScale = RegInit(0.U(16.W))
+  val outputFixedInvQacQ16 = RegInit(0.U(32.W))
   val outputFixedRawQuant = RegInit(0.U(8.W))
+  val outputFixedYtox = RegInit(0.S(8.W))
+  val outputFixedYtob = RegInit(0.S(8.W))
   val outputBlockIndex = RegInit(0.U(32.W))
   val outputBlockLast = RegInit(false.B)
   val outputX = Reg(Vec(SamplesPerBlock, SInt(XybValueBits.W)))
   val outputY = Reg(Vec(SamplesPerBlock, SInt(XybValueBits.W)))
+  val outputB = Reg(Vec(SamplesPerBlock, SInt(XybValueBits.W)))
 
   color.io.input.bits.seedQ24 := hf.io.output.bits
   color.io.input.bits.distanceQ8 := pendingContext.distanceQ8
@@ -435,11 +445,16 @@ class AqHfColorModulationBlockPipeline extends Module {
     assert(pendingContextValid, "AQ HF/color pipeline lost its input context")
     assert(!outputContextValid, "AQ HF/color pipeline accepted overlapping output context")
     outputDistanceQ8 := pendingContext.distanceQ8
+    outputFixedPointScale := pendingContext.fixedPointScale
+    outputFixedInvQacQ16 := pendingContext.fixedInvQacQ16
     outputFixedRawQuant := pendingContext.fixedRawQuant
+    outputFixedYtox := pendingContext.fixedYtox
+    outputFixedYtob := pendingContext.fixedYtob
     outputBlockIndex := pendingContext.blockIndex
     outputBlockLast := pendingContext.blockLast
     outputX := pendingContext.xybXQ12
     outputY := pendingContext.xybYQ12
+    outputB := pendingContext.xybBQ12
     outputContextValid := true.B
     pendingContextValid := false.B
   }
@@ -447,11 +462,16 @@ class AqHfColorModulationBlockPipeline extends Module {
   io.output.valid := color.io.output.valid && outputContextValid
   io.output.bits.valueQ24 := color.io.output.bits
   io.output.bits.distanceQ8 := outputDistanceQ8
+  io.output.bits.fixedPointScale := outputFixedPointScale
+  io.output.bits.fixedInvQacQ16 := outputFixedInvQacQ16
   io.output.bits.fixedRawQuant := outputFixedRawQuant
+  io.output.bits.fixedYtox := outputFixedYtox
+  io.output.bits.fixedYtob := outputFixedYtob
   io.output.bits.blockIndex := outputBlockIndex
   io.output.bits.blockLast := outputBlockLast
   io.output.bits.xybXQ12 := outputX
   io.output.bits.xybYQ12 := outputY
+  io.output.bits.xybBQ12 := outputB
   color.io.output.ready := io.output.ready && outputContextValid
   io.busy := hf.io.busy || color.io.busy || pendingContextValid || outputContextValid
 
@@ -459,7 +479,11 @@ class AqHfColorModulationBlockPipeline extends Module {
     assert(outputContextValid, "AQ HF/color pipeline emitted without output context")
     outputContextValid := false.B
     outputDistanceQ8 := 0.U
+    outputFixedPointScale := 0.U
+    outputFixedInvQacQ16 := 0.U
     outputFixedRawQuant := 0.U
+    outputFixedYtox := 0.S
+    outputFixedYtob := 0.S
     outputBlockLast := false.B
   }
 }

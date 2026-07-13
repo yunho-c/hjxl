@@ -466,9 +466,16 @@ class AqHfColorGammaModulationBlockOutput extends Bundle {
 
   val valueQ24 = SInt(OutputValueBits.W)
   val distanceQ8 = UInt(16.W)
+  val fixedPointScale = UInt(16.W)
+  val fixedInvQacQ16 = UInt(32.W)
   val fixedRawQuant = UInt(8.W)
+  val fixedYtox = SInt(8.W)
+  val fixedYtob = SInt(8.W)
   val blockIndex = UInt(32.W)
   val blockLast = Bool()
+  val xybXQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
+  val xybYQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
+  val xybBQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
 }
 
 /** Shared cumulative prepared-block pipeline through HF, color, and gamma. */
@@ -491,25 +498,46 @@ class AqHfColorGammaModulationBlockPipeline extends Module {
 
   val contextValid = RegInit(false.B)
   val distanceQ8 = RegInit(0.U(16.W))
+  val fixedPointScale = RegInit(0.U(16.W))
+  val fixedInvQacQ16 = RegInit(0.U(32.W))
   val fixedRawQuant = RegInit(0.U(8.W))
+  val fixedYtox = RegInit(0.S(8.W))
+  val fixedYtob = RegInit(0.S(8.W))
   val blockIndex = RegInit(0.U(32.W))
   val blockLast = RegInit(false.B)
+  val xybXQ12 = Reg(Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W)))
+  val xybYQ12 = Reg(Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W)))
+  val xybBQ12 = Reg(Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W)))
 
   when(gamma.io.input.fire) {
     assert(!contextValid, "AQ HF/color/gamma pipeline accepted overlapping metadata")
     contextValid := true.B
     distanceQ8 := color.io.output.bits.distanceQ8
+    fixedPointScale := color.io.output.bits.fixedPointScale
+    fixedInvQacQ16 := color.io.output.bits.fixedInvQacQ16
     fixedRawQuant := color.io.output.bits.fixedRawQuant
+    fixedYtox := color.io.output.bits.fixedYtox
+    fixedYtob := color.io.output.bits.fixedYtob
     blockIndex := color.io.output.bits.blockIndex
     blockLast := color.io.output.bits.blockLast
+    xybXQ12 := color.io.output.bits.xybXQ12
+    xybYQ12 := color.io.output.bits.xybYQ12
+    xybBQ12 := color.io.output.bits.xybBQ12
   }
 
   io.output.valid := gamma.io.output.valid && contextValid
   io.output.bits.valueQ24 := gamma.io.output.bits
   io.output.bits.distanceQ8 := distanceQ8
+  io.output.bits.fixedPointScale := fixedPointScale
+  io.output.bits.fixedInvQacQ16 := fixedInvQacQ16
   io.output.bits.fixedRawQuant := fixedRawQuant
+  io.output.bits.fixedYtox := fixedYtox
+  io.output.bits.fixedYtob := fixedYtob
   io.output.bits.blockIndex := blockIndex
   io.output.bits.blockLast := blockLast
+  io.output.bits.xybXQ12 := xybXQ12
+  io.output.bits.xybYQ12 := xybYQ12
+  io.output.bits.xybBQ12 := xybBQ12
   gamma.io.output.ready := io.output.ready && contextValid
   io.busy := color.io.busy || gamma.io.busy || contextValid
 
@@ -517,7 +545,11 @@ class AqHfColorGammaModulationBlockPipeline extends Module {
     assert(contextValid, "AQ HF/color/gamma pipeline emitted without metadata")
     contextValid := false.B
     distanceQ8 := 0.U
+    fixedPointScale := 0.U
+    fixedInvQacQ16 := 0.U
     fixedRawQuant := 0.U
+    fixedYtox := 0.S
+    fixedYtob := 0.S
     blockLast := false.B
   }
 }

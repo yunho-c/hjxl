@@ -12,7 +12,13 @@ import chisel3.util._
   * parameters are known. Blocks are accepted in raster order and emitted as the
   * same quantized trace records used by downstream token stages.
   */
-class FramePreparedDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FramePreparedDctOnlyQuantizeTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBitsOverride: Option[Int] = None
+) extends Module {
+  private val activeCoefficientFractionBits =
+    coefficientFractionBitsOverride.getOrElse(c.preparedDctCoefficientFractionBits)
+  require(activeCoefficientFractionBits > 0, "coefficientFractionBits must be positive")
   private val blockDim = HjxlConstants.BlockDim
   private val maxXBlocks = c.maxFrameWidth / blockDim
   private val maxYBlocks = c.maxFrameHeight / blockDim
@@ -30,7 +36,7 @@ class FramePreparedDctOnlyQuantizeTraceStage(c: HjxlConfig = HjxlConfig()) exten
     val overflow = Output(Bool())
   })
 
-  val child = Module(new DctOnlyQuantizeTraceStage(c, c.preparedDctCoefficientFractionBits))
+  val child = Module(new DctOnlyQuantizeTraceStage(c, activeCoefficientFractionBits))
   val idle :: active :: Nil = Enum(2)
   val state = RegInit(idle)
   val currentBlock = RegInit(0.U(blockCountBits.W))

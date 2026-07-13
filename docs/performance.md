@@ -97,3 +97,21 @@ direct path now emits as a 1024x96 synchronous memory at default capacity, but
 actual BRAM inference, utilization, and timing still require Vivado. The next
 performance step is that physical evidence plus conversion of the remaining
 frame-scaled stores before setting an end-to-end FPS target.
+
+## Adaptive RGB integration note — 2026-07-13
+
+The RGB adaptive path is functionally connected to quantization and logical
+tokens, but it does not yet have a locked cycle baseline comparable to the
+prepared-DCT table above. Its per-block inverse AC scale is a 33-cycle restoring
+divider, while HF, color, and gamma AQ modulation already use sequential block
+walkers. The quantized and combined-token hierarchies each elaborate one
+RGB-to-XYB converter and three `Dct8x8Approx` instances; the AC-metadata-only
+hierarchy deliberately contains one converter and no DCT or reciprocal module.
+
+Current generated-RTL sizes are 37 files/46,043 lines for adaptive quantized
+traces, 28 files/33,198 lines for adaptive AC metadata, and 45 files/51,960
+lines for the combined token top. These are complexity indicators, not area or
+timing measurements. Before making RGB throughput claims, add a deterministic
+phase/cycle regression for sparse and dense multi-block frames and then obtain
+Vivado utilization and timing evidence; the prepared-DCT numbers must not be
+used as a proxy for this substantially larger hierarchy.
