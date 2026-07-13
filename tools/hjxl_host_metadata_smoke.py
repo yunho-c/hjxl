@@ -1178,6 +1178,11 @@ def main() -> int:
     )
     if rgb_active_route(flags=aq_flags, focused_route=None) != TRACE_STAGES["aq-contrast"]:
         raise AssertionError("RGB host route selection missed the AQ contrast stage")
+    if rgb_active_route(
+        flags=aq_flags,
+        focused_route=TRACE_STAGES["aq-fuzzy-erosion"],
+    ) != TRACE_STAGES["aq-fuzzy-erosion"]:
+        raise AssertionError("RGB host route selection missed focused AQ fuzzy erosion")
 
     with tempfile.TemporaryDirectory(prefix="hjxl-host-metadata-smoke-") as temp_name:
         temp = Path(temp_name)

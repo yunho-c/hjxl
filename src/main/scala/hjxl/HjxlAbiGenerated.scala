@@ -88,6 +88,7 @@ object HjxlAbiGenerated {
       val AcMetadataTokens = 11
       val AcTokens = 12
       val AqContrast = 13
+      val AqFuzzyErosion = 14
     }
   }
 
@@ -101,8 +102,8 @@ object HjxlAbiGenerated {
   object Discovery {
     val Identity = 1212831820L
     val AbiMajor = 1
-    val AbiMinor = 1
-    val AbiVersion = 65537L
+    val AbiMinor = 2
+    val AbiVersion = 65538L
     val BuildId = 539363090L
 
     object CapabilityBit {

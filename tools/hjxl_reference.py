@@ -226,28 +226,81 @@ def aq_contrast_pre_erosion_from_xyb(xyb):
     return cells
 
 
-def write_aq_contrast_q16_csv(path: Path, image) -> None:
-    """Write the first image-dependent AQ contrast seam in signed Q16."""
+def aq_fuzzy_erosion_from_pre_erosion(pre_erosion):
+    """Reconstruct libjxl-tiny fuzzy erosion over a full-frame contrast grid."""
     np = _load_numpy()
-    xyb = xyb_from_python_port(image)
-    reference = aq_contrast_pre_erosion_from_xyb(xyb)
+    source = np.asarray(pre_erosion, dtype=np.float32)
+    if source.ndim != 2 or source.shape[0] % 2 != 0 or source.shape[1] % 2 != 0:
+        raise ValueError("AQ fuzzy-erosion input must be an even two-dimensional grid")
+
+    height, width = source.shape
+    output = np.zeros((height // 2, width // 2), dtype=np.float32)
+    for y in range(height):
+        up = y - 1 if y > 0 else y
+        down = y + 1 if y + 1 < height else y
+        for x in range(width):
+            left = x - 1 if x > 0 else x
+            right = x + 1 if x + 1 < width else x
+            neighborhood = sorted(
+                np.float32(source[neighbor_y, neighbor_x])
+                for neighbor_y in (up, y, down)
+                for neighbor_x in (left, x, right)
+            )
+            value = np.float32(
+                np.float32(0.05)
+                * np.float32(
+                    source[y, x]
+                    + neighborhood[0]
+                    + neighborhood[1]
+                    + neighborhood[2]
+                    + neighborhood[3]
+                )
+            )
+            output_y = y // 2
+            output_x = x // 2
+            if x % 2 == 0 and y % 2 == 0:
+                output[output_y, output_x] = value
+            else:
+                output[output_y, output_x] = np.float32(
+                    output[output_y, output_x] + value
+                )
+    return output
+
+
+def capture_aq_erosion_inputs_from_xyb(xyb):
+    """Capture the actual pre- and post-erosion arrays from the full AQ function."""
+    np = _load_numpy()
     root = _libjxl_tiny_root()
     _add_libjxl_tiny(root)
     from jxl_tiny import adaptive_quantization  # pylint: disable=import-outside-toplevel
 
     captured_pre_erosion = None
+    captured_erosion = None
     original_fuzzy_erosion = adaptive_quantization._fuzzy_erosion
 
     def capture_fuzzy_erosion(pre_erosion, *args, **kwargs):
-        nonlocal captured_pre_erosion
+        nonlocal captured_pre_erosion, captured_erosion
         captured_pre_erosion = np.array(pre_erosion, dtype=np.float32, copy=True)
-        return original_fuzzy_erosion(pre_erosion, *args, **kwargs)
+        result = original_fuzzy_erosion(pre_erosion, *args, **kwargs)
+        captured_erosion = np.array(result, dtype=np.float32, copy=True)
+        return result
 
     adaptive_quantization._fuzzy_erosion = capture_fuzzy_erosion
     try:
         adaptive_quantization.compute_adaptive_quantization(xyb, distance=1.0)
     finally:
         adaptive_quantization._fuzzy_erosion = original_fuzzy_erosion
+    if captured_pre_erosion is None or captured_erosion is None:
+        raise RuntimeError("libjxl-tiny AQ function did not invoke fuzzy erosion")
+    return captured_pre_erosion, captured_erosion
+
+
+def write_aq_contrast_q16_csv(path: Path, image) -> None:
+    """Write the first image-dependent AQ contrast seam in signed Q16."""
+    np = _load_numpy()
+    xyb = xyb_from_python_port(image)
+    reference = aq_contrast_pre_erosion_from_xyb(xyb)
+    captured_pre_erosion, _ = capture_aq_erosion_inputs_from_xyb(xyb)
     if captured_pre_erosion is None or not np.array_equal(reference, captured_pre_erosion):
         raise RuntimeError(
             "AQ contrast reconstruction does not match libjxl-tiny pre_erosion input"
@@ -294,6 +347,66 @@ def write_aq_contrast_q16_csv(path: Path, image) -> None:
                     )
                 )
                 cell += 1
+
+
+def write_aq_fuzzy_erosion_q16_csv(path: Path, image) -> None:
+    """Write libjxl-tiny's erosion-derived per-block AQ intermediate in Q16."""
+    np = _load_numpy()
+    xyb = xyb_from_python_port(image)
+    pre_erosion = aq_contrast_pre_erosion_from_xyb(xyb)
+    reference = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+    captured_pre_erosion, captured_reference = capture_aq_erosion_inputs_from_xyb(xyb)
+    if not np.array_equal(pre_erosion, captured_pre_erosion):
+        raise RuntimeError(
+            "AQ contrast reconstruction does not match libjxl-tiny pre_erosion input"
+        )
+    if not np.array_equal(reference, captured_reference):
+        raise RuntimeError(
+            "AQ fuzzy-erosion reconstruction does not match libjxl-tiny output"
+        )
+
+    quantized_xyb = (
+        np.rint(np.asarray(xyb, dtype=np.float64) * (1 << 12)).astype(np.float32)
+        / np.float32(1 << 12)
+    )
+    quantized_pre_erosion = aq_contrast_pre_erosion_from_xyb(quantized_xyb)
+    quantized_reference = aq_fuzzy_erosion_from_pre_erosion(quantized_pre_erosion)
+    reference_q16 = np.rint(reference.astype(np.float64) * (1 << 16)).astype(np.int64)
+    quantized_reference_q16 = np.rint(
+        quantized_reference.astype(np.float64) * (1 << 16)
+    ).astype(np.int64)
+    if np.any(reference_q16 < 0) or np.any(reference_q16 > np.iinfo(np.int32).max):
+        raise ValueError("AQ fuzzy-erosion Q16 fixture does not fit signed 32-bit")
+    if np.any(quantized_reference_q16 < 0) or np.any(
+        quantized_reference_q16 > np.iinfo(np.int32).max
+    ):
+        raise ValueError("quantized-XYB AQ fuzzy-erosion fixture does not fit signed 32-bit")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "block",
+                "block_x",
+                "block_y",
+                "fuzzy_erosion_q16",
+                "quantized_xyb_fuzzy_erosion_q16",
+            )
+        )
+        block = 0
+        for block_y in range(reference_q16.shape[0]):
+            for block_x in range(reference_q16.shape[1]):
+                writer.writerow(
+                    (
+                        block,
+                        block_x,
+                        block_y,
+                        int(reference_q16[block_y, block_x]),
+                        int(quantized_reference_q16[block_y, block_x]),
+                    )
+                )
+                block += 1
 
 
 def dct8x8_from_python_port(image):
@@ -1090,6 +1203,11 @@ def main() -> int:
         help="optional quarter-resolution AQ pre-erosion Q16 fixture",
     )
     parser.add_argument(
+        "--aq-fuzzy-erosion-q16-csv",
+        type=Path,
+        help="optional block-resolution AQ fuzzy-erosion Q16 fixture",
+    )
+    parser.add_argument(
         "--dct8x8-npy",
         type=Path,
         help="optional libjxl-tiny raster 8x8 XYB DCT blocks NumPy output path",
@@ -1393,6 +1511,8 @@ def main() -> int:
         write_xyb_q12_csv(args.xyb_q12_csv, image)
     if args.aq_contrast_q16_csv is not None:
         write_aq_contrast_q16_csv(args.aq_contrast_q16_csv, image)
+    if args.aq_fuzzy_erosion_q16_csv is not None:
+        write_aq_fuzzy_erosion_q16_csv(args.aq_fuzzy_erosion_q16_csv, image)
     if args.dct8x8_npy is not None:
         np = _load_numpy()
         args.dct8x8_npy.parent.mkdir(parents=True, exist_ok=True)

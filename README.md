@@ -36,8 +36,10 @@ tokenSelect=AcMetadata` are set, or the current all-DCT AC strategy map when
 only `enableQuant` is set. When `enableXyb && enableQuant` are set without DCT
 or tokenization and `tokenSelect=AqContrast`, the RGB core emits the first
 image-dependent adaptive-quantization seam: global quarter-resolution
-`AqContrast` cells corresponding
-to libjxl-tiny's pre-erosion contrast grid. A focused
+`AqContrast` cells corresponding to libjxl-tiny's pre-erosion contrast grid.
+A focused `traceRoute = TraceStage.AqFuzzyErosion` build instead composes that
+stage with the next AQ step and emits one erosion-derived Q16 value per padded
+8x8 block. A focused
 `traceRoute = TraceStage.RawQuantField`
 core can also emit the current fixed raw-quant field, one adjusted raw-quant
 value per padded 8x8 block, so the quant-metadata trace shape exists before
@@ -48,10 +50,13 @@ inverse global AC scale as unsigned Q24 values, and RTL performs the exact
 nearest-integer conversion, `[1, 255]` clamp, raster trace ordering, and frame
 delimiter. `FrameAqContrastTraceStage` now owns the upstream RGB-to-XYB/local-
 contrast pass, using a piecewise Q16 gamma-ratio approximation and integer
-square root before emitting one Q16 value per 4x4 padded-pixel cell. Fuzzy
-erosion and the HF, color, gamma, mask, and final AQ-map plumbing remain open;
-the prepared final-conversion seam is not yet connected downstream of this
-contrast grid. Focused `TraceStage.YtoxMap` and
+square root before emitting one Q16 value per 4x4 padded-pixel cell.
+`AqFuzzyErosionSample`, `FramePreparedAqFuzzyErosionTraceStage`, and
+`FrameAqFuzzyErosionTraceStage` implement the four-minimum 3x3 erosion and 2x2
+cell-to-block reduction, with a one-LSB prepared Q16 seam and the composed RGB
+route. HF, color, gamma, mask, and final AQ-map plumbing remain open; the
+prepared final-conversion seam is not yet connected downstream of the eroded
+grid. Focused `TraceStage.YtoxMap` and
 `TraceStage.YtobMap` routes emit the current fixed scalar CFL tile maps, one
 record per 64x64 tile. Later stages will replace the fixed quantization
 defaults with adaptive quantization/CFL metadata, entropy coding, and bitstream
@@ -262,11 +267,12 @@ Generate the current top-level SystemVerilog:
 sbt 'runMain hjxl.Elaborate'
 ```
 
-Generate the standalone RGB-input AQ contrast trace top and prepared final-AQ
-conversion top:
+Generate the standalone RGB-input AQ contrast, fuzzy-erosion, and prepared
+final-AQ conversion tops:
 
 ```sh
 sbt 'runMain hjxl.ElaborateAqContrast'
+sbt 'runMain hjxl.ElaborateAqFuzzyErosion'
 sbt 'runMain hjxl.ElaboratePreparedAqRawQuant'
 ```
 
@@ -345,6 +351,7 @@ python3 tools/hjxl_reference.py --width 17 --height 9 --pattern gradient \
   --xyb-npy build-codex/fixtures/gradient-17x9-xyb.npy \
   --xyb-q12-csv build-codex/fixtures/gradient-17x9-xyb-q12.csv \
   --aq-contrast-q16-csv build-codex/fixtures/gradient-17x9-aq-contrast-q16.csv \
+  --aq-fuzzy-erosion-q16-csv build-codex/fixtures/gradient-17x9-aq-fuzzy-erosion-q16.csv \
   --dct8x8-npy build-codex/fixtures/gradient-17x9-dct8x8.npy \
   --default-ac-strategy-npy build-codex/fixtures/gradient-17x9-ac-strategy.npy \
   --raw-quant-field-npy build-codex/fixtures/gradient-17x9-raw-qf.npy \
@@ -400,6 +407,15 @@ frame-control lifetime, backpressure, and five RGB fixture families. The
 RGB-connected frame output stays within two percent of the native libjxl-tiny
 cell values; this is an intermediate AQ seam, not a final AQ-map or raw-quant
 parity claim.
+
+The `--aq-fuzzy-erosion-q16-csv` artifact records the block-resolution result
+immediately after fuzzy erosion, from both native and Q12-rounded XYB. Its
+independent reconstruction is checked exactly against the array returned by
+libjxl-tiny's real fuzzy-erosion call. `AqFuzzyErosionSpec` verifies the
+four-minimum neighborhood arithmetic, exact prepared-Q16 traversal within one
+LSB, backpressure/config lifetime, five RGB families within two percent, a
+65x1 RGB tile crossing, and prepared 65x65 input padded to a two-dimensional
+72x72 grid. This remains pre-modulation AQ state, not the final `aq_map`.
 
 The `--dct-only-aq-map-q24-csv` artifact records each real all-DCT AQ-map
 sample, the frame-level inverse global AC scale, libjxl-tiny's raw-quant byte,
@@ -459,9 +475,9 @@ lookup entry. Output trace words are packed as
 `{value,index,group,stage}`, with
 `stage` in the low eight bits. Output `last` is asserted on the final trace
 word for each current route: padded input, XYB, raw DCT, quantized traces, DC
-tokens, AC-metadata tokens, AC strategy, AQ contrast, and the variable-length
-full AC-token route all expose a scheduler `traceLast` sideband that the stream
-wrapper carries to TLAST.
+tokens, AC-metadata tokens, AC strategy, AQ contrast, focused AQ fuzzy erosion,
+and the variable-length full AC-token route all expose a scheduler `traceLast`
+sideband that the stream wrapper carries to TLAST.
 
 Convert a linear RGB PFM into an input stream CSV for `HjxlAxiStreamCore` or
 `HjxlAxiLiteStreamCore` simulation/DMA bring-up:
@@ -486,7 +502,9 @@ using padded-input route defaults unless route flags such as `--enable-xyb` or
 flags; use focused names such as `raw-quant-field`, `ytox-map`, `ytob-map`, or
 `ac-tokens` when generating artifacts for a focused top. An AQ-contrast replay
 uses `--enable-xyb --enable-quant --token-select aq-contrast` and either the
-all-route shell or `--trace-route aq-contrast`. Prepared-DCT manifests
+all-route shell or `--trace-route aq-contrast`; the same runtime flags with
+`--trace-route aq-fuzzy-erosion` select the composed focused erosion build.
+Prepared-DCT manifests
 record `prepared-dct-quantize-token` for the direct prepared stream boundary,
 with no `TraceStage` id. `--manifest-json`
 records the source PFM, image size, stream packing, generated file paths,
@@ -500,7 +518,8 @@ stream CSV, through RTL padded-input trace emission, and back through
 `tools/hjxl_stream_trace.py`. It also covers focused raw-quant and CFL metadata
 trace captures feeding into `tools/hjxl_trace_tokens.py` metadata-grid outputs
 and `tools/hjxl_compare_tokens.py` fixed-oracle comparison. The selected AQ
-route has a packed stage/index/value and final-TLAST regression at this shell.
+contrast and focused fuzzy-erosion routes have packed stage/index/value and
+final-TLAST regressions at this shell.
 `HjxlAxiLiteStreamCoreSpec` covers the same input stream after
 programming the DUT from the generated AXI-Lite CSV.
 
@@ -788,10 +807,10 @@ replay-capture input-stream, trace-layout, and AXI-Lite expectation guards.
 | `0x20` | `fixedYtox` | signed 8-bit scalar Y-to-X CFL override |
 | `0x24` | `fixedYtob` | signed 8-bit scalar Y-to-B CFL override |
 | `0x28` | identity | read-only ASCII `HJXL` magic (`0x484a584c`) |
-| `0x2c` | ABI version | read-only `major << 16 | minor`; currently 1.1 |
+| `0x2c` | ABI version | read-only `major << 16 | minor`; currently 1.2 |
 | `0x30` | capabilities | read-only target capability mask defined in `abi/hjxl_abi.json` |
 | `0x34` | maximum frame geometry | read-only maximum height in bits 31:16 and width in bits 15:0 |
-| `0x38` | active route | read-only trace stage 0–13, direct prepared route 128, or estimated-CFL prepared route 129 |
+| `0x38` | active route | read-only trace stage 0–14, direct prepared route 128, or estimated-CFL prepared route 129 |
 | `0x3c` | build ID | read-only contract build identifier; currently `0x20260712` |
 
 The AXI-Lite wrapper returns OKAY for mapped registers and DECERR for unmapped
@@ -1097,12 +1116,17 @@ global 4x4 cell traversal, output stability under backpressure, first-beat
 frame snapshots, invalid geometry, five libjxl-tiny fixture families, and a
 65x1 cross-tile traversal that exercises the carry-safe 72-pixel padded width.
 
-`AdaptiveQuantizationSpec` checks the prepared AQ seam independently of the
-still-software image heuristics. It validates Q24 multiplication, nearest
-rounding, low/high clamping, exact `RawQuantField` traces from multiple
-libjxl-tiny patterns and distances, output stability under backpressure,
-frame-control snapshots, invalid geometry, and standalone SystemVerilog
-elaboration.
+`AqFuzzyErosionSpec` locks the following AQ boundary. It checks the weighted
+four-minimum primitive, exact prepared-Q16 block output within one LSB, stable
+backpressure and frame snapshots, five RGB oracle families within two percent,
+a 65x1 RGB tile crossing, and two-dimensional 65x65 input padded to 72x72.
+`AqFuzzyErosionElaborationSpec` guards the composed/prepared module surface.
+
+`AdaptiveQuantizationSpec` checks the prepared final-AQ seam independently of
+the still-missing per-block image heuristics. It validates Q24 multiplication,
+nearest rounding, low/high clamping, exact `RawQuantField` traces from multiple
+libjxl-tiny patterns and distances, output stability under backpressure, frame
+control snapshots, invalid geometry, and standalone SystemVerilog elaboration.
 
 `FramePreparedDctOnlyQuantizeTraceStageSpec` checks the prepared-DCT quantizer
 scheduler against libjxl-tiny prepared-block fixtures with exact quantized

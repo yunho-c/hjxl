@@ -490,7 +490,7 @@ def main() -> int:
         "--token-select",
         choices=tuple(TOKEN_SELECT),
         default="dc",
-        help="FrameConfig tokenSelect field for token substreams or the selected AQ contrast route",
+        help="FrameConfig tokenSelect field for token substreams or selected AQ routes",
     )
     parser.add_argument(
         "--trace-route",

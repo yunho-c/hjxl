@@ -136,6 +136,18 @@ object ElaborateAqContrast extends App {
   )
 }
 
+object ElaborateAqFuzzyErosion extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqFuzzyErosionTraceStage(),
+    args = Array("--target-dir", "generated-aq-fuzzy-erosion"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaboratePreparedDctOnlyQuantizeTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedDctOnlyQuantizeTokenTraceStage(),

@@ -34,6 +34,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   private val includeAcToken = traceRoute == TraceStage.AcTokens
   private val includeAcStrategy = includes(TraceStage.AcStrategy)
   private val includeAqContrast = includes(TraceStage.AqContrast)
+  private val includeAqFuzzyErosion = traceRoute == TraceStage.AqFuzzyErosion
 
   val inputTrace = if (includeInput) Some(Module(new FramePadTraceStage(c))) else None
   val xybTrace = if (includeXyb) Some(Module(new FrameXybTraceStage(c))) else None
@@ -48,6 +49,8 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   val acTokenTrace = if (includeAcToken) Some(Module(new FrameDctOnlyAcTokenTraceStage(c))) else None
   val acStrategyTrace = if (includeAcStrategy) Some(Module(new FrameAcStrategyTraceStage(c))) else None
   val aqContrastTrace = if (includeAqContrast) Some(Module(new FrameAqContrastTraceStage(c))) else None
+  val aqFuzzyErosionTrace =
+    if (includeAqFuzzyErosion) Some(Module(new FrameAqFuzzyErosionTraceStage(c))) else None
 
   val useDcTokenTrace =
     if (includeDcToken) {
@@ -86,6 +89,13 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     }
   val useAqContrastTrace =
     if (includeAqContrast) {
+      io.config.enableXyb && io.config.enableQuant && !io.config.enableDct &&
+        !io.config.enableTokenize && io.config.tokenSelect === TokenTraceSelect.AqContrast.U
+    } else {
+      false.B
+    }
+  val useAqFuzzyErosionTrace =
+    if (includeAqFuzzyErosion) {
       io.config.enableXyb && io.config.enableQuant && !io.config.enableDct &&
         !io.config.enableTokenize && io.config.tokenSelect === TokenTraceSelect.AqContrast.U
     } else {
@@ -208,6 +218,12 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     stage.io.input.valid := io.input.valid && useAqContrastTrace
     stage.io.trace.ready := io.trace.ready && useAqContrastTrace
   }
+  aqFuzzyErosionTrace.foreach { stage =>
+    stage.io.config := io.config
+    stage.io.input.bits := io.input.bits
+    stage.io.input.valid := io.input.valid && useAqFuzzyErosionTrace
+    stage.io.trace.ready := io.trace.ready && useAqFuzzyErosionTrace
+  }
 
   val inactiveTrace = WireDefault(0.U.asTypeOf(new StageTrace(c)))
 
@@ -217,6 +233,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.input.ready).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.input.ready).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.input.ready).getOrElse(false.B),
+      useAqFuzzyErosionTrace -> aqFuzzyErosionTrace.map(_.io.input.ready).getOrElse(false.B),
       useAqContrastTrace -> aqContrastTrace.map(_.io.input.ready).getOrElse(false.B),
       useQuantTrace -> quantTrace.map(_.io.input.ready).getOrElse(false.B),
       useDctTrace -> dctTrace.map(_.io.input.ready).getOrElse(false.B),
@@ -233,6 +250,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.trace.valid).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.trace.valid).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.trace.valid).getOrElse(false.B),
+      useAqFuzzyErosionTrace -> aqFuzzyErosionTrace.map(_.io.trace.valid).getOrElse(false.B),
       useAqContrastTrace -> aqContrastTrace.map(_.io.trace.valid).getOrElse(false.B),
       useQuantTrace -> quantTrace.map(_.io.trace.valid).getOrElse(false.B),
       useDctTrace -> dctTrace.map(_.io.trace.valid).getOrElse(false.B),
@@ -249,6 +267,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAcTokenTrace -> acTokenTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
+      useAqFuzzyErosionTrace -> aqFuzzyErosionTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAqContrastTrace -> aqContrastTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useQuantTrace -> quantTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useDctTrace -> dctTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
@@ -272,6 +291,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.traceLast).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.traceLast).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.traceLast).getOrElse(false.B),
+      useAqFuzzyErosionTrace -> aqFuzzyErosionTrace.map(_.io.traceLast).getOrElse(false.B),
       useAqContrastTrace -> aqContrastTrace.map(_.io.traceLast).getOrElse(false.B),
       useAcStrategyTrace -> acStrategyTrace.map(_.io.traceLast).getOrElse(false.B)
     )
@@ -289,6 +309,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.busy).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.busy).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.busy).getOrElse(false.B),
+      useAqFuzzyErosionTrace -> aqFuzzyErosionTrace.map(_.io.busy).getOrElse(false.B),
       useAqContrastTrace -> aqContrastTrace.map(_.io.busy).getOrElse(false.B),
       useAcStrategyTrace -> acStrategyTrace.map(_.io.busy).getOrElse(false.B)
     )
@@ -306,6 +327,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useDcTokenTrace -> dcTokenTrace.map(_.io.overflow).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.overflow).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.overflow).getOrElse(false.B),
+      useAqFuzzyErosionTrace -> aqFuzzyErosionTrace.map(_.io.overflow).getOrElse(false.B),
       useAqContrastTrace -> aqContrastTrace.map(_.io.overflow).getOrElse(false.B),
       useAcStrategyTrace -> acStrategyTrace.map(_.io.overflow).getOrElse(false.B)
     )

@@ -34,9 +34,10 @@ contract is intentionally simple:
 - `FrameConfig` carries image size, distance, fixed-point scale, and feature
   flags. `tokenSelect` chooses `Dc`, `AcMetadata`, or `AcTokens` for token
   traces; the reserved value `AqContrast` selects the RGB contrast extension
-  when XYB and quantization are enabled without DCT/tokenization. The full
-  AC-token route is only instantiated when the core is elaborated with
-  `traceRoute = TraceStage.AcTokens`.
+  when XYB and quantization are enabled without DCT/tokenization. A focused
+  `traceRoute = TraceStage.AqFuzzyErosion` build uses the same runtime flags to
+  emit the next AQ intermediate. The full AC-token route is only instantiated
+  when the core is elaborated with `traceRoute = TraceStage.AcTokens`.
 - `RgbPixel` carries fixed-point linear RGB samples and image coordinates.
 - `StageTrace` carries a stage id, group id, element index, and value.
 - `HjxlCore` is the integration shell where stage modules will be wired.
@@ -92,8 +93,9 @@ owned by the host tools for now.
   or `FrameDctOnlyAcMetadataTokenTraceStage`. When only `enableQuant` is true,
   it routes into `FrameAcStrategyTraceStage`. When XYB and quantization are
   enabled without DCT/tokenization, `tokenSelect=AqContrast` instead routes the
-  global pre-erosion contrast grid; the default selector still routes AC
-  strategy.
+  global pre-erosion contrast grid; a focused `TraceStage.AqFuzzyErosion` build
+  emits the erosion-derived block grid instead. The default selector still
+  routes AC strategy.
   The optional compile-time `traceRoute` constructor argument restricts
   elaboration to one route for focused simulation while keeping the same public
   IO shape. Use it for tests and route-specific experiments; the default
@@ -123,16 +125,28 @@ owned by the host tools for now.
   `trace.index`. The all-route RGB core selects this extension only when
   `enableXyb && enableQuant`, `tokenSelect=AqContrast`, and DCT/tokenization are
   disabled, preserving the previous default-selector AC-strategy route.
-  Keeping a global grid avoids duplicating 4-pixel tile halos;
-  the future fuzzy-erosion scheduler will address neighboring cells per tile.
+  Keeping a global grid avoids duplicating 4-pixel tile halos.
   `tools/hjxl_reference.py --aq-contrast-q16-csv ...` exports the matching
   native-float and Q12-input libjxl-tiny oracle values; the exporter checks its
   native reconstruction exactly against the `pre_erosion` array consumed by
   the full reference AQ function. Five RGB fixture families are bounded to two
   percent at this seam, and a 65x1 regression
   proves that the global cell grid and carry-safe 72-pixel padding cross a
-  64-pixel tile boundary correctly. This is not yet the eroded,
-  per-block-modulated AQ map.
+  64-pixel tile boundary correctly. This is not yet the eroded AQ state.
+- `AqFuzzyErosionSample` forms the center plus four-minimum weighted numerator
+  for one clamped 3x3 Q16 contrast neighborhood. The prepared frame scheduler
+  buffers the global row-major contrast grid, visits the four quarter-resolution
+  cells belonging to each padded 8x8 block, accumulates their numerators, and
+  performs one nearest divide by 20. This retains enough precision for the
+  emitted block value to stay within one Q16 LSB of the native reference.
+  `FrameAqFuzzyErosionTraceStage` composes that prepared scheduler after
+  `FrameAqContrastTraceStage`, reusing the existing RGB-to-XYB and contrast
+  hardware. It is intentionally a focused `TraceStage.AqFuzzyErosion` route;
+  the default all-route core retains `AqContrast` behavior for ABI compatibility.
+  Five RGB families remain within two percent, a 65x1 case crosses the
+  horizontal 64-pixel tile edge, and prepared 65x65 input exercises the full
+  18x18-cell/9x9-block grid padded to 72x72. The HF, color, gamma, mask, and
+  final AQ-map stages remain downstream.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny's
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`; unsupported values currently
@@ -432,6 +446,10 @@ wrappers.
   `sbt 'runMain hjxl.ElaborateAxiLiteStream'` for the default controlled shell
   or `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'` for the focused
   full-AC-token controlled shell.
+- `ElaborateAqContrast` and `ElaborateAqFuzzyErosion` generate standalone RGB
+  AQ diagnostic tops in `generated-aq-contrast/` and
+  `generated-aq-fuzzy-erosion/`. `AqFuzzyErosionElaborationSpec` guards the
+  latter's composed RGB/prepared module boundary and trace/status ports.
 - `ElaboratePreparedDctOnlyQuantize` generates standalone SystemVerilog for the
   prepared-DCT quantization scheduler. Use it when the integration boundary is
   after DCT/AQ/CFL scalar generation but before quantized DC/AC tokenization.
@@ -571,7 +589,8 @@ wrappers.
   raw-quant/CFL metadata route captures through direct
   `tools/hjxl_trace_tokens.py` metadata-grid extraction and
   `tools/hjxl_compare_tokens.py` fixed-oracle comparison, and checks packed
-  `AqContrast` stage/index/value fields with final TLAST. Full AC-token TLAST
+  `AqContrast` stage/index/value fields with final TLAST plus the focused
+  `AqFuzzyErosion` block/TLAST path. Full AC-token TLAST
   alignment is covered at the token-stage and frame-scheduler levels because
   the focused AXI AC-token simulation is expensive.
 - `HjxlAxiStreamElaborationSpec` guards the generated stream-shell port surface
@@ -628,8 +647,9 @@ wrappers.
   all-DCT AQ map and inverse global AC scale as unsigned Q24 values alongside
   libjxl-tiny's reference raw-quant bytes and the same fixed-point conversion
   computed in software. Use it as the exact oracle for
-  `FramePreparedAqRawQuantTraceStage`; it does not imply that the upstream AQ
-  image heuristics exist in RTL.
+  `FramePreparedAqRawQuantTraceStage`; it does not imply that the upstream
+  erosion output is connected through the remaining HF/color/gamma/mask
+  modulations to this final conversion seam.
 - `tools/hjxl_reference.py --dct-only-quantized-ac-npy ...`,
   `--dct-only-num-nonzeros-npy ...`, `--dct-only-num-nonzeros-map-npy ...`, and
   `--dct-only-quant-dc-npy ...` write libjxl-tiny quantization outputs while
