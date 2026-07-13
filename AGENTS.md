@@ -273,6 +273,21 @@ Read these libjxl-tiny files before making architectural changes:
   chooses horizontal on aggregate ties, replaces a rectangle only on a strict
   win, and emits raster `(rawStrategy << 1) | isFirstBlock` values. It does not
   calculate entropy costs or schedule a frame.
+- `AcStrategyCandidateCostEvaluator` is the prepared fixed-point scoring seam.
+  It consumes canonical Q12 X/Y/B coefficients for one 8x8, 16x8, or 8x16
+  candidate plus Q24 AQ, Q16 strategy mask, Q8 distance, and signed CFL values;
+  it walks one coefficient per cycle and emits both the raw Q16 entropy/loss
+  estimate and distance-scaled Q16 cost. Unsupported distances use distance 1
+  and are reported, while extreme arithmetic saturates with an overflow flag.
+  The integer model is exact against
+  `tools/hjxl_reference.py --ac-strategy-cost-q16-csv ...`, but it remains an
+  approximation of the float reference after Q12 coefficient rounding.
+- `PreparedAcStrategy2x2Selector` accepts eight prepared candidates in strict
+  order: four raster 8x8 blocks, left/right 16x8 rectangles, then top/bottom
+  8x16 rectangles. It retains their 64-bit costs, feeds
+  `AcStrategyDecisionSelector`, and holds the decision and diagnostics under
+  backpressure. It is not a frame scheduler and is not wired into
+  `FrameAcStrategyTraceStage`.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`, defaulting unsupported values

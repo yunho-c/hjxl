@@ -1,0 +1,153 @@
+// See README.md for license details.
+
+package hjxl
+
+import chisel3._
+import chisel3.util._
+
+case class AcStrategyDistanceCostEntry(
+    distanceQ8: Int,
+    cost1Q16: Int,
+    dct8MultiplierQ16: Int,
+    rectangularMultiplierQ16: Int
+)
+
+object AcStrategyCostTables {
+  val FractionBits = 16
+  val Scale = 1 << FractionBits
+
+  val Cost2Q16: Int = math.round(4.4628149885273363 * Scale).toInt
+  val CostDeltaQ16: Int = math.round(5.3359184934516337 * Scale).toInt
+  val InfoLossMultiplier = 138
+  val InfoLoss2MultiplierQ16: Int = math.round(50.46839691767866 * Scale).toInt
+  val NbitsMultiplier = 7.565053364251793
+
+  private def ceilLog2Nonzero(value: Int): Int =
+    if (value <= 1) 0 else 32 - Integer.numberOfLeadingZeros(value - 1)
+
+  val NbitsCostQ16: Seq[Int] = (0 to 128).map { nonzeros =>
+    val nbits = ceilLog2Nonzero(nonzeros + 1) + 1
+    math.round(
+      NbitsMultiplier * (ceilLog2Nonzero(nbits + 17) + nbits) * Scale
+    ).toInt
+  }
+
+  val DistanceEntries: Seq[AcStrategyDistanceCostEntry] = Seq(
+    AcStrategyDistanceCostEntry(64, 113980, 36384, 39627),
+    AcStrategyDistanceCostEntry(128, 162424, 38540, 41947),
+    AcStrategyDistanceCostEntry(256, 259311, 41504, 45247),
+    AcStrategyDistanceCostEntry(512, 453086, 44817, 49098),
+    AcStrategyDistanceCostEntry(1024, 646862, 47762, 52674),
+    AcStrategyDistanceCostEntry(2048, 646862, 49892, 55356)
+  )
+  val DefaultDistanceEntry: AcStrategyDistanceCostEntry =
+    DistanceEntries.find(_.distanceQ8 == DistanceParamsLookup.Distance1Q8).get
+
+  val Dct2XInvQ16: Seq[Int] = Seq(
+    0, 0, 351482304, 302498144, 260340560, 224058368, 192832592, 165958592,
+    156517568, 148650848, 141179568, 134083528, 127344408, 120943968, 114865240, 109091832,
+    344026528, 332760416, 305638624, 272874048, 240152000, 209745264, 182384160, 162098000,
+    154257776, 146734752, 139536464, 132661392, 126103920, 119854800, 113903304, 108238480,
+    249412800, 245140528, 233344832, 216411104, 196857280, 176613712, 161657424, 154849616,
+    148072128, 141410400, 134918096, 128628792, 122561640, 116726944, 111128592, 105766856,
+    180819760, 178733744, 172757040, 164002640, 160015184, 155358736, 150241872, 144836976,
+    139278688, 133668400, 128081472, 122571768, 117177760, 111926016, 106834840, 101915664,
+    151972688, 151517776, 150179008, 148029232, 145174976, 141740000, 137850368, 133623920,
+    129164928, 124560888, 119883536, 115190128, 110525336, 105924096, 101412328, 97009408,
+    136073696, 135747344, 134781248, 133212672, 131098424, 128508536, 125519544, 122208640,
+    118649304, 114908416, 111044800, 107109336, 103144288, 99184664, 95258808, 87131720,
+    121838248, 121594512, 120870608, 119687544, 118078384, 116085072, 113755448, 111140584,
+    108291128, 105255920, 102080272, 98805152, 95466832, 88638608, 81576056, 74869056,
+    109091832, 108904696, 108347616, 107433432, 106182512, 104621448, 102781328, 100696208,
+    98401344, 95931928, 91282456, 85473728, 79714240, 74072536, 68603200, 63348060
+  )
+
+  val Dct2YInvQ16: Seq[Int] = Seq(
+    0, 0, 75454144, 67278640, 59988856, 53489024, 47693456, 42525840,
+    37918076, 33809628, 30146336, 27555660, 26170694, 24855332, 23606088, 22419588,
+    74228040, 72363336, 67811712, 62183360, 56400616, 50857872, 45705892, 40990404,
+    36711328, 32848074, 29371616, 27263394, 25915762, 24631496, 23408400, 22244214,
+    58055100, 57293668, 55174896, 52088344, 48452228, 44596732, 40743056, 37025296,
+    33517592, 30256068, 27727174, 26434652, 25187784, 23988690, 22838164, 21736268,
+    45406020, 45005212, 43850656, 42069220, 39828292, 37296556, 34619660, 31910740,
+    29251082, 27470346, 26322170, 25189864, 24081334, 23002040, 21955750, 20944802,
+    35512872, 35276892, 34587444, 33495998, 32076588, 30413116, 28588162, 27461204,
+    26544832, 25598650, 24637402, 23672854, 22714188, 21768582, 20841362, 19936514,
+    27964662, 27897594, 27699050, 27376686, 26942186, 26409936, 25795666, 25115238,
+    24383754, 23614960, 22820944, 22012162, 21197300, 20383552, 19576746, 18781504,
+    25039116, 24989028, 24840256, 24597126, 24266424, 23856776, 23378012, 22840628,
+    22255032, 21631264, 20978632, 20305560, 19619498, 18926868, 18233248, 17543232,
+    22419588, 22381128, 22266642, 22078766, 21821690, 21500874, 21122708, 20694192,
+    20222572, 19715080, 19178666, 18619954, 18044936, 17459060, 16867140, 16273400
+  )
+
+  val Dct2BInvQ16: Seq[Int] = Seq(
+    0, 0, 20243402, 15803153, 13512934, 12833763, 12188728, 11576115,
+    10368222, 9244818, 8243137, 7349976, 6553601, 5843514, 5210365, 4104238,
+    19539824, 18495370, 16074750, 13733018, 13143311, 12545952, 11957649, 11208311,
+    10038252, 8981894, 8031300, 7177730, 6412474, 5727128, 5098416, 3945408,
+    13315298, 13236487, 13014096, 12681544, 12275545, 11826284, 11140677, 10124103,
+    9164965, 8273142, 7452102, 6701507, 6018757, 5400036, 4504089, 3512962,
+    11922307, 11874869, 11736907, 11503300, 10890546, 10198275, 9466312, 8725592,
+    7998342, 7299462, 6638258, 6019864, 5446528, 4668880, 3694896, 2915518,
+    9710549, 9646023, 9457503, 9159060, 8770940, 8316084, 7817074, 7294062,
+    6763785, 6239282, 5730181, 5243197, 4382544, 3539287, 2843868, 2275250,
+    7594798, 7554347, 7435302, 7244232, 6991018, 6687582, 6346574, 5980274,
+    5599810, 5214724, 4487047, 3742855, 3096498, 2543490, 2076260, 1479636,
+    5940038, 5913646, 5835633, 5709370, 5540062, 5334221, 5065238, 4506532,
+    3955062, 3428498, 2939260, 2494956, 2099149, 1578273, 1154679, 836033,
+    4104238, 4068974, 3965441, 3800119, 3582897, 3325886, 3042122, 2744366,
+    2444128, 2151053, 1762884, 1376423, 1058578, 803045, 601672, 445752
+  )
+
+  require(Dct2XInvQ16.length == 128)
+  require(Dct2YInvQ16.length == 128)
+  require(Dct2BInvQ16.length == 128)
+
+  private def roundedDivideSigned(numerator: Int, denominator: Int): Int =
+    if (numerator >= 0) {
+      (numerator + denominator / 2) / denominator
+    } else {
+      -((-numerator + denominator / 2) / denominator)
+    }
+
+  /** Q16 CFL factor indexed by the multiplier's raw signed-byte bit pattern. */
+  val CflFactorDeltaQ16: Seq[Int] = (0 until 256).map { raw =>
+    val signed = if (raw < 128) raw else raw - 256
+    roundedDivideSigned(signed * Scale, QuantizeDct8x8Block.ColorFactorDenominator)
+  }
+}
+
+class AcStrategyCostParamsOutput extends Bundle {
+  val cost1Q16 = UInt(20.W)
+  val dct8MultiplierQ16 = UInt(16.W)
+  val rectangularMultiplierQ16 = UInt(16.W)
+}
+
+class AcStrategyCostParamsLookup extends Module {
+  val io = IO(new Bundle {
+    val distanceQ8 = Input(UInt(16.W))
+    val params = Output(new AcStrategyCostParamsOutput)
+    val supported = Output(Bool())
+  })
+
+  private def entryBundle(entry: AcStrategyDistanceCostEntry): AcStrategyCostParamsOutput = {
+    val result = Wire(new AcStrategyCostParamsOutput)
+    result.cost1Q16 := entry.cost1Q16.U
+    result.dct8MultiplierQ16 := entry.dct8MultiplierQ16.U
+    result.rectangularMultiplierQ16 := entry.rectangularMultiplierQ16.U
+    result
+  }
+
+  io.params := MuxLookup(
+    io.distanceQ8,
+    entryBundle(AcStrategyCostTables.DefaultDistanceEntry)
+  )(
+    AcStrategyCostTables.DistanceEntries.map { entry =>
+      entry.distanceQ8.U -> entryBundle(entry)
+    }
+  )
+  io.supported := AcStrategyCostTables.DistanceEntries
+    .map(entry => io.distanceQ8 === entry.distanceQ8.U)
+    .reduce(_ || _)
+}

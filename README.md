@@ -13,7 +13,7 @@ board-proven FPGA encoder.
 | Area | Current state |
 | --- | --- |
 | Strongest validated boundary | Host-prepared, all-DCT coefficients through quantization and logical token traces, followed by host-side codestream assembly |
-| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and a combined logical-token path; reusable 16x8/8x16 transforms and exact 2x2 strategy decisions are implemented, but entropy scoring, frame scheduling, downstream rectangular quantization/tokens, and RGB-token codestream proof remain incomplete |
+| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and a combined logical-token path; reusable 16x8/8x16 transforms plus a prepared fixed-point entropy scorer and exact 2x2 decision boundary are implemented, but RGB/frame scheduling, downstream rectangular quantization/tokens, and RGB-token codestream proof remain incomplete |
 | Hardware output | Trace/token records; entropy optimization and final JPEG XL bitstream assembly remain host software responsibilities |
 | Near-term FPGA top | `HjxlKv260PreparedDctTop`, the direct prepared-DCT variant, is frozen as the first synthesis and bring-up target |
 | Physical validation | Chisel simulation and generated SystemVerilog are covered; Vivado synthesis, timing closure, resource use, bitstream generation, and KV260 execution have not been demonstrated |
@@ -70,9 +70,10 @@ square root before emitting one Q16 value per 4x4 padded-pixel cell.
 cell-to-block reduction, with a one-LSB prepared Q16 seam and the composed RGB
 route. `AqStrategyMaskReciprocal` then evaluates the Q16 strategy mask with a
 42-cycle restoring divider, and its prepared and RGB-composed frame stages
-emit `AqStrategyMask` block traces. This mask is not yet connected to real
-rectangular-strategy scoring. `AqNonlinearMaskEvaluator` evaluates the other
-erosion-derived branch in signed Q24, sharing one 56-cycle restoring divider
+emit `AqStrategyMask` block traces. This mask is not yet connected to the
+prepared scorer through an RGB/frame scheduler. `AqNonlinearMaskEvaluator`
+evaluates the other erosion-derived branch in signed Q24, sharing one 56-cycle
+restoring divider
 across its three rational terms; prepared and RGB-composed frame stages emit
 `AqNonlinearMask` traces. `AqHfModulationBlock` then walks one Q12 Y block over
 64 cycles, and its prepared/RGB frame stages emit cumulative signed-Q24
@@ -113,16 +114,25 @@ AC-metadata, and AC logical tokens, and supplies the focused core AC-token
 route. Focused `TraceStage.YtoxMap` and `TraceStage.YtobMap` routes expose the
 estimated maps directly. The earlier `FrameAqDctOnly*` and
 `FrameCflMapTraceStage` wrappers remain fixed-CFL diagnostics. Later stages
-still need strategy-cost evaluation, frame-level rectangular scheduling,
+still need RGB-connected candidate preparation, frame-level rectangular
+scheduling,
 rectangular quantization/tokens, entropy coding, bitstream assembly, and an
 RGB-token-to-codestream parity proof. `Dct16Approx`, `Dct16x8Approx`, and
 `Dct8x16Approx` now provide the Q12 recursive kernel and both canonical
 rectangular coefficient layouts required by scoring and later quantization.
-`AcStrategyDecisionSelector` implements the reference's exact 2x2 orientation,
-strict replacement, tie, and first/continuation semantics over caller-supplied
-common-scale costs. `tools/hjxl_reference.py --scaled-dct-q12-csv ...` exports
-independent signed fixtures for those transforms. These pieces are reusable
-prerequisites, not a claim that `FrameAcStrategyTraceStage` is adaptive yet.
+`AcStrategyCandidateCostEvaluator` walks prepared canonical Q12 X/Y/B
+coefficients one per cycle, approximates libjxl-tiny's entropy/loss score in
+fixed point, and applies the supported distance multiplier. The
+`PreparedAcStrategy2x2Selector` sequences four 8x8, two 16x8, and two 8x16
+candidates into `AcStrategyDecisionSelector`, which implements the reference's
+exact orientation, strict replacement, tie, and first/continuation semantics.
+`tools/hjxl_reference.py --scaled-dct-q12-csv ...` exports independent signed
+transform fixtures; `--ac-strategy-cost-q16-csv ...` exports the prepared
+candidate-cost seam, fixed-model result, float reference cost, and both 2x2
+decisions. The fixed arithmetic is exact against its oracle, but Q12 input
+rounding can change near-symmetric orientation choices. These pieces are
+reusable prerequisites, not a claim that `FrameAcStrategyTraceStage` is
+adaptive yet.
 Standalone fixed-point primitives also cover approximate RGB-to-XYB, 1D DCT-8,
 and the scaled 8x8 DCT block layout used by libjxl-tiny. The RGB-to-XYB primitive
 applies the signed matrix at Q26, clamps

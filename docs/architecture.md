@@ -260,8 +260,21 @@ owned by the host tools for now.
 - `AcStrategyDecisionSelector` implements the exact decision-only tail of
   `find_best_16x16_transform`: aggregate orientation comparison, horizontal
   tie selection, strict subregion replacement, and raster first/continuation
-  encoding. It accepts already-scaled unsigned candidate costs; entropy-cost
-  evaluation and frame traversal remain upstream work.
+  encoding. It accepts already-scaled unsigned candidate costs.
+- `AcStrategyCandidateCostEvaluator` is the prepared scoring boundary upstream
+  of that selector. It consumes canonical Q12 coefficients plus the maximum
+  Q24 AQ and Q16 mask over the candidate, signed tile CFL, and supported Q8
+  distance; one coefficient is evaluated per cycle. Its raw and outer-scaled
+  Q16 outputs match the host integer model exactly. The integer model preserves
+  the reference formula and nearest-even coefficient rounding, but remains
+  approximate relative to float libjxl-tiny because the transform input seam is
+  Q12. Unsupported distances fall back to distance 1 with an explicit flag.
+  Its one-coefficient-per-cycle control does not prove that the wide residual/
+  inverse/AQ product and two combinational square roots will meet FPGA timing.
+- `PreparedAcStrategy2x2Selector` sequences the reference's eight-candidate
+  order, retains 64-bit costs, and applies `AcStrategyDecisionSelector` behind
+  a backpressure-safe prepared interface. RGB candidate preparation and frame
+  traversal remain upstream work.
 - `FrameDct8x8TraceStage` is the first transform integration slice. It buffers
   and pads the RGB frame, converts each padded raster 8x8 block to approximate
   XYB, applies `Dct8x8Approx` for all three channels, and emits `RawDct8x8`
@@ -762,9 +775,9 @@ wrappers.
   reciprocal scaling, RGB-derived tile CFL, quantized traces, AC metadata, and
   a combined token stream are connected. The RGB path still uses approximate
   Q12 XYB/DCT and ordinary 8x8 DCT strategy; broader distance generation,
-  rectangular-strategy scheduling, whole-frame reference comparison, and
-  RGB-token-to-codestream proof remain separate work. Entropy optimization and
-  bitstream assembly remain host responsibilities.
+  RGB-connected rectangular-strategy scheduling, whole-frame reference
+  comparison, and RGB-token-to-codestream proof remain separate work. Entropy
+  optimization and bitstream assembly remain host responsibilities.
 - `CflCoefficientSampleWeight`/`CflWeightedSumAccumulator`/
   `CflMultiplierEstimator`/`CflCoefficientSumAccumulator`/
   `CflTileCoefficientEstimator`/`CflTileCoefficientTraceStage` cover only
@@ -782,11 +795,16 @@ wrappers.
   currently always ordinary DCT with the libjxl-tiny encoding
   `(raw_strategy << 1) | is_first_block == 1`. This matches the current
   DCT-only RTL transform path. The rectangular DCT and 2x2 decision primitives
-  now exist, but this scheduler still lacks entropy scoring, 2x2/tile traversal,
-  and adaptive map storage.
+  now exist, and the prepared 2x2 boundary can score supplied candidates, but
+  this scheduler still lacks candidate generation, 2x2/tile traversal, and
+  adaptive map storage.
 - `tools/hjxl_reference.py --scaled-dct-q12-csv ...` writes signed Q12 DCT-16,
   16x8, and 8x16 inputs beside independent libjxl-tiny coefficients. The axis
   ramps guard the two different canonical rectangular layouts.
+- `tools/hjxl_reference.py --ac-strategy-cost-q16-csv ...` writes all eight
+  prepared candidates for one 16x16 region, the exact fixed-point estimates and
+  scaled costs, float reference costs, and reference/fixed decisions. Use it to
+  validate the scoring seam before adding RGB/frame scheduling.
 - `tools/hjxl_reference.py --default-ac-strategy-npy ...` writes the matching
   default DCT-first strategy map.
 - `tools/hjxl_reference.py --raw-quant-field-npy ...`,

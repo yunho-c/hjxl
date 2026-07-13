@@ -2473,6 +2473,410 @@ def write_scaled_dct_q12_csv(path: Path) -> None:
                 )
 
 
+AC_STRATEGY_COST_PARAMS_Q16 = {
+    64: (113980, 36384, 39627),
+    128: (162424, 38540, 41947),
+    256: (259311, 41504, 45247),
+    512: (453086, 44817, 49098),
+    1024: (646862, 47762, 52674),
+    2048: (646862, 49892, 55356),
+}
+
+
+def _round_divide_signed(value: int, denominator: int) -> int:
+    if value >= 0:
+        return (value + denominator // 2) // denominator
+    return -((-value + denominator // 2) // denominator)
+
+
+def _round_positive_q16(value: float) -> int:
+    return int(math.floor(float(value) * (1 << 16) + 0.5))
+
+
+def _ceil_log2_nonzero(value: int) -> int:
+    if value <= 1:
+        return 0
+    return (value - 1).bit_length()
+
+
+def fixed_ac_strategy_candidate_cost_q16(
+    strategy: int,
+    coefficients_q12,
+    quant_q24: int,
+    mask_q16: int,
+    distance_q8: int,
+    ytox: int,
+    ytob: int,
+) -> tuple[int, int]:
+    """Evaluate the integer model used by `AcStrategyCandidateCostEvaluator`."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.ac_strategy import (  # pylint: disable=import-outside-toplevel
+        DCT,
+        DCT16X8,
+        DCT8X16,
+        INV_MATRICES,
+    )
+
+    if strategy not in (DCT, DCT16X8, DCT8X16):
+        raise ValueError(f"unsupported AC strategy: {strategy}")
+    coefficient_count = 64 if strategy == DCT else 128
+    coefficients = np.asarray(coefficients_q12, dtype=np.int64)
+    if coefficients.shape != (3, coefficient_count):
+        raise ValueError(
+            f"strategy {strategy} requires Q12 coefficients shaped "
+            f"(3, {coefficient_count}), got {coefficients.shape}"
+        )
+    if distance_q8 not in AC_STRATEGY_COST_PARAMS_Q16:
+        distance_q8 = 256
+    cost1_q16, dct_multiplier_q16, rectangular_multiplier_q16 = (
+        AC_STRATEGY_COST_PARAMS_Q16[distance_q8]
+    )
+
+    scale = 1 << 16
+    inverse_q16 = [
+        np.rint(matrix * np.float32(scale)).astype(np.int64)
+        for matrix in INV_MATRICES[strategy]
+    ]
+    cfl_factor_q16 = (
+        _round_divide_signed(ytox * scale, 84),
+        0,
+        scale + _round_divide_signed(ytob * scale, 84),
+    )
+    cost2_q16 = _round_positive_q16(4.4628149885273363)
+    cost_delta_q16 = _round_positive_q16(5.3359184934516337)
+    info_loss2_multiplier_q16 = _round_positive_q16(50.46839691767866)
+
+    entropy_q16 = 0
+    info_loss_q16 = 0
+    info_loss2_q32 = 0
+    for channel in range(3):
+        nonzeros = 0
+        for coefficient in range(coefficient_count):
+            residual_q28 = (
+                int(coefficients[channel, coefficient]) * scale
+                - int(coefficients[1, coefficient]) * cfl_factor_q16[channel]
+            )
+            value_q16 = _round_shift_signed(
+                residual_q28
+                * int(inverse_q16[channel][coefficient])
+                * int(quant_q24),
+                52,
+            )
+            magnitude = abs(value_q16)
+            integer = magnitude >> 16
+            fraction = magnitude & 0xFFFF
+            round_up = fraction > 0x8000 or (
+                fraction == 0x8000 and (integer & 1) != 0
+            )
+            quantized = integer + int(round_up)
+            difference_q16 = min(fraction, scale - fraction)
+            info_loss_q16 += difference_q16
+            info_loss2_q32 += difference_q16 * difference_q16
+
+            if quantized != 0:
+                nonzeros += 1
+                entropy_q16 += cost1_q16
+            if quantized >= 2:
+                entropy_q16 += cost2_q16
+            sqrt_quantized_q16 = math.isqrt(quantized << 32)
+            entropy_q16 += _round_shift_signed(
+                sqrt_quantized_q16 * cost_delta_q16, 16
+            )
+
+        nbits = _ceil_log2_nonzero(nonzeros + 1) + 1
+        entropy_q16 += _round_positive_q16(
+            7.565053364251793 * (_ceil_log2_nonzero(nbits + 17) + nbits)
+        )
+
+    num_blocks = 1 if strategy == DCT else 2
+    info_loss_root_q16 = math.isqrt(num_blocks * info_loss2_q32)
+    info_loss_score_q16 = (
+        138 * info_loss_q16
+        + _round_shift_signed(
+            info_loss_root_q16 * info_loss2_multiplier_q16, 16
+        )
+    )
+    estimate_q16 = entropy_q16 + _round_shift_signed(
+        mask_q16 * info_loss_score_q16, 16
+    )
+    if strategy == DCT:
+        scaled_cost_q16 = _round_shift_signed(
+            (estimate_q16 + 3 * scale) * dct_multiplier_q16, 16
+        )
+    else:
+        scaled_cost_q16 = _round_shift_signed(
+            estimate_q16 * rectangular_multiplier_q16, 16
+        )
+    return estimate_q16, scaled_cost_q16
+
+
+def _strategy_decision_from_scaled_costs(costs: list[int]):
+    np = _load_numpy()
+    if len(costs) != 8:
+        raise ValueError("one 2x2 AC-strategy decision requires eight candidate costs")
+    dct = np.asarray(costs[:4], dtype=np.int64).reshape(2, 2)
+    vertical = costs[4:6]
+    horizontal = costs[6:8]
+    vertical_dct = (dct[0, 0] + dct[1, 0], dct[0, 1] + dct[1, 1])
+    horizontal_dct = (dct[0, 0] + dct[0, 1], dct[1, 0] + dct[1, 1])
+    vertical_cost = sum(
+        min(vertical[index], vertical_dct[index]) for index in range(2)
+    )
+    horizontal_cost = sum(
+        min(horizontal[index], horizontal_dct[index]) for index in range(2)
+    )
+    decision = np.ones((2, 2), dtype=np.uint8)
+    if vertical_cost < horizontal_cost:
+        for x in range(2):
+            if vertical[x] < vertical_dct[x]:
+                decision[0, x] = np.uint8(3)
+                decision[1, x] = np.uint8(2)
+    else:
+        for y in range(2):
+            if horizontal[y] < horizontal_dct[y]:
+                decision[y, 0] = np.uint8(5)
+                decision[y, 1] = np.uint8(4)
+    return decision
+
+
+def write_ac_strategy_candidate_cost_q16_csv(
+    path: Path, image, distance: float
+) -> None:
+    """Write one complete prepared 2x2 strategy-cost fixture."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.ac_strategy import (  # pylint: disable=import-outside-toplevel
+        DCT,
+        DCT16X8,
+        DCT8X16,
+        estimate_entropy,
+        find_best_16x16_transform,
+    )
+    from jxl_tiny.adaptive_quantization import (  # pylint: disable=import-outside-toplevel
+        compute_adaptive_quantization,
+    )
+    from jxl_tiny.chroma_from_luma import (  # pylint: disable=import-outside-toplevel
+        compute_chroma_from_luma,
+    )
+    from jxl_tiny.encoder import _effective_distance  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.transforms import scaled_dct  # pylint: disable=import-outside-toplevel
+
+    xyb = xyb_from_python_port(image)
+    if xyb.shape[1] < 16 or xyb.shape[2] < 16:
+        raise ValueError("AC-strategy cost fixture requires at least a padded 16x16 image")
+    effective_distance = _effective_distance(distance)
+    distance_q8 = int(math.floor(effective_distance * 256.0 + 0.5))
+    if distance_q8 not in AC_STRATEGY_COST_PARAMS_Q16:
+        raise ValueError("AC-strategy cost fixture requires a supported Q8 distance")
+    distance_f32 = np.float32(effective_distance)
+    slope = min(np.float32(1.0), distance_f32 * np.float32(1.0 / 3.0))
+    cost1 = np.float32(1.0) + slope * np.float32(8.8703248061477744)
+    dct_multiplier = np.float32(
+        np.float32(1.0735757687292623 * 0.75)
+        + np.float32(-0.55 * 0.75)
+        / (distance_f32 + np.float32(1.4))
+    )
+    rectangular_multiplier = np.float32(
+        np.float32(0.9019587899705066)
+        + np.float32(-0.55) / (distance_f32 + np.float32(1.6))
+    )
+    derived_cost_params_q16 = (
+        _round_positive_q16(float(cost1)),
+        _round_positive_q16(float(dct_multiplier)),
+        _round_positive_q16(float(rectangular_multiplier)),
+    )
+    if AC_STRATEGY_COST_PARAMS_Q16[distance_q8] != derived_cost_params_q16:
+        raise AssertionError("fixed AC-strategy distance parameters drifted")
+
+    aq = compute_adaptive_quantization(
+        xyb,
+        effective_distance,
+        block_x0=0,
+        block_y0=0,
+        block_width=2,
+        block_height=2,
+    )
+    cfl = compute_chroma_from_luma(xyb[:, :16, :16])
+    candidate_specs = (
+        (DCT, 0, 0),
+        (DCT, 1, 0),
+        (DCT, 0, 1),
+        (DCT, 1, 1),
+        (DCT16X8, 0, 0),
+        (DCT16X8, 1, 0),
+        (DCT8X16, 0, 0),
+        (DCT8X16, 0, 1),
+    )
+    candidates = []
+    fixed_costs = []
+    for candidate, (strategy, block_x, block_y) in enumerate(candidate_specs):
+        rows, columns = {
+            DCT: (8, 8),
+            DCT16X8: (16, 8),
+            DCT8X16: (8, 16),
+        }[strategy]
+        coefficients = np.asarray(
+            [
+                np.rint(
+                    scaled_dct(
+                        xyb[
+                            channel,
+                            block_y * 8 : block_y * 8 + rows,
+                            block_x * 8 : block_x * 8 + columns,
+                        ]
+                    ).reshape(-1)
+                    * np.float32(1 << 12)
+                ).astype(np.int64)
+                for channel in range(3)
+            ],
+            dtype=np.int64,
+        )
+        covered_y = 2 if strategy == DCT16X8 else 1
+        covered_x = 2 if strategy == DCT8X16 else 1
+        quant_q24 = int(
+            np.rint(
+                np.max(
+                    aq.aq_map[
+                        block_y : block_y + covered_y,
+                        block_x : block_x + covered_x,
+                    ]
+                )
+                * np.float32(1 << 24)
+            )
+        )
+        mask_q16 = int(
+            np.rint(
+                np.max(
+                    aq.mask[
+                        block_y : block_y + covered_y,
+                        block_x : block_x + covered_x,
+                    ]
+                )
+                * np.float32(1 << 16)
+            )
+        )
+        fixed_estimate_q16, fixed_scaled_cost_q16 = (
+            fixed_ac_strategy_candidate_cost_q16(
+                strategy,
+                coefficients,
+                quant_q24,
+                mask_q16,
+                distance_q8,
+                int(cfl.ytox),
+                int(cfl.ytob),
+            )
+        )
+        reference_estimate = float(
+            estimate_entropy(
+                strategy,
+                xyb,
+                0,
+                0,
+                block_x,
+                block_y,
+                effective_distance,
+                aq.aq_map,
+                aq.mask,
+                int(cfl.ytox),
+                int(cfl.ytob),
+            )
+        )
+        reference_multiplier = (
+            dct_multiplier if strategy == DCT else rectangular_multiplier
+        )
+        reference_scaled_cost = (
+            reference_estimate + (3.0 if strategy == DCT else 0.0)
+        ) * float(reference_multiplier)
+        candidates.append(
+            (
+                candidate,
+                strategy,
+                block_x,
+                block_y,
+                coefficients,
+                quant_q24,
+                mask_q16,
+                fixed_estimate_q16,
+                fixed_scaled_cost_q16,
+                reference_estimate,
+                reference_scaled_cost,
+            )
+        )
+        fixed_costs.append(fixed_scaled_cost_q16)
+
+    reference_decision = find_best_16x16_transform(
+        xyb,
+        aq.aq_map,
+        aq.mask,
+        effective_distance,
+        int(cfl.ytox),
+        int(cfl.ytob),
+    ).decision
+    fixed_decision = _strategy_decision_from_scaled_costs(fixed_costs)
+    reference_decision_text = ":".join(
+        str(int(value)) for value in reference_decision.reshape(-1)
+    )
+    fixed_decision_text = ":".join(
+        str(int(value)) for value in fixed_decision.reshape(-1)
+    )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "candidate",
+                "strategy",
+                "block_x",
+                "block_y",
+                "coefficient",
+                "x_q12",
+                "y_q12",
+                "b_q12",
+                "quant_q24",
+                "mask_q16",
+                "distance_q8",
+                "ytox",
+                "ytob",
+                "fixed_estimate_q16",
+                "fixed_scaled_cost_q16",
+                "reference_estimate",
+                "reference_scaled_cost",
+                "reference_decision",
+                "fixed_decision",
+            )
+        )
+        for candidate in candidates:
+            coefficient_count = candidate[4].shape[1]
+            for coefficient in range(coefficient_count):
+                writer.writerow(
+                    (
+                        candidate[0],
+                        candidate[1],
+                        candidate[2],
+                        candidate[3],
+                        coefficient,
+                        int(candidate[4][0, coefficient]),
+                        int(candidate[4][1, coefficient]),
+                        int(candidate[4][2, coefficient]),
+                        candidate[5],
+                        candidate[6],
+                        distance_q8,
+                        int(cfl.ytox),
+                        int(cfl.ytob),
+                        candidate[7],
+                        candidate[8],
+                        f"{candidate[9]:.9g}",
+                        f"{candidate[10]:.9g}",
+                        reference_decision_text,
+                        fixed_decision_text,
+                    )
+                )
+
+
 def default_ac_strategy_from_python_port(image):
     np = _load_numpy()
     padded = padded_input_from_python_port(image)
@@ -3294,6 +3698,11 @@ def main() -> int:
         help="optional Q12 DCT-16 and canonical 16x8/8x16 transform fixture",
     )
     parser.add_argument(
+        "--ac-strategy-cost-q16-csv",
+        type=Path,
+        help="optional fixed-point prepared AC-strategy candidate-cost fixture",
+    )
+    parser.add_argument(
         "--default-ac-strategy-npy",
         type=Path,
         help="optional default DCT-first AC strategy map NumPy output path",
@@ -3624,6 +4033,12 @@ def main() -> int:
         np.save(args.dct8x8_npy, dct8x8_from_python_port(image))
     if args.scaled_dct_q12_csv is not None:
         write_scaled_dct_q12_csv(args.scaled_dct_q12_csv)
+    if args.ac_strategy_cost_q16_csv is not None:
+        write_ac_strategy_candidate_cost_q16_csv(
+            args.ac_strategy_cost_q16_csv,
+            image,
+            args.distance,
+        )
     if args.default_ac_strategy_npy is not None:
         np = _load_numpy()
         args.default_ac_strategy_npy.parent.mkdir(parents=True, exist_ok=True)
@@ -3800,6 +4215,7 @@ def main() -> int:
         and args.aq_final_map_q24_csv is None
         and args.dct8x8_npy is None
         and args.scaled_dct_q12_csv is None
+        and args.ac_strategy_cost_q16_csv is None
         and args.default_ac_strategy_npy is None
         and args.raw_quant_field_npy is None
         and args.libjxl_ac_strategy_npy is None
