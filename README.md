@@ -151,8 +151,15 @@ for 16x8 or right for 8x16, and reports malformed gaps, overlaps, bounds, or
 last markers through sticky `overflow`. Y reconstruction walks one coefficient
 per cycle and shares one dynamic quant-bias divider; the three 128-lane AC
 quantizers remain combinational and have not been synthesized or timed. This
-prepared seam is not yet connected to the RGB strategy result or non-DCT token
-schedulers.
+prepared seam now feeds `FramePreparedVarDctAcMetadataTokenTraceStage` and
+`FramePreparedVarDctAcTokenTraceStage`, which suppress continuation ownership,
+retain raw versus shifted nonzero semantics, and apply the rectangular scan and
+block contexts. `FramePreparedVarDctTokenTraceStage` reconstructs the covered-
+cell DC and encoded-strategy grids before emitting exact DC, strategy,
+metadata, and AC traces; `FramePreparedVarDctQuantizeTokenTraceStage` composes
+that boundary directly after the prepared quantizer. The remaining missing
+connection is the RGB strategy/AQ/CFL source into this prepared 64/128-
+coefficient boundary.
 `tools/hjxl_reference.py --scaled-dct-q12-csv ...` exports independent signed
 transform fixtures plus the exact fixed transform result;
 `--ac-strategy-cost-q16-csv ...` exports the prepared candidate-cost seam,
@@ -165,6 +172,11 @@ RTL matches the fixed model exactly; native AC differs by at most one integer,
 while DC and both nonzero-count forms match exactly. The fixed strategy-cost
 arithmetic is exact against its oracle, but Q12 input rounding can change near-
 symmetric orientation choices.
+`--var-dct-token-fixture-dir ...` exports a six-owner 32x16 mixed-strategy
+fixture and the complete reference DC/strategy/metadata/AC trace. It covers
+DCT, 16x8, and 8x16 ownership in one frame, including continuation suppression,
+two-cell prediction history, distinct raw/shifted counts, and both 64/128-entry
+coefficient scans.
 Standalone fixed-point primitives also cover approximate RGB-to-XYB, 1D DCT-8,
 and the scaled 8x8 DCT block layout used by libjxl-tiny. The RGB-to-XYB primitive
 applies the signed matrix at Q26, clamps
@@ -443,6 +455,7 @@ Generate the exact prepared-token trace top-levels:
 ```sh
 sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantize'
 sbt 'runMain hjxl.ElaboratePreparedVarDctQuantize'
+sbt 'runMain hjxl.ElaboratePreparedVarDctQuantizeTokens'
 sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'
 sbt 'runMain hjxl.ElaboratePreparedDctAxiStream'
 sbt 'runMain hjxl.ElaboratePreparedDctAxiLiteStream'
@@ -1420,6 +1433,16 @@ cycle Y reconstruction, output stalls, trace order, horizontal/vertical cell
 ownership, malformed-frame rejection, sticky overflow, and recovery.
 `QuantizeVarDctElaborationSpec` guards the variable-shape structured port
 surface and requires exactly one emitted dynamic quant-bias divider.
+`FramePreparedVarDctTokenTraceStageSpec` feeds six native libjxl-tiny quantized
+owners spanning DCT, 16x8, and 8x16 into the combined boundary and compares all
+1,292 emitted DC, full-grid strategy, owner-only metadata, and rectangular AC
+trace rows exactly under backpressure. It separately covers malformed raster
+ownership, two-tile CFL prediction, fixed per-cell metadata literals, and a
+direct prepared horizontal quantize-to-token transaction. A terminal scan case
+places the only rectangular nonzero at coefficient 127 and proves that the
+explicit carry bit reaches the 128 termination value without wrapping.
+`FramePreparedVarDctTokenElaborationSpec` guards the direct hierarchy and its
+narrow synchronous 64/128-coefficient owner store.
 `FramePreparedAcMetadataTokenTraceStageSpec` separately covers two-tile
 prepared metadata fixtures for CFL residual prediction and raw-quant residual
 contexts, including a libjxl-tiny oracle-backed 72x8 all-DCT case.

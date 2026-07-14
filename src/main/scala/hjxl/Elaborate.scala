@@ -124,6 +124,18 @@ object ElaboratePreparedVarDctQuantize extends App {
   )
 }
 
+object ElaboratePreparedVarDctQuantizeTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FramePreparedVarDctQuantizeTokenTraceStage(),
+    args = Array("--target-dir", "generated-prepared-var-dct-quantize-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaboratePreparedAqRawQuant extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedAqRawQuantTraceStage(),

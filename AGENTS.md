@@ -282,10 +282,17 @@ Read these libjxl-tiny files before making architectural changes:
   right; gaps, overlaps, out-of-bounds rectangles, and incorrect `last` markers
   drop the frame and set sticky `overflow`. Output metadata is latched through
   quantizer latency and stalls. This boundary is not yet fed by the RGB
-  strategy scheduler, and it does not implement variable-shape metadata or AC
-  coefficient token scans. Use
+  strategy scheduler. `FramePreparedVarDctAcMetadataTokenTraceStage` and
+  `FramePreparedVarDctAcTokenTraceStage` now consume the resulting owner shape:
+  they suppress continuation metadata/AC ownership, replicate shifted nonzero
+  counts for neighbor prediction, use the 128-entry rectangular scan and block
+  contexts, and retain one fixed block-metadata literal per raster cell.
+  `FramePreparedVarDctTokenTraceStage` reconstructs full DC/strategy grids from
+  already-quantized owners, while `FramePreparedVarDctQuantizeTokenTraceStage`
+  is the direct prepared quantize-to-token composition. Use
   `tools/hjxl_reference.py --var-dct-quantize-q16-csv ...` for exact frozen-Q16
-  and native-float DCT/16x8/8x16 fixtures.
+  and native-float DCT/16x8/8x16 fixtures, and
+  `--var-dct-token-fixture-dir ...` for a mixed-shape owner/token oracle.
 - `AcStrategyDecisionSelector` is the exact decision-only tail for one complete
   2x2 block region. It consumes common-scale nonnegative candidate costs,
   chooses horizontal on aggregate ties, replaces a rectangle only on a strict
@@ -593,6 +600,12 @@ Read these libjxl-tiny files before making architectural changes:
   `generated-prepared-var-dct-quantize/`; keep the generated directory out of
   git. `QuantizeVarDctElaborationSpec` guards the 128-coefficient surface and
   the single dynamic quant-bias divider.
+- Use `sbt 'runMain hjxl.ElaboratePreparedVarDctQuantizeTokens'` to generate the
+  direct first-block-owned DCT/16x8/8x16 quantize-to-token hierarchy. It writes
+  `generated-prepared-var-dct-quantize-tokens/`; keep the generated directory
+  out of git. `FramePreparedVarDctTokenElaborationSpec` guards the structured
+  input, trace/status surface, metadata/AC schedulers, and narrow coefficient
+  frame store.
 - Use `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'` to generate
   the direct prepared-DCT quantize-to-token wrapper. It writes
   `generated-prepared-dct-only-quantize-tokens/`; keep the generated directory
@@ -806,9 +819,10 @@ Read these libjxl-tiny files before making architectural changes:
   a focused `HjxlCore(traceRoute = TraceStage.AcStrategy)` selects this path
   while `FrameAqAdjustedRawQuantTraceStage` adapts the same sideband for the
   focused raw-quant route and the default shell stays fixed. This RGB route is
-  not yet downstream non-DCT quantization: the separate prepared variable-shape
-  quantizer exists, but the current RGB/token paths do not consume it or the
-  rectangle-adjusted quant field.
+  not yet downstream non-DCT quantization: the prepared variable-shape
+  quantize-to-token path now exists and is oracle-validated, but the current RGB
+  search does not yet produce its first-block-owned 64/128-coefficient input or
+  consume the rectangle-adjusted quant field at that boundary.
 - Use `sbt 'runMain hjxl.ElaboratePreparedAcStrategy'` for the prepared frame
   search, `sbt 'runMain hjxl.ElaborateAqAcStrategy'` for its RGB composition,
   and `sbt 'runMain hjxl.ElaborateCoreAcStrategy'` for the focused public-core

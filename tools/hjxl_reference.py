@@ -3970,6 +3970,161 @@ def fixed_dct_only_token_outputs_from_python_port(
     )
 
 
+def write_var_dct_token_fixture(directory: Path, image, distance: float) -> None:
+    """Write one mixed-shape first-block fixture and its exact logical tokens."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.ac_strategy import (  # pylint: disable=import-outside-toplevel
+        DCT,
+        DCT16X8,
+        DCT8X16,
+        is_first_block,
+        raw_strategy,
+    )
+    from jxl_tiny.encoder import _effective_distance  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.quantization import quantize_ac_group  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.tokenization import (  # pylint: disable=import-outside-toplevel
+        ac_metadata_tokens,
+        ac_tokens_from_quantized_blocks,
+        dc_tokens,
+    )
+
+    if image.shape != (3, 16, 32):
+        raise ValueError("VarDCT token fixture requires --width 32 --height 16")
+
+    xyb = xyb_from_python_port(image)
+    strategy = np.asarray(
+        (
+            ((DCT16X8 << 1) | 1, (DCT << 1) | 1, (DCT8X16 << 1) | 1, DCT8X16 << 1),
+            (DCT16X8 << 1, (DCT << 1) | 1, (DCT << 1) | 1, (DCT << 1) | 1),
+        ),
+        dtype=np.uint8,
+    )
+    raw_quant = np.asarray(((3, 7, 11, 11), (3, 13, 17, 19)), dtype=np.uint8)
+    ytox = np.asarray([[-9]], dtype=np.int8)
+    ytob = np.asarray([[7]], dtype=np.int8)
+    quantized = quantize_ac_group(
+        xyb,
+        raw_quant,
+        strategy,
+        ytox,
+        ytob,
+        _effective_distance(distance),
+    )
+
+    quant_dc = np.zeros((3, 2, 4), dtype=np.int16)
+    nzeros_map = np.zeros((3, 2, 4), dtype=np.uint8)
+    owners = []
+    for block_y in range(2):
+        for block_x in range(4):
+            encoded = strategy[block_y, block_x]
+            if not bool(is_first_block(encoded)):
+                continue
+            block = quantized[(block_y, block_x)]
+            raw = int(raw_strategy(encoded))
+            covered_y = block.block_quant_dc.shape[1]
+            covered_x = block.block_quant_dc.shape[2]
+            quant_dc[
+                :, block_y : block_y + covered_y, block_x : block_x + covered_x
+            ] = block.block_quant_dc
+            nzeros_map[
+                :, block_y : block_y + covered_y, block_x : block_x + covered_x
+            ] = block.num_nonzeros_map
+            owners.append(
+                (
+                    block_x,
+                    block_y,
+                    block_y * 4 + block_x,
+                    raw,
+                    block.quantized_ac.shape[1],
+                    covered_x * covered_y,
+                    int(raw_quant[block_y, block_x]),
+                    block,
+                )
+            )
+
+    dc = dc_tokens(quant_dc)
+    metadata = ac_metadata_tokens(ytox, ytob, strategy, raw_quant)
+    ac = ac_tokens_from_quantized_blocks(strategy, quantized, nzeros_map)
+
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / "owners.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "block_x",
+                "block_y",
+                "block_ordinal",
+                "last",
+                "strategy",
+                "coefficient_count",
+                "covered_blocks",
+                "raw_quant",
+                "ytox",
+                "ytob",
+                "quantized_ac_x",
+                "quantized_ac_y",
+                "quantized_ac_b",
+                "quantized_dc_x",
+                "quantized_dc_y",
+                "quantized_dc_b",
+                "num_nonzeros",
+                "shifted_num_nonzeros",
+            )
+        )
+        for owner_index, (
+            block_x,
+            block_y,
+            block_ordinal,
+            raw,
+            coefficient_count,
+            covered_blocks,
+            owner_quant,
+            block,
+        ) in enumerate(owners):
+            writer.writerow(
+                (
+                    block_x,
+                    block_y,
+                    block_ordinal,
+                    int(owner_index == len(owners) - 1),
+                    raw,
+                    coefficient_count,
+                    covered_blocks,
+                    owner_quant,
+                    int(ytox[0, 0]),
+                    int(ytob[0, 0]),
+                    *(";".join(str(int(value)) for value in block.quantized_ac[channel])
+                      for channel in range(3)),
+                    *(";".join(str(int(value)) for value in block.block_quant_dc[channel].reshape(-1))
+                      for channel in range(3)),
+                    ";".join(str(int(value)) for value in block.num_nonzeros),
+                    ";".join(
+                        str(int(block.num_nonzeros_map[channel].reshape(-1)[0]))
+                        for channel in range(3)
+                    ),
+                )
+            )
+
+    trace_rows = []
+    trace_rows.extend(("dc", index, context, value) for index, (context, value) in enumerate(dc))
+    trace_rows.extend(
+        ("strategy", 0, index, int(value))
+        for index, value in enumerate(strategy.reshape(-1))
+    )
+    trace_rows.extend(
+        ("metadata", index, context, value)
+        for index, (context, value) in enumerate(metadata)
+    )
+    trace_rows.extend(("ac", index, context, value) for index, (context, value) in enumerate(ac))
+    with (directory / "trace.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(("section", "group", "index", "value", "last"))
+        for index, (section, group, context, value) in enumerate(trace_rows):
+            writer.writerow((section, int(group), int(context), int(value), int(index == len(trace_rows) - 1)))
+
+
 def fixed_dct_only_prepared_token_inputs_from_python_port(
     image,
     distance: float,
@@ -4257,6 +4412,11 @@ def main() -> int:
         "--var-dct-quantize-q16-csv",
         type=Path,
         help="optional Q16 prepared DCT/16x8/8x16 quantization fixture",
+    )
+    parser.add_argument(
+        "--var-dct-token-fixture-dir",
+        type=Path,
+        help="optional mixed-shape first-block owner and logical-token CSV directory",
     )
     parser.add_argument(
         "--default-ac-strategy-npy",
@@ -4604,6 +4764,12 @@ def main() -> int:
             args.fixed_ytox,
             args.fixed_ytob,
         )
+    if args.var_dct_token_fixture_dir is not None:
+        write_var_dct_token_fixture(
+            args.var_dct_token_fixture_dir,
+            image,
+            args.distance,
+        )
     if args.default_ac_strategy_npy is not None:
         np = _load_numpy()
         args.default_ac_strategy_npy.parent.mkdir(parents=True, exist_ok=True)
@@ -4782,6 +4948,7 @@ def main() -> int:
         and args.scaled_dct_q12_csv is None
         and args.ac_strategy_cost_q16_csv is None
         and args.var_dct_quantize_q16_csv is None
+        and args.var_dct_token_fixture_dir is None
         and args.default_ac_strategy_npy is None
         and args.raw_quant_field_npy is None
         and args.libjxl_ac_strategy_npy is None

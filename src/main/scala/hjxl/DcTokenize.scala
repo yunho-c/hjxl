@@ -66,11 +66,14 @@ object DcTokenize {
 
 object Tokenize {
   val DctStrategyCode = 0
+  val Dct16x8StrategyCode = 6
+  val Dct8x16StrategyCode = 7
   val DefaultBlockMetadata = 4
   val NumBlockContexts = 4
   val NonzeroBuckets = 37
   val ZeroDensityContextCount = 458
   val DctBlockContextByChannel: Seq[Int] = Seq(2, 0, 2)
+  val RectangularBlockContextByChannel: Seq[Int] = Seq(3, 1, 3)
   val DctCoeffOrder: Seq[Int] = Seq(
     0, 1, 8, 16, 9, 2, 3, 10,
     17, 24, 32, 25, 18, 11, 4, 5,
@@ -80,6 +83,24 @@ object Tokenize {
     29, 22, 15, 23, 30, 37, 44, 51,
     58, 59, 52, 45, 38, 31, 39, 46,
     53, 60, 61, 54, 47, 55, 62, 63
+  )
+  val RectangularCoeffOrder: Seq[Int] = Seq(
+    0, 1, 16, 2, 3, 17, 32, 18,
+    4, 5, 19, 33, 48, 34, 20, 6,
+    7, 21, 35, 49, 64, 50, 36, 22,
+    8, 9, 23, 37, 51, 65, 80, 66,
+    52, 38, 24, 10, 11, 25, 39, 53,
+    67, 81, 96, 82, 68, 54, 40, 26,
+    12, 13, 27, 41, 55, 69, 83, 97,
+    112, 98, 84, 70, 56, 42, 28, 14,
+    15, 29, 43, 57, 71, 85, 99, 113,
+    114, 100, 86, 72, 58, 44, 30, 31,
+    45, 59, 73, 87, 101, 115, 116, 102,
+    88, 74, 60, 46, 47, 61, 75, 89,
+    103, 117, 118, 104, 90, 76, 62, 63,
+    77, 91, 105, 119, 120, 106, 92, 78,
+    79, 93, 107, 121, 122, 108, 94, 95,
+    109, 123, 124, 110, 111, 125, 126, 127
   )
   val CoeffFreqContext: Seq[Int] = Seq(
     2989, 0, 1, 2, 3, 4, 5, 6,
@@ -119,11 +140,38 @@ object Tokenize {
   def zeroDensityContextsOffset(blockContext: UInt): UInt =
     (NumBlockContexts * NonzeroBuckets).U + ZeroDensityContextCount.U * blockContext
 
+  def strategyCode(rawStrategy: UInt): UInt =
+    MuxLookup(rawStrategy, DctStrategyCode.U)(
+      Seq(
+        AcStrategyCode.Dct.U -> DctStrategyCode.U,
+        AcStrategyCode.Dct16x8.U -> Dct16x8StrategyCode.U,
+        AcStrategyCode.Dct8x16.U -> Dct8x16StrategyCode.U
+      )
+    )
+
+  def blockContext(channel: UInt, rawStrategy: UInt): UInt = {
+    val dct = VecInit(DctBlockContextByChannel.map(_.U(2.W)))(channel)
+    val rectangular = VecInit(RectangularBlockContextByChannel.map(_.U(2.W)))(channel)
+    Mux(rawStrategy === AcStrategyCode.Dct.U, dct, rectangular)
+  }
+
   def zeroDensityContext(nonzerosLeft: UInt, coefficientIndex: UInt, prev: Bool): UInt = {
+    zeroDensityContext(nonzerosLeft, coefficientIndex, 1.U, 0.U, prev)
+  }
+
+  def zeroDensityContext(
+      nonzerosLeft: UInt,
+      coefficientIndex: UInt,
+      coveredBlocks: UInt,
+      log2CoveredBlocks: UInt,
+      prev: Bool
+  ): UInt = {
     val nonzeroTable = VecInit(CoeffNumNonzeroContext.map(_.U(12.W)))
     val freqTable = VecInit(CoeffFreqContext.map(_.U(12.W)))
-    val nonzerosIndex = nonzerosLeft(log2Ceil(CoeffNumNonzeroContext.length) - 1, 0)
-    val coefficientIndexSafe = coefficientIndex(log2Ceil(CoeffFreqContext.length) - 1, 0)
+    val scaledNonzeros = (nonzerosLeft +& coveredBlocks - 1.U) >> log2CoveredBlocks
+    val scaledCoefficient = coefficientIndex >> log2CoveredBlocks
+    val nonzerosIndex = scaledNonzeros(log2Ceil(CoeffNumNonzeroContext.length) - 1, 0)
+    val coefficientIndexSafe = scaledCoefficient(log2Ceil(CoeffFreqContext.length) - 1, 0)
     ((nonzeroTable(nonzerosIndex) + freqTable(coefficientIndexSafe)) << 1) + prev.asUInt
   }
 }
