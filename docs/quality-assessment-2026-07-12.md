@@ -457,12 +457,12 @@ Recommended documentation split:
 | Linear RGB/PFM host input | Implemented for fixtures and stream generation | Parser/packing/manifest tests | General image decode/integration and production driver |
 | Frame padding | Implemented | Exact small-frame and edge-padding tests | Scalable storage architecture |
 | RGB to XYB | Range-normalized Q8 to Q12 approximation with signed Q26 matrix and Q24 absorbance | Exact normalization-boundary/model tests, three libjxl-tiny fixture families within two Q12 units, 100k full signed-range sweep within five, and frame/downstream regressions | Synthesis feasibility, broader real-image evidence, and end-to-end parity |
-| DCT transforms | Approximate fixed-point 8x8 plus reusable Q12 DCT-16, 16x8, and 8x16 primitives; all three shapes feed focused strategy scoring | 8x8 primitive/frame tests; five signed independent float and exact-fixed fixtures per new transform; axis-layout, candidate-generation, backpressure, and elaboration checks | Timing/resource architecture and integration of rectangular shapes into quantization |
-| Adaptive quantization | RGB-connected quarter-resolution contrast, block-resolution fuzzy erosion, AC-strategy reciprocal mask, signed-Q24 nonlinear `_compute_mask` seed, cumulative Y HF/color/gamma modulation, normalized exponent, distance scale/damping, completed final map, exact raw-quant conversion, post-strategy rectangle adjustment, estimated tile CFL, quantized traces, AC metadata, and focused strategy candidates | Gamma/sqrt/four-minimum, reciprocal, nonlinear, 112-edge/Q32 HF, capped Q16 coverage/Q24 color, clamped inverse-ratio/normalized-Q20-log, and normalized-Q24-`fast_pow2f` model boundaries; exact prepared fixtures and fixed-model raw bytes/maps/strategy decisions/adjusted bytes; five RGB oracle families within two percent for AQ and within two int8 units for CFL; full-frame versus stitched-tile equality; active/zero/early-return/damping distance regimes; explicit unsupported-distance fallback; exact dynamic reciprocal and prepared-handoff equivalence; 65x1 and two-dimensional 65x65-to-72x72 traversal; backpressure/control and packed-AXI/TLAST tests; one-converter elaboration | Feeding the selected rectangles and adjusted byte field into quantization, metadata, and tokens; synthesis feasibility of the combinational square root, minima network, constant erosion division, CFL fitting divider, ratio/log/power lookup tables, multipliers, register-backed grids, and duplicated full-frame X/Y/B/coefficient buffers is unproven, while the rational transforms and HF/color/gamma/reciprocal traversals are sequential |
-| Chroma from luma | Implemented for prepared-Q16 and approximate RGB-Q12 all-DCT paths | Primitive and exact fixed-model tests; five RGB/libjxl-tiny map families within two int8 units; horizontal/vertical/2D multi-tile, quantization, metadata, stream, wrapper, and focused-core tests | Physical implementation quality, broader real-image fixtures, and interaction with non-DCT strategies |
-| AC strategy | Default all-route core remains fixed DCT; focused routes generate a full adaptive DCT/16x8/8x16 map from RGB AQ/tile CFL and its post-search adjusted raw-quant field | Exact fixed-model costs for 40 oracle-backed candidates; exact fixed rectangular-transform and constant/gradient/checkerboard frame decisions; exact DCT/horizontal/vertical raw-quant adjustment; complete 2x2, incomplete 24x24 edge, 72x16 cross-tile, unsupported-distance, backpressure, RGB/core, and hierarchy checks; 520 directed/random selector transactions; 27/30 decisions match the broader float audit | Reduce/characterize the Q12 scorer discrepancy; prove or redesign wide products, lookup/square-root hardware, and duplicate frame storage; connect selected rectangles and adjusted bytes to quantization, metadata, and tokens |
+| DCT transforms | Approximate fixed-point 8x8 plus reusable Q12 DCT-16, 16x8, and 8x16 primitives; all three shapes feed focused strategy scoring and a separate prepared variable-shape quantizer | 8x8 primitive/frame tests; five signed independent float and exact-fixed fixtures per new transform; axis-layout, candidate-generation, quantization, backpressure, and elaboration checks | Timing/resource architecture and composition of the prepared shapes with the RGB strategy result and tokens |
+| Adaptive quantization | RGB-connected quarter-resolution contrast, block-resolution fuzzy erosion, AC-strategy reciprocal mask, signed-Q24 nonlinear `_compute_mask` seed, cumulative Y HF/color/gamma modulation, normalized exponent, distance scale/damping, completed final map, exact raw-quant conversion, post-strategy rectangle adjustment, estimated tile CFL, quantized traces, AC metadata, and focused strategy candidates | Gamma/sqrt/four-minimum, reciprocal, nonlinear, 112-edge/Q32 HF, capped Q16 coverage/Q24 color, clamped inverse-ratio/normalized-Q20-log, and normalized-Q24-`fast_pow2f` model boundaries; exact prepared fixtures and fixed-model raw bytes/maps/strategy decisions/adjusted bytes; five RGB oracle families within two percent for AQ and within two int8 units for CFL; full-frame versus stitched-tile equality; active/zero/early-return/damping distance regimes; explicit unsupported-distance fallback; exact dynamic reciprocal and prepared-handoff equivalence; 65x1 and two-dimensional 65x65-to-72x72 traversal; backpressure/control and packed-AXI/TLAST tests; one-converter elaboration | Feeding the selected rectangles and adjusted byte field into the now-available prepared variable-shape quantizer and then metadata/tokens; synthesis feasibility of the combinational square root, minima network, constant erosion division, CFL fitting divider, ratio/log/power lookup tables, multipliers, register-backed grids, and duplicated full-frame X/Y/B/coefficient buffers is unproven, while the rational transforms and HF/color/gamma/reciprocal traversals are sequential |
+| Chroma from luma | Implemented for prepared-Q16 and approximate RGB-Q12 all-DCT paths; prepared DCT/16x8/8x16 quantization applies caller-supplied tile CFL | Primitive and exact fixed-model tests; five RGB/libjxl-tiny map families within two int8 units; horizontal/vertical/2D multi-tile, all-DCT integration, variable-shape quantization, stream, wrapper, and focused-core tests | Physical implementation quality, broader real-image fixtures, and feeding RGB-estimated maps into non-DCT ownership |
+| AC strategy | Default all-route core remains fixed DCT; focused routes generate a full adaptive DCT/16x8/8x16 map from RGB AQ/tile CFL and its post-search adjusted raw-quant field; a separate prepared quantizer consumes first-block strategy ownership | Exact fixed-model costs for 40 oracle-backed candidates; exact fixed rectangular-transform and constant/gradient/checkerboard frame decisions; exact DCT/horizontal/vertical raw-quant adjustment; complete 2x2, incomplete 24x24 edge, 72x16 cross-tile, unsupported-distance, backpressure, RGB/core, quantization, and hierarchy checks; 520 directed/random selector transactions; 27/30 decisions match the broader float audit | Reduce/characterize the Q12 scorer discrepancy; prove or redesign wide products, lookup/square-root hardware, and duplicate frame storage; compose the search output with prepared quantization and implement variable-shape metadata/tokens |
 | Distance parameters | Six Q8 lookup points plus explicit fallback | Exact RTL/host lockstep tests | General supported range or a clearly frozen discrete API |
-| Quantized AC/DC/nonzero | Strong prepared-DCT all-DCT implementation; RGB path uses approximate Q12 XYB/DCT with adaptive raw quant and estimated tile CFL | Exact prepared-block oracle comparisons plus RGB-to-prepared estimated-CFL staged equivalence | Feeding focused adaptive strategy into rectangular quantization, broader image coverage, and full-reference frame comparison |
+| Quantized AC/DC/nonzero | Strong prepared-DCT all-DCT implementation plus a first-block-owned prepared DCT/16x8/8x16 boundary; RGB path remains all-DCT with approximate Q12 XYB/DCT, adaptive raw quant, and estimated tile CFL | Exact prepared-block oracles, RGB-to-prepared estimated-CFL equivalence, and 12 variable-shape fixtures exact to the frozen Q16 model with native AC within one integer and exact DC/counts | Compose the RGB strategy/CFL output with variable-shape quantization, broaden image coverage, and perform full-reference frame comparison |
 | DC/AC metadata/AC logical tokens | Strong for prepared all-DCT paths; adaptive raw quant and estimated tile CFL reach RGB AC metadata, the focused core AC route, and a combined token stream | Exact context/value/order tests, prepared codestream reconstruction, RGB/prepared estimated-CFL equivalence, and packed AXI metadata/map checks | Core DC-only adaptive routing, non-DCT strategies, and RGB token-to-codestream proof |
 | Entropy optimization/coding | Host-only through `libjxl-tiny` | Byte-parity assembly tests | Native host library or RTL implementation, depending final partition |
 | JXL frame/codestream assembly | Host-only | Exact bytes for constrained fixtures | Standalone production integration and broader decoder validation |
@@ -743,6 +743,24 @@ not demonstrated a complete or physically viable RGB-to-JXL FPGA encoder.
     then extend metadata and AC scanning, and only then add a combined token
     route. This sequencing preserves the project's earliest-mismatch discipline
     and avoids a second adaptive full-frame source.
+    **Prepared variable-shape quantization follow-up 2026-07-14:** that first-
+    block-owned seam is now implemented. `VarDctQuantizeBlock` accepts one
+    canonical Q16 X/Y/B payload with 64 DCT or 128 rectangular coefficients,
+    performs Y reconstruction and CFL residual quantization, derives one or two
+    raster-ordered DC cells, and exposes both the raw token-prefix count and the
+    shifted prediction-map count. `FramePreparedVarDctQuantizeStage` consumes
+    owners only, maps a 16x8 continuation below and an 8x16 continuation right,
+    rejects gaps, overlaps, bounds errors, and bad final markers, and recovers
+    after dropping a malformed frame. Twelve DCT/16x8/8x16 fixtures across four
+    image/distance/quant/CFL combinations match the frozen Q16 model exactly;
+    against native-float libjxl-tiny, AC differs by at most one integer while DC
+    and both count forms match exactly. A review-driven refactor serializes Y
+    reconstruction over 64 or 128 cycles, reducing emitted dynamic quant-bias
+    division from 128 operators to one. The generated five-file hierarchy is
+    13,363 lines, but still contains three combinational 128-lane AC quantizers,
+    so timing and resource feasibility remain unproven. The next earliest
+    mismatch is composing the RGB search with this seam, followed by first-
+    block-aware metadata and rectangular AC scanning.
 13. **Expand oracle diversity.** Add several deterministic patterns, signed and
     near-saturation values, supported distances, non-block/tile-aligned sizes,
     multi-tile 2D images, and at least a few small real-image crops. Validate
@@ -764,17 +782,18 @@ not demonstrated a complete or physically viable RGB-to-JXL FPGA encoder.
 ## Verification performed for this assessment
 
 The following local checks were run immediately before committing the complete
-implementation and documentation tree described by this assessment. Commit
-`f428908` is the pre-adjusted-raw-quant baseline for the latest dated follow-up:
+implementation and documentation tree described by this assessment. The
+2026-07-14 prepared variable-shape follow-up was validated from the complete
+working tree rather than inferred from its component tests:
 
 - `git diff --check` — passed.
 - `python3 -m py_compile tools/*.py` — passed.
 - `python3 tools/hjxl_generate_abi.py --check` — passed.
 - `python3 tools/hjxl_host_metadata_smoke.py` — passed.
-- `sbt test` — passed: 79 suites completed, 318 tests succeeded, 0
-  failed/canceled/ignored/pending, in 12 minutes 48 seconds.
+- `sbt test` — passed: 81 suites completed, 324 tests succeeded, 0
+  failed/canceled/ignored/pending, in 13 minutes 21 seconds.
 - `HJXL_REPO_ROOT=$PWD ./mill --no-server hjxl.test` — passed the complete same
-  79-suite/318-test tree in 746 seconds, confirming the sources and tests
+  81-suite/324-test tree in 780 seconds, confirming the sources and tests
   through the second build definition. Its forked workers reported zero
   failures, aborts, cancellations, ignored tests, or pending tests.
 - A final focused rerun of `FramePreparedAcStrategyTraceStageSpec` after the
@@ -790,6 +809,18 @@ implementation and documentation tree described by this assessment. Commit
   exact reciprocal sideband against the value actually emitted by the
   intentionally approximate RGB erosion path, avoiding a false exact claim at
   that seam.
+- Focused sbt execution of the new variable-shape primitive/frame/elaboration
+  suites plus the existing ordinary/rectangular transform and prepared-DCT
+  quantization/elaboration suites — passed: 6 suites and 20 tests. The new 12
+  DCT/16x8/8x16 prepared fixtures cover four pattern/distance/quant/CFL
+  combinations, both orientation maps, raw versus shifted nonzero counts,
+  stalls, malformed ownership, sticky overflow, and recovery.
+- `sbt 'runMain hjxl.ElaboratePreparedVarDctQuantize'` — passed and emitted 5
+  SystemVerilog files totaling 13,363 lines. Inspection and an automated
+  elaboration assertion find exactly one dynamic quant-bias division; the
+  constant CFL `/ 84` expression remains separate. This is structural evidence
+  only: three combinational 128-lane AC quantizers remain, and no synthesis,
+  timing, or resource report exists for this top.
 - Focused sbt execution of the prepared AC-strategy candidate evaluator,
   distance lookup/fallback, extreme-range saturation, eight-candidate
   sequencer, backpressure, and elaboration suites — passed: 2 suites and 6

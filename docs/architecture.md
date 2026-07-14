@@ -251,8 +251,8 @@ owned by the host tools for now.
   multiplier, EPF iteration count, and the Q24 AQ scale/damping/inverse-global-
   scale triplet generated from the current libjxl-tiny Python formulas.
 - `Dct8Approx` is a standalone Q12 1D DCT-8 primitive matching libjxl-tiny's
-  recursive scaled-DCT structure within fixed-point tolerance. It is the kernel
-  for the future 8x8 and rectangular transform stages.
+  recursive scaled-DCT structure within fixed-point tolerance. It is the shared
+  kernel for the current 8x8 and rectangular transform stages.
 - `Dct8x8Approx` composes the 1D kernel into libjxl-tiny's scaled 8x8 DCT
   coefficient layout. It applies the 1/8 scale after each dimension and emits
   the transposed canonical order consumed by later quantization work.
@@ -261,7 +261,8 @@ owned by the host tools for now.
   per-dimension scales and emit libjxl-tiny's canonical 8x16 coefficient
   layouts. The vertical transform is intentionally transposed; the horizontal
   transform is not. These are combinational reusable primitives for both
-  strategy scoring and future rectangular quantization, not frame schedulers.
+  strategy scoring and prepared variable-shape quantization, not frame
+  schedulers.
 - `AcStrategyDecisionSelector` implements the exact decision-only tail of
   `find_best_16x16_transform`: aggregate orientation comparison, horizontal
   tie selection, strict subregion replacement, and raster first/continuation
@@ -284,6 +285,30 @@ owned by the host tools for now.
   to each selected horizontal or vertical rectangle. It emits the adjusted byte
   as a sideband aligned with every strategy trace. `FrameAqAcStrategyTraceStage`
   supplies the focused RGB-connected source.
+- `VarDctQuantizeBlock` is the first-block-owned prepared quantization boundary
+  shared by DCT, 16x8, and 8x16. One record carries 64 ordinary-DCT or 128
+  rectangular canonical X/Y/B coefficients, the adjusted raw-quant byte,
+  distance scalars, and tile CFL values. The result keeps AC coefficients and
+  raw token-prefix nonzero counts on that owner, while exposing one or two
+  raster-ordered DC cells and the per-cell shifted nonzero count used by frame
+  prediction. Rectangular low-frequency coefficient 1 is split with the
+  reference DCT16-to-2 scale before DC quantization. Y reconstruction walks one
+  active coefficient per cycle (64 for DCT, 128 for rectangles), so the emitted
+  hierarchy contains one dynamic quant-bias divider rather than one per
+  coefficient. X/B CFL residuals and AC quantization consume the held Y result
+  atomically under backpressure.
+- `VarDctQuantizeTraceStage` emits owner AC records, covered-cell DC records,
+  three raw nonzero counts, then three shifted prediction-map counts. It is a
+  focused arithmetic/order diagnostic, not the final non-DCT token scheduler.
+  `FramePreparedVarDctQuantizeStage` accepts only first blocks in raster order;
+  no continuation record is legal. Its coverage map places the second 16x8
+  cell below the owner and the second 8x16 cell to its right, rejects gaps,
+  overlaps, out-of-bounds rectangles, and incorrect final markers, and drops a
+  malformed frame while retaining sticky `overflow`. The output retains owner
+  coordinates, raster ordinal, adjusted quant, and CFL for later metadata and
+  AC-token composition. This prepared seam is deliberately separate from the
+  RGB strategy scheduler until variable-shape metadata and coefficient scan
+  ownership are implemented.
 - `FrameDct8x8TraceStage` is the first transform integration slice. It buffers
   and pads the RGB frame, converts each padded raster 8x8 block to approximate
   XYB, applies `Dct8x8Approx` for all three channels, and emits `RawDct8x8`
@@ -629,6 +654,12 @@ wrappers.
   prepared-DCT quantization scheduler. Use it when the integration boundary is
   after DCT/AQ/CFL scalar generation but before quantized DC/AC tokenization.
   The generated top exposes `traceLast` for capture boundaries.
+- `ElaboratePreparedVarDctQuantize` generates the structured first-block-owned
+  DCT/16x8/8x16 frame quantizer in `generated-prepared-var-dct-quantize/`.
+  Its elaboration regression guards the 128-coefficient surface and requires
+  exactly one dynamic quant-bias division in emitted RTL. The current hierarchy
+  still contains three combinational 128-lane AC quantizers; no synthesis,
+  resource, or timing claim is made for this boundary.
 - `ElaboratePreparedDctOnlyQuantizeTokens` generates standalone SystemVerilog
   for the direct prepared-DCT quantize-to-token wrapper. This is the closest
   current RTL artifact to a prepared-transform encoder core, and it exposes
@@ -793,10 +824,11 @@ wrappers.
   reciprocal scaling, RGB-derived tile CFL, quantized traces, AC metadata, and
   a combined all-DCT token stream are connected, while separate focused routes
   now emit an RGB-derived adaptive strategy map and its adjusted raw-quant
-  field. The RGB path still uses
-  approximate Q12 XYB/DCT, and the selected rectangles do not yet reach
-  quantization, metadata, or tokens; broader distance generation, whole-frame
-  reference comparison, and RGB-token-to-codestream proof remain separate work.
+  field. The RGB path still uses approximate Q12 XYB/DCT. A separate prepared
+  first-block-owned boundary now quantizes selected rectangle shapes, but the
+  RGB strategy output does not yet feed it and variable-shape metadata/tokens
+  are still absent; broader distance generation, whole-frame reference
+  comparison, and RGB-token-to-codestream proof remain separate work.
   Entropy optimization and bitstream assembly remain host responsibilities.
 - `CflCoefficientSampleWeight`/`CflWeightedSumAccumulator`/
   `CflMultiplierEstimator`/`CflCoefficientSumAccumulator`/
@@ -839,6 +871,11 @@ wrappers.
   scaled costs, float reference costs, the reference/scorer decisions, and the
   scheduler-fixed decision after exact Q12 rectangular transforms plus fixed
   CFL fitting. Use it to validate both the scorer and frame-composition seams.
+- `tools/hjxl_reference.py --var-dct-quantize-q16-csv ...` writes DCT, 16x8,
+  and 8x16 first-block records with canonical Q16 coefficients, the exact
+  frozen-Q16 AC/DC/raw/shifted-count model, and the native-float libjxl-tiny
+  result. The current 12-case audit is exact against the fixed model; native AC
+  differs by at most one integer, while DC and both count forms are exact.
 - `tools/hjxl_reference.py --default-ac-strategy-npy ...` writes the matching
   default DCT-first strategy map.
 - `tools/hjxl_reference.py --raw-quant-field-npy ...`,

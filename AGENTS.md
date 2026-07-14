@@ -256,19 +256,36 @@ Read these libjxl-tiny files before making architectural changes:
   the distance-1 fallback before color/final arithmetic, and retains the X/Y/B
   Q12 block plus all quantization scalars. `TraceStage.AqFinalMap` is the
   completed unsigned-Q24 diagnostic seam.
-- `Dct8Approx` is a standalone Q12 1D DCT-8 primitive. It should be reused for
-  the future 8x8 transform stage instead of writing a separate transform shape
-  from scratch.
+- `Dct8Approx` is the shared standalone Q12 1D DCT-8 primitive for the current
+  8x8 and rectangular transform stages.
 - `Dct8x8Approx` is the first block-level transform primitive. It uses
   `Dct8Approx` for both dimensions, applies libjxl-tiny's per-dimension 1/8
   scale, and emits the scaled 8x8 coefficient layout used before quantization.
 - `Dct16Approx` is the matching recursive Q12 16-point kernel.
   `Dct16x8Approx` and `Dct8x16Approx` implement libjxl-tiny's two rectangular
   transforms with their intentionally different canonical 8x16 layouts. Reuse
-  them for AC-strategy scoring and future rectangular quantization; do not
+  them for AC-strategy scoring and prepared rectangular quantization; do not
   duplicate their orientation logic in a scheduler. Use
   `tools/hjxl_reference.py --scaled-dct-q12-csv ...` for signed float-reference
   and exact fixed-model oracle cases.
+- `VarDctQuantizeBlock` is the first prepared quantization boundary shared by
+  DCT, 16x8, and 8x16. Its input is first-block-owned: DCT carries 64 canonical
+  X/Y/B coefficients and a rectangle carries 128; continuation cells must not
+  be sent separately. It emits owner AC values and raw nonzero counts plus one
+  or two raster-ordered DC cells and shifted nonzero counts for prediction. Y
+  reconstruction uses one coefficient and one dynamic quant-bias divider per
+  cycle, taking 64 cycles for DCT or 128 for a rectangle. The X/B 128-lane AC
+  quantizers remain combinational, so elaboration is not synthesis/timing proof.
+  `VarDctQuantizeTraceStage` emits AC, DC, raw-count, then shifted-count rows.
+- `FramePreparedVarDctQuantizeStage` validates a first-block-only raster stream.
+  It maps the second 16x8 cell below the owner and the second 8x16 cell to its
+  right; gaps, overlaps, out-of-bounds rectangles, and incorrect `last` markers
+  drop the frame and set sticky `overflow`. Output metadata is latched through
+  quantizer latency and stalls. This boundary is not yet fed by the RGB
+  strategy scheduler, and it does not implement variable-shape metadata or AC
+  coefficient token scans. Use
+  `tools/hjxl_reference.py --var-dct-quantize-q16-csv ...` for exact frozen-Q16
+  and native-float DCT/16x8/8x16 fixtures.
 - `AcStrategyDecisionSelector` is the exact decision-only tail for one complete
   2x2 block region. It consumes common-scale nonnegative candidate costs,
   chooses horizontal on aggregate ties, replaces a rectangle only on a strict
@@ -571,6 +588,11 @@ Read these libjxl-tiny files before making architectural changes:
   `generated-prepared-dct-only-quantize/`; keep the generated directory out of
   git. The generated top exposes `traceLast` for frame-level capture
   boundaries.
+- Use `sbt 'runMain hjxl.ElaboratePreparedVarDctQuantize'` to generate the
+  structured first-block-owned variable-shape quantizer. It writes
+  `generated-prepared-var-dct-quantize/`; keep the generated directory out of
+  git. `QuantizeVarDctElaborationSpec` guards the 128-coefficient surface and
+  the single dynamic quant-bias divider.
 - Use `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'` to generate
   the direct prepared-DCT quantize-to-token wrapper. It writes
   `generated-prepared-dct-only-quantize-tokens/`; keep the generated directory
@@ -783,9 +805,10 @@ Read these libjxl-tiny files before making architectural changes:
   `FrameAqAcStrategyTraceStage` feeds it from the shared RGB AQ/DCT block source;
   a focused `HjxlCore(traceRoute = TraceStage.AcStrategy)` selects this path
   while `FrameAqAdjustedRawQuantTraceStage` adapts the same sideband for the
-  focused raw-quant route and the default shell stays fixed. This is not yet
-  downstream non-DCT quantization: current quant/token paths remain all-DCT and
-  do not consume the rectangle-adjusted quant field.
+  focused raw-quant route and the default shell stays fixed. This RGB route is
+  not yet downstream non-DCT quantization: the separate prepared variable-shape
+  quantizer exists, but the current RGB/token paths do not consume it or the
+  rectangle-adjusted quant field.
 - Use `sbt 'runMain hjxl.ElaboratePreparedAcStrategy'` for the prepared frame
   search, `sbt 'runMain hjxl.ElaborateAqAcStrategy'` for its RGB composition,
   and `sbt 'runMain hjxl.ElaborateCoreAcStrategy'` for the focused public-core

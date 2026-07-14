@@ -3594,6 +3594,326 @@ def dct_only_prepared_blocks_from_python_port(image, distance: float):
     }
 
 
+def write_var_dct_quantize_q16_csv(
+    path: Path,
+    image,
+    distance: float,
+    raw_quant: int,
+    ytox: int,
+    ytob: int,
+) -> None:
+    """Write first-block DCT/16x8/8x16 quantization fixtures.
+
+    The input seam is the Q16 canonical coefficient payload intended for the
+    RTL prepared boundary. The artifact contains both an exact frozen-Q16
+    AC/DC/nonzero model and the real libjxl-tiny float result, including
+    two-cell DC and shifted nonzero maps for rectangular transforms.
+    """
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.ac_strategy import (  # pylint: disable=import-outside-toplevel
+        DCT,
+        DCT16X8,
+        DCT8X16,
+        DCT_Y_WEIGHTS,
+        DCT2_Y_WEIGHTS,
+        INV_MATRICES,
+    )
+    from jxl_tiny.encoder import BLOCK_DIM, _ceil_div  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.quantization import (  # pylint: disable=import-outside-toplevel
+        K_INV_DC_QUANT,
+        compute_distance_params,
+        quantize_ac_group,
+    )
+
+    if not 1 <= raw_quant <= 255:
+        raise ValueError("VarDCT raw quant must fit a nonzero byte")
+    if not -128 <= ytox <= 127 or not -128 <= ytob <= 127:
+        raise ValueError("VarDCT CFL multipliers must fit signed bytes")
+
+    xyb = xyb_from_python_port(image)
+    x_blocks = _ceil_div(image.shape[2], BLOCK_DIM)
+    y_blocks = _ceil_div(image.shape[1], BLOCK_DIM)
+    if x_blocks < 2 or y_blocks < 2:
+        raise ValueError("VarDCT fixture requires at least a 2x2 block image")
+
+    params = compute_distance_params(distance)
+    scale_q16 = int(params.global_scale)
+    inv_qac_q16 = int(
+        round((1.0 / (float(params.scale) * float(raw_quant))) * (1 << 16))
+    )
+    inv_dc_factor_q16 = [
+        int(round(float(value) * float(params.scale_dc) * (1 << 16)))
+        for value in K_INV_DC_QUANT
+    ]
+    x_qm_multiplier_q16 = int(
+        round(math.pow(1.25, params.x_qm_scale - 2.0) * (1 << 16))
+    )
+    qf = np.full((y_blocks, x_blocks), np.uint8(raw_quant), dtype=np.uint8)
+    ytox_map = np.full((1, 1), np.int8(ytox), dtype=np.int8)
+    ytob_map = np.full((1, 1), np.int8(ytob), dtype=np.int8)
+
+    def encoded(strategy: int, first: bool) -> np.uint8:
+        return np.uint8((strategy << 1) | (1 if first else 0))
+
+    def round_shift_signed(value: int, shift: int) -> int:
+        magnitude = abs(int(value))
+        rounded = (magnitude + (1 << (shift - 1))) >> shift
+        return -rounded if value < 0 else rounded
+
+    def trunc_div_signed(numerator: int, denominator: int) -> int:
+        quotient = abs(int(numerator)) // int(denominator)
+        return -quotient if numerator < 0 else quotient
+
+    dct_thresholds_q12 = (
+        (2376, 2929, 3031, 3195),
+        (2376, 2601, 2703, 2867),
+        (2376, 3072, 3072, 3072),
+    )
+    rectangular_thresholds_q12 = (
+        (2351, 2904, 3006, 3170),
+        (2351, 2576, 2679, 2843),
+        (2351, 3047, 3047, 3047),
+    )
+    inv_matrices_q16 = {
+        strategy: tuple(
+            tuple(int(round(float(value) * (1 << 16))) for value in channel)
+            for channel in INV_MATRICES[strategy]
+        )
+        for strategy in (DCT, DCT16X8, DCT8X16)
+    }
+    y_weights_q32 = {
+        DCT: tuple(int(round(float(value) * (1 << 32))) for value in DCT_Y_WEIGHTS),
+        DCT16X8: tuple(
+            int(round(float(value) * (1 << 32))) for value in DCT2_Y_WEIGHTS
+        ),
+        DCT8X16: tuple(
+            int(round(float(value) * (1 << 32))) for value in DCT2_Y_WEIGHTS
+        ),
+    }
+
+    def quantize_channel_q16(
+        coefficients_q16,
+        channel: int,
+        strategy: int,
+        qm_multiplier_q16: int,
+    ):
+        coefficient_count = 64 if strategy == DCT else 128
+        width = 8 if strategy == DCT else 16
+        height = 8
+        thresholds = (
+            dct_thresholds_q12[channel]
+            if strategy == DCT
+            else rectangular_thresholds_q12[channel]
+        )
+        output = []
+        for index in range(coefficient_count):
+            inverse_weight_q16 = inv_matrices_q16[strategy][channel][index]
+            weighted_q16 = (int(coefficients_q16[index]) * inverse_weight_q16) >> 16
+            value_q16 = (
+                weighted_q16 * scale_q16 * raw_quant * qm_multiplier_q16
+            ) >> 32
+            coefficient_x = index % width
+            coefficient_y = index // width
+            threshold_index = (
+                (2 if coefficient_y >= height // 2 else 0)
+                + (1 if coefficient_x >= width // 2 else 0)
+            )
+            threshold_q16 = thresholds[threshold_index] << 4
+            output.append(
+                round_shift_signed(value_q16, 16)
+                if abs(value_q16) >= threshold_q16
+                else 0
+            )
+        return output
+
+    def low_frequency_pair_q16(coefficients_q16, strategy: int):
+        if strategy == DCT:
+            return [int(coefficients_q16[0])]
+        scaled_low1 = round_shift_signed(
+            int(coefficients_q16[1]) * 3873047726, 32
+        )
+        return [
+            int(coefficients_q16[0]) + scaled_low1,
+            int(coefficients_q16[0]) - scaled_low1,
+        ]
+
+    def quantize_dc_q16(
+        coefficient_q16: int,
+        channel: int,
+        quantized_y_dc: int,
+    ) -> int:
+        product_q32 = coefficient_q16 * inv_dc_factor_q16[channel]
+        if channel == 2:
+            product_q32 -= (quantized_y_dc * (1 << 15)) << 16
+        return round_shift_signed(product_q32, 32)
+
+    def fixed_quantize_block(raw_coefficients_q16, strategy: int):
+        coefficient_count = 64 if strategy == DCT else 128
+        quantized_y = quantize_channel_q16(
+            raw_coefficients_q16[1], 1, strategy, 1 << 16
+        )
+        reconstructed_y_q16 = []
+        for coefficient, weight_q32 in zip(
+            quantized_y, y_weights_q32[strategy]
+        ):
+            magnitude = abs(coefficient)
+            if magnitude == 0:
+                adjusted_q16 = 0
+            elif magnitude == 1:
+                adjusted_q16 = 60945
+            else:
+                adjusted_q16 = (magnitude << 16) - 9503 // magnitude
+            if coefficient < 0:
+                adjusted_q16 = -adjusted_q16
+            reconstructed_y_q16.append(
+                (adjusted_q16 * weight_q32 * inv_qac_q16) >> 48
+            )
+
+        x_factor_q16 = trunc_div_signed(ytox * (1 << 16), 84)
+        b_factor_q16 = (1 << 16) + trunc_div_signed(ytob * (1 << 16), 84)
+        residual_x_q16 = [
+            int(raw_coefficients_q16[0][index])
+            - ((x_factor_q16 * reconstructed_y_q16[index]) >> 16)
+            for index in range(coefficient_count)
+        ]
+        residual_b_q16 = [
+            int(raw_coefficients_q16[2][index])
+            - ((b_factor_q16 * reconstructed_y_q16[index]) >> 16)
+            for index in range(coefficient_count)
+        ]
+        quantized_x = quantize_channel_q16(
+            residual_x_q16, 0, strategy, x_qm_multiplier_q16
+        )
+        quantized_b = quantize_channel_q16(
+            residual_b_q16, 2, strategy, 1 << 16
+        )
+        quantized_ac = (quantized_x, quantized_y, quantized_b)
+
+        y_dc_coefficients = low_frequency_pair_q16(
+            raw_coefficients_q16[1], strategy
+        )
+        x_dc_coefficients = low_frequency_pair_q16(residual_x_q16, strategy)
+        b_dc_coefficients = low_frequency_pair_q16(residual_b_q16, strategy)
+        quantized_y_dc = [
+            quantize_dc_q16(coefficient, 1, 0)
+            for coefficient in y_dc_coefficients
+        ]
+        quantized_dc = (
+            [
+                quantize_dc_q16(coefficient, 0, quantized_y_dc[index])
+                for index, coefficient in enumerate(x_dc_coefficients)
+            ],
+            quantized_y_dc,
+            [
+                quantize_dc_q16(coefficient, 2, quantized_y_dc[index])
+                for index, coefficient in enumerate(b_dc_coefficients)
+            ],
+        )
+
+        llf_count = 1 if strategy == DCT else 2
+        num_nonzeros = tuple(
+            sum(value != 0 for value in channel[llf_count:])
+            for channel in quantized_ac
+        )
+        shifted_nonzeros = tuple(
+            value if strategy == DCT else (value + 1) >> 1
+            for value in num_nonzeros
+        )
+        return quantized_ac, quantized_dc, num_nonzeros, shifted_nonzeros
+
+    rows = []
+    for strategy in (DCT, DCT16X8, DCT8X16):
+        strategy_grid = np.full(
+            (y_blocks, x_blocks), encoded(DCT, True), dtype=np.uint8
+        )
+        if strategy == DCT16X8:
+            strategy_grid[0, 0] = encoded(strategy, True)
+            strategy_grid[1, 0] = encoded(strategy, False)
+        elif strategy == DCT8X16:
+            strategy_grid[0, 0] = encoded(strategy, True)
+            strategy_grid[0, 1] = encoded(strategy, False)
+
+        block = quantize_ac_group(
+            xyb, qf, strategy_grid, ytox_map, ytob_map, distance
+        )[(0, 0)]
+        coefficient_count = int(block.raw_coefficients.shape[1])
+        dc = block.block_quant_dc.reshape(3, -1)
+        shifted_nonzeros = block.num_nonzeros_map.reshape(3, -1)[:, 0]
+        coefficients_q16 = np.rint(
+            block.raw_coefficients * np.float32(1 << 16)
+        ).astype(np.int32)
+        (
+            fixed_quantized_ac,
+            fixed_quantized_dc,
+            fixed_num_nonzeros,
+            fixed_shifted_nonzeros,
+        ) = fixed_quantize_block(coefficients_q16, strategy)
+
+        rows.append(
+            (
+                strategy,
+                coefficient_count,
+                int(dc.shape[1]),
+                raw_quant,
+                scale_q16,
+                inv_qac_q16,
+                " ".join(str(value) for value in inv_dc_factor_q16),
+                x_qm_multiplier_q16,
+                ytox,
+                ytob,
+                *(" ".join(str(int(value)) for value in row) for row in coefficients_q16),
+                *(" ".join(str(int(value)) for value in row) for row in fixed_quantized_ac),
+                *(" ".join(str(int(value)) for value in row) for row in fixed_quantized_dc),
+                " ".join(str(int(value)) for value in fixed_num_nonzeros),
+                " ".join(str(int(value)) for value in fixed_shifted_nonzeros),
+                *(" ".join(str(int(value)) for value in row) for row in block.quantized_ac),
+                *(" ".join(str(int(value)) for value in row) for row in dc),
+                " ".join(str(int(value)) for value in block.num_nonzeros),
+                " ".join(str(int(value)) for value in shifted_nonzeros),
+            )
+        )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "strategy",
+                "coefficient_count",
+                "covered_blocks",
+                "quant",
+                "scale_q16",
+                "inv_qac_q16",
+                "inv_dc_factor_q16",
+                "x_qm_multiplier_q16",
+                "ytox",
+                "ytob",
+                "coefficients_x_q16",
+                "coefficients_y_q16",
+                "coefficients_b_q16",
+                "fixed_quantized_ac_x",
+                "fixed_quantized_ac_y",
+                "fixed_quantized_ac_b",
+                "fixed_quantized_dc_x",
+                "fixed_quantized_dc_y",
+                "fixed_quantized_dc_b",
+                "fixed_num_nonzeros",
+                "fixed_shifted_num_nonzeros",
+                "quantized_ac_x",
+                "quantized_ac_y",
+                "quantized_ac_b",
+                "quantized_dc_x",
+                "quantized_dc_y",
+                "quantized_dc_b",
+                "num_nonzeros",
+                "shifted_num_nonzeros",
+            )
+        )
+        writer.writerows(rows)
+
+
 def fixed_dct_only_token_outputs_from_python_port(
     image,
     distance: float,
@@ -3934,6 +4254,11 @@ def main() -> int:
         help="optional fixed-point prepared AC-strategy candidate-cost fixture",
     )
     parser.add_argument(
+        "--var-dct-quantize-q16-csv",
+        type=Path,
+        help="optional Q16 prepared DCT/16x8/8x16 quantization fixture",
+    )
+    parser.add_argument(
         "--default-ac-strategy-npy",
         type=Path,
         help="optional default DCT-first AC strategy map NumPy output path",
@@ -4270,6 +4595,15 @@ def main() -> int:
             image,
             args.distance,
         )
+    if args.var_dct_quantize_q16_csv is not None:
+        write_var_dct_quantize_q16_csv(
+            args.var_dct_quantize_q16_csv,
+            image,
+            args.distance,
+            args.fixed_raw_quant,
+            args.fixed_ytox,
+            args.fixed_ytob,
+        )
     if args.default_ac_strategy_npy is not None:
         np = _load_numpy()
         args.default_ac_strategy_npy.parent.mkdir(parents=True, exist_ok=True)
@@ -4447,6 +4781,7 @@ def main() -> int:
         and args.dct8x8_npy is None
         and args.scaled_dct_q12_csv is None
         and args.ac_strategy_cost_q16_csv is None
+        and args.var_dct_quantize_q16_csv is None
         and args.default_ac_strategy_npy is None
         and args.raw_quant_field_npy is None
         and args.libjxl_ac_strategy_npy is None

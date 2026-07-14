@@ -13,7 +13,7 @@ board-proven FPGA encoder.
 | Area | Current state |
 | --- | --- |
 | Strongest validated boundary | Host-prepared, all-DCT coefficients through quantization and logical token traces, followed by host-side codestream assembly |
-| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and a combined all-DCT logical-token path; focused routes now generate a tile-correct adaptive 8x8/16x8/8x16 strategy map and its strategy-adjusted raw-quant field from the same AQ/CFL data, but downstream rectangular quantization/tokens and RGB-token codestream proof remain incomplete |
+| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and a combined all-DCT logical-token path; focused routes generate a tile-correct adaptive 8x8/16x8/8x16 strategy map and adjusted raw-quant field, and a separate prepared first-block boundary quantizes all three shapes, but the RGB search is not yet composed with that boundary and non-DCT metadata/tokens remain incomplete |
 | Hardware output | Trace/token records; entropy optimization and final JPEG XL bitstream assembly remain host software responsibilities |
 | Near-term FPGA top | `HjxlKv260PreparedDctTop`, the direct prepared-DCT variant, is frozen as the first synthesis and bring-up target |
 | Physical validation | Chisel simulation and generated SystemVerilog are covered; Vivado synthesis, timing closure, resource use, bitstream generation, and KV260 execution have not been demonstrated |
@@ -117,10 +117,11 @@ the metadata route omits the unused reciprocal. The combined
 AC-metadata, and AC logical tokens, and supplies the focused core AC-token
 route. Focused `TraceStage.YtoxMap` and `TraceStage.YtobMap` routes expose the
 estimated maps directly. The earlier `FrameAqDctOnly*` and
-`FrameCflMapTraceStage` wrappers remain fixed-CFL diagnostics. Later stages
-still need to consume the selected rectangles and strategy-adjusted raw quant
-in quantization/metadata/tokens, plus entropy coding, bitstream assembly, and an
-RGB-token-to-codestream parity proof. `Dct16Approx`, `Dct16x8Approx`, and
+`FrameCflMapTraceStage` wrappers remain fixed-CFL diagnostics. The focused RGB
+search still needs to feed selected rectangles and strategy-adjusted raw quant
+into the prepared variable-shape quantizer and then into non-DCT metadata/token
+schedulers, plus entropy coding, bitstream assembly, and an RGB-token-to-
+codestream parity proof. `Dct16Approx`, `Dct16x8Approx`, and
 `Dct8x16Approx` now provide the Q12 recursive kernel and both canonical
 rectangular coefficient layouts required by scoring and later quantization.
 `AcStrategyCandidateCostEvaluator` walks prepared canonical Q12 X/Y/B
@@ -139,16 +140,31 @@ incomplete tile/frame rows and columns stay DCT.
 block source. `FrameAqAdjustedRawQuantTraceStage` adapts the same result into a
 `RawQuantField` trace, and `FrameAdjustedRawQuantFieldTraceStage` preserves the
 cheap uniform fixed override. Focused core routes select these stages without
-adding the heavy search to the default all-route shell. The strategy and
-adjusted-quant results do not yet feed the all-DCT quantization or token
+adding the heavy search to the default all-route shell. `VarDctQuantizeBlock`
+is the new prepared first-block-owned quantization seam for DCT, 16x8, and
+8x16. It consumes 64 or 128 canonical Q16 X/Y/B coefficients, applies Y
+quantize/dequantize and CFL residuals, emits one or two DC cells, retains the
+raw nonzero count for token prefixes, and emits the shifted count replicated by
+future prediction maps. `FramePreparedVarDctQuantizeStage` validates raster
+ownership without continuation records, maps the second DC/nonzero cell below
+for 16x8 or right for 8x16, and reports malformed gaps, overlaps, bounds, or
+last markers through sticky `overflow`. Y reconstruction walks one coefficient
+per cycle and shares one dynamic quant-bias divider; the three 128-lane AC
+quantizers remain combinational and have not been synthesized or timed. This
+prepared seam is not yet connected to the RGB strategy result or non-DCT token
 schedulers.
 `tools/hjxl_reference.py --scaled-dct-q12-csv ...` exports independent signed
 transform fixtures plus the exact fixed transform result;
 `--ac-strategy-cost-q16-csv ...` exports the prepared candidate-cost seam,
 fixed-model result, float reference cost, scorer decision, and the exact
 scheduler-fixed decision including Q12 rectangular transforms and fixed CFL.
-The fixed arithmetic is exact against its oracle, but Q12 input rounding can
-change near-symmetric orientation choices.
+`--var-dct-quantize-q16-csv ...` exports the 64/128-coefficient prepared
+quantization inputs, exact frozen-Q16 output, and native-float libjxl-tiny
+output for all three shapes. Across the four checked image/distance/CFL cases,
+RTL matches the fixed model exactly; native AC differs by at most one integer,
+while DC and both nonzero-count forms match exactly. The fixed strategy-cost
+arithmetic is exact against its oracle, but Q12 input rounding can change near-
+symmetric orientation choices.
 Standalone fixed-point primitives also cover approximate RGB-to-XYB, 1D DCT-8,
 and the scaled 8x8 DCT block layout used by libjxl-tiny. The RGB-to-XYB primitive
 applies the signed matrix at Q26, clamps
@@ -426,6 +442,7 @@ Generate the exact prepared-token trace top-levels:
 
 ```sh
 sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantize'
+sbt 'runMain hjxl.ElaboratePreparedVarDctQuantize'
 sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'
 sbt 'runMain hjxl.ElaboratePreparedDctAxiStream'
 sbt 'runMain hjxl.ElaboratePreparedDctAxiLiteStream'
@@ -1396,6 +1413,13 @@ exercises the adaptive all-DCT oracle exports by checking that
 the same bytes as `--dct-only-frame-bin` and `--dct-only-codestream-bin`, and
 uses `tools/hjxl_compare_tokens.py` for exact token-array comparison on the
 direct wrapper trace.
+`QuantizeVarDctBlockSpec` checks the first-block-owned DCT/16x8/8x16 prepared
+quantizer against 12 independently generated Q16/native-float fixtures. It
+covers exact AC/DC/count arithmetic, the one-integer native AC bound, 64/128-
+cycle Y reconstruction, output stalls, trace order, horizontal/vertical cell
+ownership, malformed-frame rejection, sticky overflow, and recovery.
+`QuantizeVarDctElaborationSpec` guards the variable-shape structured port
+surface and requires exactly one emitted dynamic quant-bias divider.
 `FramePreparedAcMetadataTokenTraceStageSpec` separately covers two-tile
 prepared metadata fixtures for CFL residual prediction and raw-quant residual
 contexts, including a libjxl-tiny oracle-backed 72x8 all-DCT case.
