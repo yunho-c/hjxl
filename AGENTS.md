@@ -290,8 +290,10 @@ Read these libjxl-tiny files before making architectural changes:
   8x16 rectangles. It retains their 64-bit costs, feeds
   `AcStrategyDecisionSelector`, and holds the decision and diagnostics under
   backpressure. `FramePreparedAcStrategyTraceStage` now supplies its frame/tile
-  scheduling; the default `FrameAcStrategyTraceStage` remains a separate fixed
-  all-DCT scaffold.
+  scheduling, retains each input raw-quant byte, applies the reference
+  post-search maximum to both blocks in every selected rectangle, and emits the
+  adjusted byte aligned with the raster strategy trace. The default
+  `FrameAcStrategyTraceStage` remains a separate fixed all-DCT scaffold.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`, defaulting unsupported values
@@ -391,15 +393,18 @@ Read these libjxl-tiny files before making architectural changes:
   AC/metadata frame arrays. This wrapper preserves prepared raw-quant and CFL
   metadata instead of falling back to fixed raw-quant/scalar-CFL metadata, and
   its `traceLast` output marks the final AC-token trace beat.
-- `FrameRawQuantFieldTraceStage` is the focused real/fixed raw-quant selector.
-  Zero `FrameConfig.fixedRawQuant` routes RGB through
+- `FrameRawQuantFieldTraceStage` is the narrow pre-strategy real/fixed
+  raw-quant selector. Zero `FrameConfig.fixedRawQuant` routes RGB through
   `FrameAqRawQuantTraceStage`; a nonzero byte selects the retained
-  `FrameFixedRawQuantFieldTraceStage`. Selection is captured at frame start.
-  Both paths emit zero-extended `RawQuantField` bytes, so values above 127 stay
-  positive in `StageTrace.value`. The default all-route shell omits this heavy
-  focused route.
+  `FrameFixedRawQuantFieldTraceStage`. `FrameAdjustedRawQuantFieldTraceStage` is
+  the focused public selector: its zero-override branch runs
+  `FrameAqAdjustedRawQuantTraceStage`, while a nonzero uniform byte uses the
+  cheap fixed branch because it is adjustment-invariant. Selection is captured
+  at frame start. All paths emit zero-extended `RawQuantField` bytes, so values
+  above 127 stay positive in `StageTrace.value`. The default all-route shell
+  omits the heavy adjusted route.
 - `AqMapToRawQuant` converts unsigned Q24 prepared AQ-map and inverse-global-
-  scale values into libjxl-tiny adjusted raw-quant bytes with nearest rounding
+  scale values into libjxl-tiny pre-strategy raw-quant bytes with nearest rounding
   and a `[1, 255]` clamp. `FramePreparedAqRawQuantTraceStage` streams one such
   prepared AQ value per padded raster block, snapshots frame geometry and scale
   on the first accepted block, and emits backpressure-safe `RawQuantField`
@@ -698,10 +703,11 @@ Read these libjxl-tiny files before making architectural changes:
   surface.
 - Entropy coding, entropy table optimization, and bitstream assembly are still
   future work.
-- `FrameRawQuantFieldTraceStage` emits adaptive adjusted raw-quant bytes when
-  `fixedRawQuant` is zero and selects the fixed byte only for an explicit
-  nonzero override. It is a focused route, and its byte remains zero-extended
-  into `StageTrace.value`.
+- `FrameAdjustedRawQuantFieldTraceStage` emits adaptive strategy-adjusted
+  raw-quant bytes when `fixedRawQuant` is zero and selects the fixed byte only
+  for an explicit nonzero override. It is a focused route, and its byte remains
+  zero-extended into `StageTrace.value`. Keep `FrameRawQuantFieldTraceStage` as
+  the smaller pre-strategy conversion diagnostic.
 - Use `sbt 'runMain hjxl.ElaboratePreparedAqFinalModulation'` to generate the
   narrow prepared gamma-seed to final-map boundary. It writes
   `generated-prepared-aq-final-modulation/`; keep it out of git.
@@ -743,8 +749,8 @@ Read these libjxl-tiny files before making architectural changes:
   feasibility work.
 - Use `sbt 'runMain hjxl.ElaborateAqFinalMap'` to generate the completed RGB AQ
   map top in `generated-aq-final-map/`, and
-  `sbt 'runMain hjxl.ElaborateAqRawQuant'` for the same chain through adjusted
-  raw-quant conversion in `generated-aq-raw-quant/`. Keep both out of git. The
+  `sbt 'runMain hjxl.ElaborateAqRawQuant'` for the same chain through
+  pre-strategy raw-quant conversion in `generated-aq-raw-quant/`. Keep both out of git. The
   final exponent and scale/dampen datapaths contain no runtime divider, but the
   fractional lookup table, multipliers, and full-frame storage still need
   physical feasibility evidence.
@@ -771,12 +777,15 @@ Read these libjxl-tiny files before making architectural changes:
   `FramePreparedAcStrategyTraceStage` is the adaptive prepared-frame boundary:
   it buffers Q12 XYB/DCT blocks, fits per-tile CFL, generates and scores the
   four 8x8 plus four rectangular candidates for every complete tile-local 2x2
-  region, leaves incomplete edges DCT, and emits the raster decision map.
+  region, leaves incomplete edges DCT, applies the exact post-search maximum to
+  every selected rectangle's two raw-quant bytes, and emits the raster decision
+  map plus aligned adjusted-quant sideband.
   `FrameAqAcStrategyTraceStage` feeds it from the shared RGB AQ/DCT block source;
   a focused `HjxlCore(traceRoute = TraceStage.AcStrategy)` selects this path
-  while the default shell stays fixed. This is not yet downstream non-DCT
-  quantization: current quant/token paths remain all-DCT and do not apply the
-  rectangle-adjusted quant field.
+  while `FrameAqAdjustedRawQuantTraceStage` adapts the same sideband for the
+  focused raw-quant route and the default shell stays fixed. This is not yet
+  downstream non-DCT quantization: current quant/token paths remain all-DCT and
+  do not consume the rectangle-adjusted quant field.
 - Use `sbt 'runMain hjxl.ElaboratePreparedAcStrategy'` for the prepared frame
   search, `sbt 'runMain hjxl.ElaborateAqAcStrategy'` for its RGB composition,
   and `sbt 'runMain hjxl.ElaborateCoreAcStrategy'` for the focused public-core
@@ -785,6 +794,11 @@ Read these libjxl-tiny files before making architectural changes:
   generated directories out of git. The RGB/core hierarchy must contain one
   RGB-to-XYB converter, three ordinary DCTs, the two rectangular transform
   shapes, one CFL estimator, and no adaptive reciprocal quantizer.
+- Use `sbt 'runMain hjxl.ElaborateAqAdjustedRawQuant'` for the standalone
+  strategy-adjusted RGB byte trace and
+  `sbt 'runMain hjxl.ElaborateCoreRawQuant'` for the focused public-core shell.
+  They write `generated-aq-adjusted-raw-quant/` and
+  `generated-core-raw-quant/`; keep both generated directories out of git.
 - `tools/hjxl_reference.py --xyb-q12-csv ...` exports padded signed-Q8 RGB rows
   beside libjxl-tiny signed-Q12 XYB values. Keep the gradient, checkerboard, and
   random oracle cases in `RgbToXybApproxSpec` when changing matrix precision,
@@ -1110,8 +1124,8 @@ Read these libjxl-tiny files before making architectural changes:
   `--fixed-dct-only-ytob-map-npy` export the fixed metadata grids that match the
   current focused `RawQuantField`, `YtoxMap`, and `YtobMap` RTL routes, using
   the same `--fixed-raw-quant`, `--fixed-ytox`, and `--fixed-ytob` values as the
-  fixed token oracles. Use these for comparator oracles until adaptive raw-quant
-  and CFL-map hardware is implemented; the adaptive `--dct-only-*` metadata
+  fixed token oracles. Use these for explicit fixed-route comparator oracles;
+  the adaptive `--dct-only-*` metadata
   grids describe libjxl-tiny's all-DCT software path and are not expected to
   match the fixed metadata routes.
 - `--fixed-dct-only-prepared-token-inputs-json` exports the prepared DC sample
@@ -1305,8 +1319,8 @@ Read these libjxl-tiny files before making architectural changes:
   cumulative log-domain result when
   `traceRoute = TraceStage.AqGammaModulation`, or the completed unsigned-Q24
   map when `traceRoute = TraceStage.AqFinalMap`; a focused
-  `TraceStage.RawQuantField` build emits real adaptive bytes at zero
-  `fixedRawQuant` and the explicit fixed byte otherwise;
+  `TraceStage.RawQuantField` build emits strategy-adjusted adaptive bytes at
+  zero `fixedRawQuant` and the explicit fixed byte otherwise;
   `enableQuant` alone selects fixed AC strategy metadata in the default
   all-route shell, while a focused `TraceStage.AcStrategy` build selects the
   adaptive trace-only map. Do not describe either as a complete encoder yet;

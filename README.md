@@ -13,7 +13,7 @@ board-proven FPGA encoder.
 | Area | Current state |
 | --- | --- |
 | Strongest validated boundary | Host-prepared, all-DCT coefficients through quantization and logical token traces, followed by host-side codestream assembly |
-| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and a combined all-DCT logical-token path; a focused route now generates a tile-correct adaptive 8x8/16x8/8x16 strategy map from the same AQ/CFL data, but downstream rectangular quantization/tokens and RGB-token codestream proof remain incomplete |
+| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and a combined all-DCT logical-token path; focused routes now generate a tile-correct adaptive 8x8/16x8/8x16 strategy map and its strategy-adjusted raw-quant field from the same AQ/CFL data, but downstream rectangular quantization/tokens and RGB-token codestream proof remain incomplete |
 | Hardware output | Trace/token records; entropy optimization and final JPEG XL bitstream assembly remain host software responsibilities |
 | Near-term FPGA top | `HjxlKv260PreparedDctTop`, the direct prepared-DCT variant, is frozen as the first synthesis and bring-up target |
 | Physical validation | Chisel simulation and generated SystemVerilog are covered; Vivado synthesis, timing closure, resource use, bitstream generation, and KV260 execution have not been demonstrated |
@@ -58,7 +58,8 @@ responses. A focused `traceRoute = TraceStage.AqFinalMap` build exponentiates
 that seed, applies the distance-derived Q24 scale and high-distance damping,
 and emits the completed unsigned-Q24 AQ map. A focused
 `traceRoute = TraceStage.RawQuantField` core now converts that RGB-derived map
-to the adjusted raw-quant byte for each padded 8x8 block; a nonzero
+to a raw-quant byte for each padded 8x8 block, runs the adaptive strategy search,
+and raises both bytes in each selected rectangle to their local maximum; a nonzero
 `fixedRawQuant` selects the retained fixed override instead. `AqMapToRawQuant` and
 `FramePreparedAqRawQuantTraceStage` retain the narrow prepared adaptive-
 quantization seam: the host supplies libjxl-tiny's image-dependent AQ map and
@@ -97,7 +98,7 @@ X/Y/B block plus the remaining distance/configuration metadata;
 `AqFastExpQ24` uses normalized fractional
 `fast_pow2f` interpolation, and `AqFinalModulationBlock` applies Q24
 scale/dampen/add arithmetic to emit `AqFinalMap`. `FrameAqFinalMapPipeline`
-shares that completed chain between the final-map trace, real `RawQuantField`
+shares that completed chain between the final-map trace, pre-strategy raw-quant
 conversion, and downstream DCT quantization without repeating RGB-to-XYB or
 frame storage. `FrameAqDctBlockStage` converts each completed AQ block to one
 native-Q12 all-DCT record without elaborating reciprocal hardware.
@@ -117,8 +118,8 @@ AC-metadata, and AC logical tokens, and supplies the focused core AC-token
 route. Focused `TraceStage.YtoxMap` and `TraceStage.YtobMap` routes expose the
 estimated maps directly. The earlier `FrameAqDctOnly*` and
 `FrameCflMapTraceStage` wrappers remain fixed-CFL diagnostics. Later stages
-still need rectangular quantization/tokens, strategy-adjusted raw quant,
-entropy coding, bitstream assembly, and an
+still need to consume the selected rectangles and strategy-adjusted raw quant
+in quantization/metadata/tokens, plus entropy coding, bitstream assembly, and an
 RGB-token-to-codestream parity proof. `Dct16Approx`, `Dct16x8Approx`, and
 `Dct8x16Approx` now provide the Q12 recursive kernel and both canonical
 rectangular coefficient layouts required by scoring and later quantization.
@@ -128,14 +129,19 @@ fixed point, and applies the supported distance multiplier. The
 `PreparedAcStrategy2x2Selector` sequences four 8x8, two 16x8, and two 8x16
 candidates into `AcStrategyDecisionSelector`, which implements the reference's
 exact orientation, strict replacement, tie, and first/continuation semantics.
-`FramePreparedAcStrategyTraceStage` buffers prepared raster Q12 XYB/DCT blocks,
-fits CFL once per 64x64 tile, visits only complete tile-local 2x2 regions, forms
-candidate AQ/mask maxima, computes rectangular transforms, and emits the full
-raster strategy grid; incomplete tile/frame rows and columns stay DCT.
+`FramePreparedAcStrategyTraceStage` buffers prepared raster Q12 XYB/DCT blocks
+and their raw-quant bytes, fits CFL once per 64x64 tile, visits only complete
+tile-local 2x2 regions, forms candidate AQ/mask maxima, computes rectangular
+transforms, then applies the reference post-search quant-field adjustment before
+emitting the full raster strategy grid and an aligned adjusted-byte sideband;
+incomplete tile/frame rows and columns stay DCT.
 `FrameAqAcStrategyTraceStage` composes that boundary after the shared RGB AQ/DCT
-block source, and the focused core route selects it without adding the heavy
-search to the default all-route shell. This trace-only route does not yet feed
-the all-DCT quantization or token schedulers.
+block source. `FrameAqAdjustedRawQuantTraceStage` adapts the same result into a
+`RawQuantField` trace, and `FrameAdjustedRawQuantFieldTraceStage` preserves the
+cheap uniform fixed override. Focused core routes select these stages without
+adding the heavy search to the default all-route shell. The strategy and
+adjusted-quant results do not yet feed the all-DCT quantization or token
+schedulers.
 `tools/hjxl_reference.py --scaled-dct-q12-csv ...` exports independent signed
 transform fixtures plus the exact fixed transform result;
 `--ac-strategy-cost-q16-csv ...` exports the prepared candidate-cost seam,
@@ -373,8 +379,10 @@ sbt 'runMain hjxl.ElaborateAqColorModulation'
 sbt 'runMain hjxl.ElaborateAqGammaModulation'
 sbt 'runMain hjxl.ElaborateAqFinalMap'
 sbt 'runMain hjxl.ElaborateAqRawQuant'
+sbt 'runMain hjxl.ElaborateAqAdjustedRawQuant'
 sbt 'runMain hjxl.ElaboratePreparedAcStrategy'
 sbt 'runMain hjxl.ElaborateAqAcStrategy'
+sbt 'runMain hjxl.ElaborateCoreRawQuant'
 sbt 'runMain hjxl.ElaborateAqDctOnlyQuantize'
 sbt 'runMain hjxl.ElaborateAqDctOnlyAcMetadataTokens'
 sbt 'runMain hjxl.ElaborateAqDctOnlyQuantizeTokens'

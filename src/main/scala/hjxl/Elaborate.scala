@@ -280,6 +280,30 @@ object ElaborateCoreAcStrategy extends App {
   )
 }
 
+object ElaborateAqAdjustedRawQuant extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAdjustedRawQuantFieldTraceStage(),
+    args = Array("--target-dir", "generated-aq-adjusted-raw-quant"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateCoreRawQuant extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlCore(traceRoute = TraceStage.RawQuantField),
+    args = Array("--target-dir", "generated-core-raw-quant"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaborateAqDctOnlyQuantize extends App {
   ChiselStage.emitSystemVerilogFile(
     new FrameAqDctOnlyQuantizeTraceStage(),

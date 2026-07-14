@@ -148,3 +148,53 @@ class FrameRawQuantFieldTraceStage(c: HjxlConfig = HjxlConfig()) extends Module 
     selectedFixed := false.B
   }
 }
+
+/** Selects strategy-adjusted RGB AQ unless `fixedRawQuant` overrides it.
+  *
+  * Unlike `FrameRawQuantFieldTraceStage`, the adaptive branch waits for the
+  * focused AC-strategy search and applies libjxl-tiny's `adjust_quant_field`
+  * maximum over every selected rectangular transform. The fixed branch stays
+  * inexpensive because a uniform override is already adjustment-invariant.
+  */
+class FrameAdjustedRawQuantFieldTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+  val io = IO(new Bundle {
+    val config = Input(new FrameConfig(c))
+    val input = Flipped(Decoupled(new RgbPixel(c)))
+    val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
+  })
+
+  val fixed = Module(new FrameFixedRawQuantFieldTraceStage(c))
+  val adaptive = Module(new FrameAqAdjustedRawQuantTraceStage(c))
+  fixed.io.config := io.config
+  adaptive.io.config := io.config
+  fixed.io.input.bits := io.input.bits
+  adaptive.io.input.bits := io.input.bits
+
+  val frameActive = RegInit(false.B)
+  val selectedFixed = RegInit(false.B)
+  val useFixed = Mux(frameActive, selectedFixed, io.config.fixedRawQuant =/= 0.U)
+
+  fixed.io.input.valid := io.input.valid && useFixed
+  adaptive.io.input.valid := io.input.valid && !useFixed
+  io.input.ready := Mux(useFixed, fixed.io.input.ready, adaptive.io.input.ready)
+
+  io.trace.valid := Mux(useFixed, fixed.io.trace.valid, adaptive.io.trace.valid)
+  io.trace.bits := Mux(useFixed, fixed.io.trace.bits, adaptive.io.trace.bits)
+  io.traceLast := Mux(useFixed, fixed.io.traceLast, adaptive.io.traceLast)
+  fixed.io.trace.ready := io.trace.ready && useFixed
+  adaptive.io.trace.ready := io.trace.ready && !useFixed
+  io.busy := frameActive || fixed.io.busy || adaptive.io.busy
+  io.overflow := Mux(useFixed, fixed.io.overflow, adaptive.io.overflow)
+
+  when(io.input.fire && !frameActive) {
+    frameActive := true.B
+    selectedFixed := io.config.fixedRawQuant =/= 0.U
+  }
+  when(io.trace.fire && io.traceLast) {
+    frameActive := false.B
+    selectedFixed := false.B
+  }
+}

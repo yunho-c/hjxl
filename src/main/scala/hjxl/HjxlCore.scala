@@ -45,7 +45,8 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   val inputTrace = if (includeInput) Some(Module(new FramePadTraceStage(c))) else None
   val xybTrace = if (includeXyb) Some(Module(new FrameXybTraceStage(c))) else None
   val dctTrace = if (includeDct) Some(Module(new FrameDct8x8TraceStage(c))) else None
-  val rawQuantTrace = if (includeRawQuant) Some(Module(new FrameRawQuantFieldTraceStage(c))) else None
+  val rawQuantTrace =
+    if (includeRawQuant) Some(Module(new FrameAdjustedRawQuantFieldTraceStage(c))) else None
   val ytoxTrace =
     if (includeYtoxMap) Some(Module(new FrameAqCflMapTraceStage(c, Some(TraceStage.YtoxMap)))) else None
   val ytobTrace =

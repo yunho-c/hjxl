@@ -9,9 +9,9 @@ import chisel3.util._
   *
   * Q12 XYB samples are retained for rectangular transforms, while the matching
   * Q12 ordinary-DCT coefficients are reused for DCT candidate scoring and tile
-  * CFL estimation. AQ and mask values are the per-block values before
-  * `AdjustQuantField`; the scheduler takes the required maximum for each
-  * candidate shape.
+  * CFL estimation. AQ and mask values remain per-block inputs whose covered
+  * maxima feed candidate scoring. `rawQuant` is the pre-strategy byte; after
+  * searching the frame, the scheduler applies `adjust_quant_field` to it.
   */
 class PreparedAcStrategyFrameBlock(c: HjxlConfig) extends Bundle {
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
@@ -20,6 +20,7 @@ class PreparedAcStrategyFrameBlock(c: HjxlConfig) extends Bundle {
   val dct8x8 = Vec(3, Vec(blockSize, SInt(c.traceValueBits.W)))
   val aqMapQ24 = UInt(AqFinalModulationFixedPoint.ValueBits.W)
   val strategyMaskQ16 = UInt(AqStrategyMaskFixedPoint.ValueBits.W)
+  val rawQuant = UInt(8.W)
   val distanceQ8 = UInt(16.W)
   val last = Bool()
 }
@@ -30,7 +31,9 @@ class PreparedAcStrategyFrameBlock(c: HjxlConfig) extends Bundle {
   * 64x64 tile from ordinary-DCT coefficients, then visits tile-local 2x2 block
   * regions in libjxl-tiny order. Every region feeds four 8x8, two 16x8, and two
   * 8x16 candidates through `PreparedAcStrategy2x2Selector`. Incomplete rows or
-  * columns at tile edges remain ordinary DCT, matching the reference loop.
+  * columns at tile edges remain ordinary DCT, matching the reference loop. A
+  * final raster pass raises both raw-quant bytes in each selected rectangle to
+  * their maximum and emits that byte beside the strategy trace.
   */
 class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   private val blockDim = HjxlConstants.BlockDim
@@ -57,6 +60,7 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new PreparedAcStrategyFrameBlock(c)))
     val trace = Decoupled(new StageTrace(c))
+    val adjustedRawQuant = Output(UInt(8.W))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
@@ -76,6 +80,7 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
   val dct8x8 = Reg(Vec(maxBlocks, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W)))))
   val aqMapQ24 = Reg(Vec(maxBlocks, UInt(AqFinalModulationFixedPoint.ValueBits.W)))
   val strategyMaskQ16 = Reg(Vec(maxBlocks, UInt(AqStrategyMaskFixedPoint.ValueBits.W)))
+  val adjustedRawQuant = Reg(Vec(maxBlocks, UInt(8.W)))
   val decisions = Reg(Vec(maxBlocks, UInt(3.W)))
   val ytoxMap = Reg(Vec(maxTiles, SInt(8.W)))
   val ytobMap = Reg(Vec(maxTiles, SInt(8.W)))
@@ -102,8 +107,9 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
     scanRegion,
     feedCandidates,
     waitDecision,
+    adjustingQuant,
     emitting
-  ) = Enum(7)
+  ) = Enum(8)
   val state = RegInit(receiving)
   val receivedBlock = RegInit(0.U(32.W))
   val xBlocks = RegInit(0.U(32.W))
@@ -117,6 +123,8 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
   val regionX = RegInit(0.U(32.W))
   val regionY = RegInit(0.U(32.W))
   val candidateIndex = RegInit(0.U(3.W))
+  val adjustIndex = RegInit(0.U(32.W))
+  val adjustX = RegInit(0.U(32.W))
   val emitIndex = RegInit(0.U(32.W))
   val protocolOverflow = RegInit(false.B)
   val arithmeticOverflow = RegInit(false.B)
@@ -155,6 +163,7 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
     }
     aqMapQ24(store) := io.input.bits.aqMapQ24
     strategyMaskQ16(store) := io.input.bits.strategyMaskQ16
+    adjustedRawQuant(store) := io.input.bits.rawQuant
     decisions(store) := AcStrategyCode.encoded(AcStrategyCode.Dct, isFirstBlock = true).U
 
     val expectedLast = receivedBlock === selectedTotalBlocks - 1.U
@@ -264,8 +273,9 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
       regionX := 0.U
       regionY := 0.U
     }.otherwise {
-      emitIndex := 0.U
-      state := emitting
+      adjustIndex := 0.U
+      adjustX := 0.U
+      state := adjustingQuant
     }
   }
 
@@ -415,8 +425,62 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
       regionY := 0.U
       state := scanRegion
     }.otherwise {
+      adjustIndex := 0.U
+      adjustX := 0.U
+      state := adjustingQuant
+    }
+  }
+
+  val adjustmentDecision = decisions(blockAddress(adjustIndex))
+  val adjustmentRawStrategy = adjustmentDecision(2, 1)
+  val adjustmentIsFirst = adjustmentDecision(0)
+  val adjustmentRightIndex = adjustIndex + 1.U
+  val adjustmentBelowIndex = adjustIndex + xBlocks
+  val adjustmentCurrentQuant = adjustedRawQuant(blockAddress(adjustIndex))
+  val adjustmentRightQuant = adjustedRawQuant(blockAddress(adjustmentRightIndex))
+  val adjustmentBelowQuant = adjustedRawQuant(blockAddress(adjustmentBelowIndex))
+  val horizontalAdjustedQuant = maxUInt(adjustmentCurrentQuant, adjustmentRightQuant)
+  val verticalAdjustedQuant = maxUInt(adjustmentCurrentQuant, adjustmentBelowQuant)
+  val horizontalInBounds =
+    adjustmentRightIndex < totalBlocks && adjustX + 1.U < xBlocks
+  val verticalInBounds = adjustmentBelowIndex < totalBlocks
+
+  when(state === adjustingQuant) {
+    when(adjustmentIsFirst) {
+      when(adjustmentRawStrategy === AcStrategyCode.Dct8x16.U) {
+        assert(horizontalInBounds, "horizontal AC strategy exceeds adjusted raw-quant field")
+        when(horizontalInBounds) {
+          adjustedRawQuant(blockAddress(adjustIndex)) := horizontalAdjustedQuant
+          adjustedRawQuant(blockAddress(adjustmentRightIndex)) := horizontalAdjustedQuant
+        }.otherwise {
+          protocolOverflow := true.B
+        }
+      }.elsewhen(adjustmentRawStrategy === AcStrategyCode.Dct16x8.U) {
+        assert(verticalInBounds, "vertical AC strategy exceeds adjusted raw-quant field")
+        when(verticalInBounds) {
+          adjustedRawQuant(blockAddress(adjustIndex)) := verticalAdjustedQuant
+          adjustedRawQuant(blockAddress(adjustmentBelowIndex)) := verticalAdjustedQuant
+        }.otherwise {
+          protocolOverflow := true.B
+        }
+      }.elsewhen(adjustmentRawStrategy =/= AcStrategyCode.Dct.U) {
+        assert(false.B, "unsupported AC strategy in adjusted raw-quant field")
+        protocolOverflow := true.B
+      }
+    }
+
+    when(adjustIndex === totalBlocks - 1.U) {
+      adjustIndex := 0.U
+      adjustX := 0.U
       emitIndex := 0.U
       state := emitting
+    }.otherwise {
+      adjustIndex := adjustIndex + 1.U
+      when(adjustX + 1.U === xBlocks) {
+        adjustX := 0.U
+      }.otherwise {
+        adjustX := adjustX + 1.U
+      }
     }
   }
 
@@ -426,6 +490,7 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
   io.trace.bits.index := emitIndex
   io.trace.bits.value :=
     Cat(0.U(1.W), decisions(blockAddress(emitIndex))).asSInt.pad(c.traceValueBits)
+  io.adjustedRawQuant := adjustedRawQuant(blockAddress(emitIndex))
   io.traceLast := io.trace.valid && emitIndex === totalBlocks - 1.U
   io.busy := state =/= receiving || receivedBlock =/= 0.U || selector.io.busy
   io.overflow := protocolOverflow || arithmeticOverflow || (acceptingFirstBlock && configOutOfRange)
@@ -445,6 +510,8 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
       tileSampleOrdinal := 0.U
       regionX := 0.U
       regionY := 0.U
+      adjustIndex := 0.U
+      adjustX := 0.U
       protocolOverflow := false.B
       arithmeticOverflow := false.B
       unsupportedDistance := false.B
@@ -466,6 +533,7 @@ class FrameAqAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val trace = Decoupled(new StageTrace(c))
+    val adjustedRawQuant = Output(UInt(8.W))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
@@ -486,12 +554,14 @@ class FrameAqAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   strategy.io.input.bits.dct8x8 := blocks.io.output.bits.coefficients
   strategy.io.input.bits.aqMapQ24 := blocks.io.output.bits.aqMapQ24
   strategy.io.input.bits.strategyMaskQ16 := blocks.io.output.bits.strategyMaskQ16
+  strategy.io.input.bits.rawQuant := blocks.io.output.bits.quant
   strategy.io.input.bits.distanceQ8 := blocks.io.output.bits.distanceQ8
   strategy.io.input.bits.last := blocks.io.output.bits.blockLast
   blocks.io.output.ready := strategy.io.input.ready
 
   io.trace.valid := strategy.io.trace.valid
   io.trace.bits := strategy.io.trace.bits
+  io.adjustedRawQuant := strategy.io.adjustedRawQuant
   strategy.io.trace.ready := io.trace.ready
   io.traceLast := strategy.io.traceLast
   io.busy := draining || blocks.io.busy || strategy.io.busy
@@ -503,4 +573,38 @@ class FrameAqAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   when(io.trace.fire && io.traceLast) {
     draining := false.B
   }
+}
+
+/** Focused RGB raw-quant route after adaptive strategy adjustment.
+  *
+  * The underlying strategy scheduler emits one aligned adjusted byte beside
+  * each raster strategy record. This adapter changes only the trace stage and
+  * value, preserving the scheduler's index, framing, backpressure, and status.
+  */
+class FrameAqAdjustedRawQuantTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+  val io = IO(new Bundle {
+    val config = Input(new FrameConfig(c))
+    val input = Flipped(Decoupled(new RgbPixel(c)))
+    val trace = Decoupled(new StageTrace(c))
+    val traceLast = Output(Bool())
+    val busy = Output(Bool())
+    val overflow = Output(Bool())
+  })
+
+  val strategy = Module(new FrameAqAcStrategyTraceStage(c))
+  strategy.io.config := io.config
+  strategy.io.input.bits := io.input.bits
+  strategy.io.input.valid := io.input.valid
+  io.input.ready := strategy.io.input.ready
+
+  io.trace.valid := strategy.io.trace.valid
+  io.trace.bits.stage := TraceStage.RawQuantField.U
+  io.trace.bits.group := strategy.io.trace.bits.group
+  io.trace.bits.index := strategy.io.trace.bits.index
+  io.trace.bits.value :=
+    Cat(0.U(1.W), strategy.io.adjustedRawQuant).asSInt.pad(c.traceValueBits)
+  strategy.io.trace.ready := io.trace.ready
+  io.traceLast := strategy.io.traceLast
+  io.busy := strategy.io.busy
+  io.overflow := strategy.io.overflow
 }

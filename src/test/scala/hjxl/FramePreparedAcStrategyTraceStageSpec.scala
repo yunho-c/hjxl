@@ -39,7 +39,8 @@ class FramePreparedAcStrategyTraceStageSpec
   private case class OracleFixture(
       blocks: Seq[OracleBlock],
       rgb: Seq[OracleRgb],
-      decision: Seq[Int]
+      decision: Seq[Int],
+      rawQuant: Seq[Int]
   )
 
   private def requireReferenceTools(): Unit = {
@@ -58,6 +59,7 @@ class FramePreparedAcStrategyTraceStageSpec
     val xybPath = Files.createTempFile(s"hjxl-frame-strategy-$pattern-", ".npy")
     val rgbPath = Files.createTempFile(s"hjxl-frame-strategy-$pattern-rgb-", ".csv")
     val costPath = Files.createTempFile(s"hjxl-frame-strategy-$pattern-", ".csv")
+    val aqPath = Files.createTempFile(s"hjxl-frame-strategy-$pattern-aq-", ".csv")
     val output = scala.collection.mutable.ArrayBuffer.empty[String]
     val logger = ProcessLogger(line => output += line, line => output += line)
     val exitCode = Process(
@@ -77,7 +79,9 @@ class FramePreparedAcStrategyTraceStageSpec
         "--xyb-q12-csv",
         rgbPath.toString,
         "--ac-strategy-cost-q16-csv",
-        costPath.toString
+        costPath.toString,
+        "--aq-final-map-q24-csv",
+        aqPath.toString
       ),
       TestPaths.repoRoot.toFile,
       "LIBJXL_TINY" -> libjxlTinyRoot.toString,
@@ -131,7 +135,18 @@ class FramePreparedAcStrategyTraceStageSpec
       val row = line.split(",", -1)
       OracleRgb(row(1).toInt, row(2).toInt, row(3).toInt, row(4).toInt, row(5).toInt)
     }.filter(row => row.x < 16 && row.y < 16)
-    OracleFixture(blocks, rgb, rows.head(19).split(":", -1).map(_.toInt).toSeq)
+    val aqLines = Files.readAllLines(aqPath, StandardCharsets.UTF_8).asScala.toSeq
+    val aqHeader = aqLines.head.split(",", -1).toSeq
+    val rawQuantColumn = aqHeader.indexOf("input_q8_fixed_raw_quant")
+    rawQuantColumn must be >= 0
+    val rawQuant = aqLines.tail.map(_.split(",", -1)(rawQuantColumn).toInt)
+    rawQuant.length mustBe 4
+    OracleFixture(
+      blocks,
+      rgb,
+      rows.head(19).split(":", -1).map(_.toInt).toSeq,
+      rawQuant
+    )
   }
 
   private def pokeConfig(
@@ -157,8 +172,10 @@ class FramePreparedAcStrategyTraceStageSpec
   private def feedZeroBlocks(
       dut: FramePreparedAcStrategyTraceStage,
       count: Int,
-      distanceQ8: Int = 256
+      distanceQ8: Int = 256,
+      rawQuants: Seq[Int] = Seq.empty
   ): Unit = {
+    require(rawQuants.isEmpty || rawQuants.length == count)
     dut.io.input.valid.poke(true.B)
     dut.io.input.bits.aqMapQ24.poke((BigInt(1) << 24).U)
     dut.io.input.bits.strategyMaskQ16.poke(0.U)
@@ -168,6 +185,7 @@ class FramePreparedAcStrategyTraceStageSpec
       dut.io.input.bits.dct8x8(channel)(sample).poke(0.S)
     }
     for (block <- 0 until count) {
+      dut.io.input.bits.rawQuant.poke(rawQuants.lift(block).getOrElse(5).U)
       dut.io.input.bits.last.poke((block == count - 1).B)
       var waitCycles = 0
       while (!dut.io.input.ready.peek().litToBoolean && waitCycles < 8) {
@@ -184,12 +202,15 @@ class FramePreparedAcStrategyTraceStageSpec
 
   private def feedOracleBlocks(
       dut: FramePreparedAcStrategyTraceStage,
-      blocks: Seq[OracleBlock]
+      blocks: Seq[OracleBlock],
+      rawQuants: Seq[Int] = Seq.empty
   ): Unit = {
+    require(rawQuants.isEmpty || rawQuants.length == blocks.length)
     dut.io.input.valid.poke(true.B)
     for ((block, blockIndex) <- blocks.zipWithIndex) {
       dut.io.input.bits.aqMapQ24.poke(block.aqMapQ24.U)
       dut.io.input.bits.strategyMaskQ16.poke(block.strategyMaskQ16.U)
+      dut.io.input.bits.rawQuant.poke(rawQuants.lift(blockIndex).getOrElse(5).U)
       dut.io.input.bits.distanceQ8.poke(block.distanceQ8.U)
       dut.io.input.bits.last.poke((blockIndex == blocks.length - 1).B)
       for (channel <- 0 until 3; sample <- 0 until blockSize) {
@@ -205,8 +226,10 @@ class FramePreparedAcStrategyTraceStageSpec
   private def collect(
       dut: FramePreparedAcStrategyTraceStage,
       expected: Seq[Int],
+      expectedAdjustedRawQuant: Seq[Int] = Seq.empty,
       stallFirstTrace: Boolean = false
   ): Unit = {
+    require(expectedAdjustedRawQuant.isEmpty || expectedAdjustedRawQuant.length == expected.length)
     dut.io.trace.ready.poke((!stallFirstTrace).B)
     var waitCycles = 0
     while (!dut.io.trace.valid.peek().litToBoolean && waitCycles < 100000) {
@@ -222,7 +245,8 @@ class FramePreparedAcStrategyTraceStageSpec
         dut.io.trace.bits.stage.peekValue().asBigInt,
         dut.io.trace.bits.group.peekValue().asBigInt,
         dut.io.trace.bits.index.peekValue().asBigInt,
-        dut.io.trace.bits.value.peekValue().asBigInt
+        dut.io.trace.bits.value.peekValue().asBigInt,
+        dut.io.adjustedRawQuant.peekValue().asBigInt
       )
       dut.clock.step(3)
       dut.io.trace.valid.expect(true.B)
@@ -230,7 +254,8 @@ class FramePreparedAcStrategyTraceStageSpec
         dut.io.trace.bits.stage.peekValue().asBigInt,
         dut.io.trace.bits.group.peekValue().asBigInt,
         dut.io.trace.bits.index.peekValue().asBigInt,
-        dut.io.trace.bits.value.peekValue().asBigInt
+        dut.io.trace.bits.value.peekValue().asBigInt,
+        dut.io.adjustedRawQuant.peekValue().asBigInt
       ) mustBe held
       dut.io.trace.ready.poke(true.B)
     }
@@ -241,6 +266,9 @@ class FramePreparedAcStrategyTraceStageSpec
       dut.io.trace.bits.group.expect(0.U)
       dut.io.trace.bits.index.expect(index.U)
       dut.io.trace.bits.value.expect(value.S)
+      expectedAdjustedRawQuant.lift(index).foreach { quant =>
+        dut.io.adjustedRawQuant.expect(quant.U)
+      }
       dut.io.traceLast.expect((index == expected.length - 1).B)
       dut.clock.step()
     }
@@ -248,10 +276,41 @@ class FramePreparedAcStrategyTraceStageSpec
     dut.io.busy.expect(false.B)
   }
 
-  private def pokeCoreConfig(dut: HjxlCore, width: Int, height: Int): Unit = {
+  private def adjustedRawQuant(rawQuants: Seq[Int], decision: Seq[Int], width: Int): Seq[Int] = {
+    require(rawQuants.length == decision.length)
+    require(rawQuants.length % width == 0)
+    val adjusted = rawQuants.toArray
+    val height = adjusted.length / width
+    for (index <- decision.indices if (decision(index) & 1) != 0) {
+      val rawStrategy = decision(index) >> 1
+      val x = index % width
+      val y = index / width
+      val (coveredWidth, coveredHeight) = rawStrategy match {
+        case AcStrategyCode.Dct     => (1, 1)
+        case AcStrategyCode.Dct16x8 => (1, 2)
+        case AcStrategyCode.Dct8x16 => (2, 1)
+        case other                  => fail(s"unsupported strategy $other")
+      }
+      require(x + coveredWidth <= width && y + coveredHeight <= height)
+      val covered = for {
+        dy <- 0 until coveredHeight
+        dx <- 0 until coveredWidth
+      } yield (y + dy) * width + x + dx
+      val maximum = covered.map(adjusted).max
+      covered.foreach(adjusted(_) = maximum)
+    }
+    adjusted.toSeq
+  }
+
+  private def pokeCoreConfig(
+      dut: HjxlCore,
+      width: Int,
+      height: Int,
+      distanceQ8: Int = 256
+  ): Unit = {
     dut.io.config.xsize.poke(width.U)
     dut.io.config.ysize.poke(height.U)
-    dut.io.config.distanceQ8.poke(256.U)
+    dut.io.config.distanceQ8.poke(distanceQ8.U)
     dut.io.config.fixedPointScale.poke(0.U)
     dut.io.config.fixedInvQacQ16.poke(0.U)
     dut.io.config.fixedRawQuant.poke(0.U)
@@ -293,10 +352,12 @@ class FramePreparedAcStrategyTraceStageSpec
       dut.io.trace.ready.poke(false.B)
       dut.clock.step()
 
-      feedZeroBlocks(dut, count = 4)
+      val rawQuants = Seq(2, 9, 7, 4)
+      feedZeroBlocks(dut, count = 4, rawQuants = rawQuants)
       collect(
         dut,
         Seq(horizontalFirst, horizontalContinuation, horizontalFirst, horizontalContinuation),
+        expectedAdjustedRawQuant = Seq(9, 9, 7, 7),
         stallFirstTrace = true
       )
       dut.io.overflow.expect(false.B)
@@ -304,10 +365,16 @@ class FramePreparedAcStrategyTraceStageSpec
     }
   }
 
-  "the prepared frame boundary matches independent constant and gradient decisions" in {
-    val fixtures = Seq("constant", "gradient").map(pattern => pattern -> oracleFixture(pattern, 1.0))
+  "the prepared frame boundary matches independent horizontal, vertical, and DCT decisions" in {
+    val fixtures = Seq(
+      ("constant", 1.0),
+      ("checkerboard", 0.5),
+      ("gradient", 1.0)
+    ).map { case (pattern, distance) => pattern -> oracleFixture(pattern, distance) }
     fixtures.head._2.decision mustBe
       Seq(horizontalFirst, horizontalContinuation, horizontalFirst, horizontalContinuation)
+    fixtures(1)._2.decision mustBe Seq(3, 3, 2, 2)
+    fixtures(2)._2.decision mustBe Seq.fill(4)(dctFirst)
     val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 16)
     simulate(new FramePreparedAcStrategyTraceStage(config)) { dut =>
       pokeConfig(dut, width = 16, height = 16)
@@ -316,9 +383,11 @@ class FramePreparedAcStrategyTraceStageSpec
       dut.clock.step()
 
       for ((pattern, fixture) <- fixtures) {
-        feedOracleBlocks(dut, fixture.blocks)
+        val rawQuants = Seq(2, 9, 7, 4)
+        val expectedAdjusted = adjustedRawQuant(rawQuants, fixture.decision, width = 2)
+        feedOracleBlocks(dut, fixture.blocks, rawQuants)
         withClue(s"$pattern prepared frame decision: ") {
-          collect(dut, fixture.decision)
+          collect(dut, fixture.decision, expectedAdjusted)
           dut.io.overflow.expect(false.B)
           dut.io.unsupportedDistance.expect(false.B)
         }
@@ -359,6 +428,43 @@ class FramePreparedAcStrategyTraceStageSpec
     }
   }
 
+  "the focused raw-quant route applies the RGB-selected rectangular maximum" in {
+    val fixture = oracleFixture(pattern = "checkerboard", distance = 0.5)
+    fixture.decision mustBe Seq(3, 3, 2, 2)
+    fixture.rawQuant mustBe Seq(4, 5, 5, 4)
+    val expectedAdjusted = adjustedRawQuant(fixture.rawQuant, fixture.decision, width = 2)
+    expectedAdjusted mustBe Seq.fill(4)(5)
+    val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 16)
+    simulate(new HjxlCore(config, traceRoute = TraceStage.RawQuantField)) { dut =>
+      pokeCoreConfig(dut, width = 16, height = 16, distanceQ8 = 128)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+
+      feedRgb(dut, fixture.rgb)
+      var waitCycles = 0
+      while (!dut.io.trace.valid.peek().litToBoolean && waitCycles < 100000) {
+        dut.clock.step()
+        waitCycles += 1
+      }
+      withClue("focused RGB adjusted raw-quant trace wait: ") {
+        waitCycles must be < 100000
+      }
+      expectedAdjusted.zipWithIndex.foreach { case (value, index) =>
+        dut.io.trace.valid.expect(true.B)
+        dut.io.trace.bits.stage.expect(TraceStage.RawQuantField.U)
+        dut.io.trace.bits.group.expect(0.U)
+        dut.io.trace.bits.index.expect(index.U)
+        dut.io.trace.bits.value.expect(value.S)
+        dut.io.traceLast.expect((index == expectedAdjusted.length - 1).B)
+        dut.clock.step()
+      }
+      dut.io.trace.valid.expect(false.B)
+      dut.io.busy.expect(false.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
   "incomplete block rows and columns remain ordinary DCT" in {
     val config = HjxlConfig(maxFrameWidth = 24, maxFrameHeight = 24)
     simulate(new FramePreparedAcStrategyTraceStage(config)) { dut =>
@@ -367,21 +473,20 @@ class FramePreparedAcStrategyTraceStageSpec
       dut.io.trace.ready.poke(true.B)
       dut.clock.step()
 
-      feedZeroBlocks(dut, count = 9)
-      collect(
-        dut,
-        Seq(
-          horizontalFirst,
-          horizontalContinuation,
-          dctFirst,
-          horizontalFirst,
-          horizontalContinuation,
-          dctFirst,
-          dctFirst,
-          dctFirst,
-          dctFirst
-        )
+      val decision = Seq(
+        horizontalFirst,
+        horizontalContinuation,
+        dctFirst,
+        horizontalFirst,
+        horizontalContinuation,
+        dctFirst,
+        dctFirst,
+        dctFirst,
+        dctFirst
       )
+      val rawQuants = 1 to 9
+      feedZeroBlocks(dut, count = 9, rawQuants = rawQuants)
+      collect(dut, decision, adjustedRawQuant(rawQuants, decision, width = 3))
       dut.io.overflow.expect(false.B)
     }
   }
@@ -394,9 +499,11 @@ class FramePreparedAcStrategyTraceStageSpec
       dut.io.trace.ready.poke(true.B)
       dut.clock.step()
 
-      feedZeroBlocks(dut, count = 18)
       val completeTileRow = Seq.fill(4)(Seq(horizontalFirst, horizontalContinuation)).flatten
-      collect(dut, completeTileRow ++ Seq(dctFirst) ++ completeTileRow ++ Seq(dctFirst))
+      val decision = completeTileRow ++ Seq(dctFirst) ++ completeTileRow ++ Seq(dctFirst)
+      val rawQuants = 1 to 18
+      feedZeroBlocks(dut, count = 18, rawQuants = rawQuants)
+      collect(dut, decision, adjustedRawQuant(rawQuants, decision, width = 9))
       dut.io.overflow.expect(false.B)
     }
   }

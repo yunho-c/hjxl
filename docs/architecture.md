@@ -44,8 +44,9 @@ contract is intentionally simple:
   distance-dependent red/blue coverage term. `TraceStage.AqGammaModulation`
   adds the inverse-response average and log term; `TraceStage.AqFinalMap`
   applies the final exponent/scale/damping operation. A focused
-  `TraceStage.RawQuantField` build uses that completed RGB path when
-  `fixedRawQuant` is zero and retains a nonzero fixed override. The full
+  `TraceStage.RawQuantField` build uses that completed RGB path, runs the
+  adaptive strategy search, and emits its rectangle-adjusted byte field when
+  `fixedRawQuant` is zero; a nonzero uniform override remains a cheap bypass. The full
   AC-token route is only instantiated when the core is elaborated with
   `traceRoute = TraceStage.AcTokens`.
 - `RgbPixel` carries fixed-point linear RGB samples and image coordinates.
@@ -238,9 +239,9 @@ owned by the host tools for now.
   fallback before every per-block operation, and retains the inverse global AC
   scale for `AqMapToRawQuant`. `FrameAqFinalMapTraceStage` emits the completed
   unsigned-Q24 map as `AqFinalMap`; `FrameAqRawQuantTraceStage` emits the exact
-  adjusted raw-quant bytes. The public `FrameRawQuantFieldTraceStage` selects
-  this adaptive path when `fixedRawQuant` is zero and the retained fixed path
-  otherwise.
+  map-to-byte conversion before strategy adjustment. The narrow
+  `FrameRawQuantFieldTraceStage` selects this pre-strategy adaptive diagnostic
+  when `fixedRawQuant` is zero and the retained fixed path otherwise.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny's
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`; unsupported values currently
@@ -278,8 +279,11 @@ owned by the host tools for now.
 - `PreparedAcStrategy2x2Selector` sequences the reference's eight-candidate
   order, retains 64-bit costs, and applies `AcStrategyDecisionSelector` behind
   a backpressure-safe prepared interface. `FramePreparedAcStrategyTraceStage`
-  supplies its tile-local frame traversal and candidate preparation, while
-  `FrameAqAcStrategyTraceStage` supplies the focused RGB-connected source.
+  supplies its tile-local frame traversal and candidate preparation, then walks
+  the completed raster map to apply the reference maximum raw-quant operation
+  to each selected horizontal or vertical rectangle. It emits the adjusted byte
+  as a sideband aligned with every strategy trace. `FrameAqAcStrategyTraceStage`
+  supplies the focused RGB-connected source.
 - `FrameDct8x8TraceStage` is the first transform integration slice. It buffers
   and pads the RGB frame, converts each padded raster 8x8 block to approximate
   XYB, applies `Dct8x8Approx` for all three channels, and emits `RawDct8x8`
@@ -394,17 +398,19 @@ wrappers.
   order. Unlike `FramePreparedTokenTraceStage`, it can describe the prepared
   raw-quant and CFL values used during quantization. It exposes `traceLast` on
   the final AC-token trace beat for host capture.
-- `FrameRawQuantFieldTraceStage` is the focused raw-quant selector. Zero
-  `FrameConfig.fixedRawQuant` routes RGB through the completed AQ map and exact
-  final converter; a nonzero value selects `FrameFixedRawQuantFieldTraceStage`
-  for explicit fixed metadata experiments. Selection is captured at frame
-  start, and the raw-quant byte is zero-extended into `StageTrace.value`, so
-  values above 127 remain positive despite the signed trace carrier. The
-  default all-route shell omits this now-heavy focused path.
+- `FrameAdjustedRawQuantFieldTraceStage` is the public focused raw-quant
+  selector. Zero `FrameConfig.fixedRawQuant` routes RGB through the completed AQ
+  map, adaptive strategy search, and post-search rectangle adjustment; a
+  nonzero value selects `FrameFixedRawQuantFieldTraceStage` because a uniform
+  byte is already adjustment-invariant. Selection is captured at frame start,
+  and the byte is zero-extended into `StageTrace.value`, so values above 127
+  remain positive despite the signed trace carrier. The default all-route shell
+  omits this heavy focused path. The older `FrameRawQuantFieldTraceStage`
+  remains a narrower pre-strategy conversion diagnostic.
 - `AqMapToRawQuant` is the first fixed-point boundary for real adaptive-
   quantization data. It multiplies an unsigned Q24 AQ-map sample by the
   unsigned Q24 inverse global AC scale, rounds to the nearest integer, and
-  clamps the result to libjxl-tiny's adjusted raw-quant range `[1, 255]`.
+  clamps the result to libjxl-tiny's raw-quant range `[1, 255]`.
   `FramePreparedAqRawQuantTraceStage` accepts one prepared AQ sample per padded
   8x8 raster block, snapshots frame geometry and inverse scale on the first
   accepted block, buffers one trace beat for ready/valid stability, and emits
@@ -602,6 +608,13 @@ wrappers.
   elaboration specs guard the composed RGB/prepared module boundaries and
   trace/status ports; the strategy-mask and nonlinear-mask specs also reject
   division operators in their sequential arithmetic modules.
+- `ElaboratePreparedAcStrategy` and `ElaborateAqAcStrategy` generate the
+  prepared and RGB-connected strategy schedulers. `ElaborateAqAdjustedRawQuant`
+  exposes the RGB strategy-adjusted byte trace, while `ElaborateCoreAcStrategy`
+  and `ElaborateCoreRawQuant` wrap the corresponding focused routes in the
+  public core IO. They write the ignored `generated-prepared-ac-strategy/`,
+  `generated-aq-ac-strategy/`, `generated-aq-adjusted-raw-quant/`,
+  `generated-core-ac-strategy/`, and `generated-core-raw-quant/` trees.
 - `ElaborateAqDctOnlyQuantize`, `ElaborateAqDctOnlyAcMetadataTokens`, and
   `ElaborateAqDctOnlyQuantizeTokens` retain the fixed-CFL adaptive RGB
   diagnostics. `ElaborateAqCflMaps`, `ElaborateAqCflDctOnlyQuantize`,
@@ -778,13 +791,13 @@ wrappers.
   prepared DC, AC-metadata, AC, and combined token tops.
 - Full frame-level parity remains open even though adaptive raw quant, dynamic
   reciprocal scaling, RGB-derived tile CFL, quantized traces, AC metadata, and
-  a combined all-DCT token stream are connected, while a separate focused route
-  now emits an RGB-derived adaptive strategy map. The RGB path still uses
+  a combined all-DCT token stream are connected, while separate focused routes
+  now emit an RGB-derived adaptive strategy map and its adjusted raw-quant
+  field. The RGB path still uses
   approximate Q12 XYB/DCT, and the selected rectangles do not yet reach
-  quantization or tokens; broader distance generation, strategy-adjusted quant
-  fields, whole-frame reference comparison, and RGB-token-to-codestream proof
-  remain separate work. Entropy optimization and bitstream assembly remain host
-  responsibilities.
+  quantization, metadata, or tokens; broader distance generation, whole-frame
+  reference comparison, and RGB-token-to-codestream proof remain separate work.
+  Entropy optimization and bitstream assembly remain host responsibilities.
 - `CflCoefficientSampleWeight`/`CflWeightedSumAccumulator`/
   `CflMultiplierEstimator`/`CflCoefficientSumAccumulator`/
   `CflTileCoefficientEstimator`/`CflTileCoefficientTraceStage` cover only
@@ -793,9 +806,11 @@ wrappers.
   the prepared/RGB frame map, quantization, metadata, token, and focused
   strategy schedulers; keep the arithmetic primitives directly tested while
   physical implementation and non-DCT interaction remain open.
-- `FrameRawQuantFieldTraceStage` selects completed adaptive raw quant at zero
-  `fixedRawQuant` and the retained fixed scaffold for a nonzero override. The
-  raw-quant byte is zero-extended into the signed trace-value field.
+- `FrameRawQuantFieldTraceStage` selects the completed but pre-strategy adaptive
+  raw quant at zero `fixedRawQuant` and the retained fixed scaffold for a
+  nonzero override. It remains useful as a narrow conversion diagnostic;
+  `HjxlCore` uses `FrameAdjustedRawQuantFieldTraceStage` for the focused public
+  route.
 - `FrameCflMapTraceStage` emits fixed scalar Y-to-X and Y-to-B CFL map traces,
   one record per 64x64 tile. Treat it as a traceable fixed-metadata scaffold
   for future chroma-from-luma work, not as libjxl-tiny CFL parity.
@@ -803,16 +818,18 @@ wrappers.
   ordinary DCT with the libjxl-tiny encoding
   `(raw_strategy << 1) | is_first_block == 1`. The focused adaptive path uses
   `FramePreparedAcStrategyTraceStage`: it buffers prepared raster Q12 XYB and
-  ordinary-DCT blocks, estimates CFL separately for each 64x64 tile, visits
+  ordinary-DCT blocks plus raw-quant bytes, estimates CFL separately for each 64x64 tile, visits
   complete 2x2 block regions in tile-local raster order, computes the four DCT,
   two 16x8, and two 8x16 candidates with covered-block AQ/mask maxima, stores
-  each exact fixed-point decision, and emits the full raster map. Incomplete
+  each exact fixed-point decision, then applies `adjust_quant_field` by lifting
+  both bytes of each first-block rectangle to their local maximum. It emits the
+  full raster strategy map with an aligned adjusted-byte sideband. Incomplete
   frame or tile rows/columns remain DCT. `FrameAqAcStrategyTraceStage` feeds
   that boundary from the shared RGB final-AQ/DCT block source; the focused core
   route therefore uses one RGB-to-XYB conversion and three ordinary DCTs.
-  This is a trace-only integration: the current quantization, metadata, and
-  token schedulers still consume and emit all-DCT strategy, and they do not yet
-  apply `adjust_quant_field` for selected rectangles.
+  `FrameAqAdjustedRawQuantTraceStage` exposes the sideband as raw-quant traces.
+  This remains a focused trace integration: the current quantization, metadata,
+  and token schedulers still consume and emit the separate all-DCT path.
 - `tools/hjxl_reference.py --scaled-dct-q12-csv ...` writes signed Q12 DCT-16,
   16x8, and 8x16 inputs beside independent libjxl-tiny coefficients and the
   exact integer transform model. The axis ramps guard the two different
@@ -842,9 +859,11 @@ wrappers.
 - `tools/hjxl_reference.py --aq-final-map-q24-csv ...` reconstructs the final
   float32 power/scale/damping operation, proves equality with the real completed
   AQ map, and records Q24 fixed map/scalar seams plus reference and fixed
-  raw-quant bytes for native, Q12-rounded, and Q8-input paths. It is the oracle
-  for both `FrameAqFinalMapTraceStage` and the adaptive
-  `FrameRawQuantFieldTraceStage` branch.
+  raw-quant bytes for native, Q12-rounded, and Q8-input paths. Its Q8-input byte
+  column is also combined with the independently exported scheduler decision to
+  verify rectangle adjustment. It is the oracle for `FrameAqFinalMapTraceStage`,
+  the pre-strategy `FrameRawQuantFieldTraceStage` branch, and the adjusted
+  focused route.
 - `tools/hjxl_reference.py --dct-only-aq-map-q24-csv ...` exports the
   all-DCT AQ map and inverse global AC scale as unsigned Q24 values alongside
   libjxl-tiny's reference raw-quant bytes and the same fixed-point conversion
@@ -937,12 +956,13 @@ wrappers.
 - `tools/hjxl_reference.py --fixed-dct-only-raw-quant-field-npy ...`,
   `--fixed-dct-only-ytox-map-npy ...`, and
   `--fixed-dct-only-ytob-map-npy ...` write fixed metadata-grid oracles for the
-  current focused raw-quant and CFL-map trace routes, using the same
+  focused raw-quant and fixed-CFL trace routes, using the same
   `--fixed-raw-quant`, `--fixed-ytox`, and `--fixed-ytob` values as the fixed
-  token oracles. These are the right comparator inputs for fixed
-  `FrameRawQuantFieldTraceStage` and `FrameCflMapTraceStage` captures; the
-  adaptive `--dct-only-*` metadata grids remain software-path references for
-  future AQ/CFL hardware.
+  token oracles. These are the right comparator inputs for the explicit fixed
+  branch of `FrameAdjustedRawQuantFieldTraceStage` and for
+  `FrameCflMapTraceStage` captures. The adaptive `--dct-only-*` metadata grids
+  instead serve as software references for the connected RGB AQ/CFL paths and
+  future downstream non-DCT integration.
 - `tools/hjxl_reference.py --fixed-dct-only-prepared-token-inputs-json ...`
   writes the prepared DC sample stream and prepared AC raster blocks consumed
   by `FramePreparedTokenTraceStage` under the same fixed all-DCT assumptions,

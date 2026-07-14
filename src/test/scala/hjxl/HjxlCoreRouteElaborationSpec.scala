@@ -277,18 +277,25 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     converterInstances mustBe 1
   }
 
-  "HjxlCore focused raw-quant route selects adaptive AQ with an explicit fixed override" in {
+  "HjxlCore focused raw-quant route applies adaptive strategy with a fixed override" in {
     val files = emittedSystemVerilog(TraceStage.RawQuantField)
     val text = combinedText(files)
     text must include("module HjxlCore")
-    text must include("module FrameRawQuantFieldTraceStage")
+    text must include("module FrameAdjustedRawQuantFieldTraceStage")
     text must include("module FrameFixedRawQuantFieldTraceStage")
-    text must include("module FrameAqRawQuantTraceStage")
+    text must include("module FrameAqAdjustedRawQuantTraceStage")
+    text must include("module FrameAqAcStrategyTraceStage")
+    text must include("module FramePreparedAcStrategyTraceStage")
+    text must include("module PreparedAcStrategy2x2Selector")
     text must include("module FrameAqFinalMapPipeline")
     text must include("module AqMapToRawQuant")
+    text must include("module Dct16x8Approx")
+    text must include("module Dct8x16Approx")
     text must include("io_trace_bits_stage")
     text must include("io_traceLast")
     text must not include "module FrameAcStrategyTraceStage"
+    text must not include "module FrameRawQuantFieldTraceStage"
+    text must not include "module FrameAqRawQuantTraceStage"
   }
 
   "HjxlCore focused CFL-map routes elaborate the estimated RGB CFL scheduler" in {
