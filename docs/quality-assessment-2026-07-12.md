@@ -217,6 +217,31 @@ than the RTL implementation.
    and Python constants generated from `abi/hjxl_abi.json`. The repository still
    needs a concise public compatibility policy and generated ABI reference.
 
+7. **The adaptive-strategy output is a diagnostic seam, not yet a compositional
+   data boundary.** `FramePreparedAcStrategyTraceStage` emits one encoded
+   decision and one adjusted raw-quant byte per raster cell, but the selected
+   64- or 128-coefficient payload remains inside the scheduler. Conversely, the
+   existing prepared quantization, metadata, and AC-token schedulers accept one
+   ordinary 64-coefficient result per raster cell and assume that every cell
+   owns a transform. Those interfaces fit all-DCT verification well but cannot
+   represent a rectangular transform without either recomputing or duplicating
+   the full-frame XYB/coefficient source.
+
+   This is more than a width mismatch. In the reference implementation one
+   first block owns the rectangle; its two lowest-frequency coefficients form
+   two block-grid DC samples, its raw nonzero count excludes the rectangular
+   low-frequency region, and a shifted count is replicated over both covered
+   cells for later neighbor prediction. Metadata and coefficient-token streams
+   skip continuation cells, while coefficient scanning uses a rectangular
+   order and covered-block-aware zero-density contexts. These four semantics
+   must move together. The clean next boundary is therefore an internal
+   first-block-owned `Decoupled` record carrying strategy, covered geometry, up
+   to 128 selected coefficients, adjusted quant, tile CFL, and distance-derived
+   scalars, plus explicitly separate block-grid DC/nonzero maps. It should be
+   stored in inferred memory or regenerated from one owned image buffer—not
+   exposed as hundreds of public trace ports or added as another parallel
+   full-frame wrapper.
+
 ## RTL implementation quality
 
 ### Strengths
@@ -703,6 +728,21 @@ not demonstrated a complete or physically viable RGB-to-JXL FPGA encoder.
     a uniform fixed override keeps the inexpensive path. The remaining earliest
     mismatch is consuming the selected rectangles and adjusted bytes in
     quantization, metadata, and token scheduling.
+    **Non-DCT integration audit 2026-07-13:** the reference and current RTL
+    interfaces were traced through quantization, DC layout, nonzero prediction,
+    metadata, and coefficient tokenization. A rectangular block cannot be
+    safely bolted onto `DctOnlyQuantizeBlock`: the frame schedulers currently
+    require one 64-coefficient X/Y/B record per raster cell, emit a strategy and
+    quant-field token for every cell, and use ordinary-DCT coefficient order and
+    contexts. The reference instead gives one first block a 128-coefficient
+    payload, derives two DC cells, replicates a shifted nonzero count for
+    prediction while tokenizing the raw count, and suppresses continuation-cell
+    metadata and AC ownership. Implement the first-block-owned prepared record
+    described in the architecture assessment before composing the RGB search
+    with quantization; validate the primitive and frame maps independently,
+    then extend metadata and AC scanning, and only then add a combined token
+    route. This sequencing preserves the project's earliest-mismatch discipline
+    and avoids a second adaptive full-frame source.
 13. **Expand oracle diversity.** Add several deterministic patterns, signed and
     near-saturation values, supported distances, non-block/tile-aligned sizes,
     multi-tile 2D images, and at least a few small real-image crops. Validate
