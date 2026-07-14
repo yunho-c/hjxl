@@ -39,7 +39,8 @@ class AcStrategyCandidateCostEvaluatorSpec
       pattern: String,
       candidates: Seq[Candidate],
       referenceDecision: Seq[Int],
-      fixedDecision: Seq[Int]
+      fixedDecision: Seq[Int],
+      schedulerFixedDecision: Seq[Int]
   )
 
   private case class CsvRow(
@@ -58,7 +59,8 @@ class AcStrategyCandidateCostEvaluatorSpec
       scaledCostQ16: BigInt,
       referenceScaledCost: Double,
       referenceDecision: Seq[Int],
-      fixedDecision: Seq[Int]
+      fixedDecision: Seq[Int],
+      schedulerFixedDecision: Seq[Int]
   )
 
   private def requireReferenceTools(): Unit = {
@@ -107,10 +109,10 @@ class AcStrategyCandidateCostEvaluatorSpec
       "candidate,strategy,block_x,block_y,coefficient,x_q12,y_q12,b_q12," +
         "quant_q24,mask_q16,distance_q8,ytox,ytob,fixed_estimate_q16," +
         "fixed_scaled_cost_q16,reference_estimate,reference_scaled_cost," +
-        "reference_decision,fixed_decision"
+        "reference_decision,fixed_decision,scheduler_fixed_decision"
     val rows = lines.tail.map { line =>
       val columns = line.split(",", -1)
-      columns.length mustBe 19
+      columns.length mustBe 20
       CsvRow(
         candidate = columns(0).toInt,
         strategy = columns(1).toInt,
@@ -127,7 +129,8 @@ class AcStrategyCandidateCostEvaluatorSpec
         scaledCostQ16 = BigInt(columns(14)),
         referenceScaledCost = columns(16).toDouble,
         referenceDecision = decision(columns(17)),
-        fixedDecision = decision(columns(18))
+        fixedDecision = decision(columns(18)),
+        schedulerFixedDecision = decision(columns(19))
       )
     }
     rows.length mustBe 768
@@ -171,7 +174,8 @@ class AcStrategyCandidateCostEvaluatorSpec
       pattern,
       candidates,
       rows.head.referenceDecision,
-      rows.head.fixedDecision
+      rows.head.fixedDecision,
+      rows.head.schedulerFixedDecision
     )
   }
 

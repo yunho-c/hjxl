@@ -465,6 +465,7 @@ class AqHfColorGammaModulationBlockOutput extends Bundle {
   import AqGammaModulationFixedPoint._
 
   val valueQ24 = SInt(OutputValueBits.W)
+  val strategyMaskQ16 = UInt(AqStrategyMaskFixedPoint.ValueBits.W)
   val distanceQ8 = UInt(16.W)
   val fixedPointScale = UInt(16.W)
   val fixedInvQacQ16 = UInt(32.W)
@@ -497,6 +498,7 @@ class AqHfColorGammaModulationBlockPipeline extends Module {
   color.io.output.ready := gamma.io.input.ready
 
   val contextValid = RegInit(false.B)
+  val strategyMaskQ16 = RegInit(0.U(AqStrategyMaskFixedPoint.ValueBits.W))
   val distanceQ8 = RegInit(0.U(16.W))
   val fixedPointScale = RegInit(0.U(16.W))
   val fixedInvQacQ16 = RegInit(0.U(32.W))
@@ -512,6 +514,7 @@ class AqHfColorGammaModulationBlockPipeline extends Module {
   when(gamma.io.input.fire) {
     assert(!contextValid, "AQ HF/color/gamma pipeline accepted overlapping metadata")
     contextValid := true.B
+    strategyMaskQ16 := color.io.output.bits.strategyMaskQ16
     distanceQ8 := color.io.output.bits.distanceQ8
     fixedPointScale := color.io.output.bits.fixedPointScale
     fixedInvQacQ16 := color.io.output.bits.fixedInvQacQ16
@@ -527,6 +530,7 @@ class AqHfColorGammaModulationBlockPipeline extends Module {
 
   io.output.valid := gamma.io.output.valid && contextValid
   io.output.bits.valueQ24 := gamma.io.output.bits
+  io.output.bits.strategyMaskQ16 := strategyMaskQ16
   io.output.bits.distanceQ8 := distanceQ8
   io.output.bits.fixedPointScale := fixedPointScale
   io.output.bits.fixedInvQacQ16 := fixedInvQacQ16
@@ -544,6 +548,7 @@ class AqHfColorGammaModulationBlockPipeline extends Module {
   when(io.output.fire) {
     assert(contextValid, "AQ HF/color/gamma pipeline emitted without metadata")
     contextValid := false.B
+    strategyMaskQ16 := 0.U
     distanceQ8 := 0.U
     fixedPointScale := 0.U
     fixedInvQacQ16 := 0.U

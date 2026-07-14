@@ -13,7 +13,7 @@ board-proven FPGA encoder.
 | Area | Current state |
 | --- | --- |
 | Strongest validated boundary | Host-prepared, all-DCT coefficients through quantization and logical token traces, followed by host-side codestream assembly |
-| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and a combined logical-token path; reusable 16x8/8x16 transforms plus a prepared fixed-point entropy scorer and exact 2x2 decision boundary are implemented, but RGB/frame scheduling, downstream rectangular quantization/tokens, and RGB-token codestream proof remain incomplete |
+| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and a combined all-DCT logical-token path; a focused route now generates a tile-correct adaptive 8x8/16x8/8x16 strategy map from the same AQ/CFL data, but downstream rectangular quantization/tokens and RGB-token codestream proof remain incomplete |
 | Hardware output | Trace/token records; entropy optimization and final JPEG XL bitstream assembly remain host software responsibilities |
 | Near-term FPGA top | `HjxlKv260PreparedDctTop`, the direct prepared-DCT variant, is frozen as the first synthesis and bring-up target |
 | Physical validation | Chisel simulation and generated SystemVerilog are covered; Vivado synthesis, timing closure, resource use, bitstream generation, and KV260 execution have not been demonstrated |
@@ -33,8 +33,10 @@ when `enableDct && enableQuant` are set, DC residual tokens when
 `enableDct && enableQuant && enableTokenize && tokenSelect=Dc` are set,
 estimated-CFL AC-metadata tokens carrying the adaptive raw-quant field when
 `enableQuant && enableTokenize && tokenSelect=AcMetadata` are set, or the
-current all-DCT AC strategy map when
-only `enableQuant` is set. When `enableXyb && enableQuant` are set without DCT
+AC strategy map when only `enableQuant` is set. The default all-route shell
+retains its inexpensive all-DCT map; a compile-time focused
+`traceRoute = TraceStage.AcStrategy` build instead performs the adaptive
+tile-local search described below. When `enableXyb && enableQuant` are set without DCT
 or tokenization and `tokenSelect=AqContrast`, the RGB core emits the first
 image-dependent adaptive-quantization seam: global quarter-resolution
 `AqContrast` cells corresponding to libjxl-tiny's pre-erosion contrast grid.
@@ -70,8 +72,9 @@ square root before emitting one Q16 value per 4x4 padded-pixel cell.
 cell-to-block reduction, with a one-LSB prepared Q16 seam and the composed RGB
 route. `AqStrategyMaskReciprocal` then evaluates the Q16 strategy mask with a
 42-cycle restoring divider, and its prepared and RGB-composed frame stages
-emit `AqStrategyMask` block traces. This mask is not yet connected to the
-prepared scorer through an RGB/frame scheduler. `AqNonlinearMaskEvaluator`
+emit `AqStrategyMask` block traces. The shared nonlinear/final-map chain now
+also carries that exact mask as a sideband into the focused AC-strategy
+scheduler. `AqNonlinearMaskEvaluator`
 evaluates the other erosion-derived branch in signed Q24, sharing one 56-cycle
 restoring divider
 across its three rational terms; prepared and RGB-composed frame stages emit
@@ -114,9 +117,8 @@ AC-metadata, and AC logical tokens, and supplies the focused core AC-token
 route. Focused `TraceStage.YtoxMap` and `TraceStage.YtobMap` routes expose the
 estimated maps directly. The earlier `FrameAqDctOnly*` and
 `FrameCflMapTraceStage` wrappers remain fixed-CFL diagnostics. Later stages
-still need RGB-connected candidate preparation, frame-level rectangular
-scheduling,
-rectangular quantization/tokens, entropy coding, bitstream assembly, and an
+still need rectangular quantization/tokens, strategy-adjusted raw quant,
+entropy coding, bitstream assembly, and an
 RGB-token-to-codestream parity proof. `Dct16Approx`, `Dct16x8Approx`, and
 `Dct8x16Approx` now provide the Q12 recursive kernel and both canonical
 rectangular coefficient layouts required by scoring and later quantization.
@@ -126,13 +128,21 @@ fixed point, and applies the supported distance multiplier. The
 `PreparedAcStrategy2x2Selector` sequences four 8x8, two 16x8, and two 8x16
 candidates into `AcStrategyDecisionSelector`, which implements the reference's
 exact orientation, strict replacement, tie, and first/continuation semantics.
+`FramePreparedAcStrategyTraceStage` buffers prepared raster Q12 XYB/DCT blocks,
+fits CFL once per 64x64 tile, visits only complete tile-local 2x2 regions, forms
+candidate AQ/mask maxima, computes rectangular transforms, and emits the full
+raster strategy grid; incomplete tile/frame rows and columns stay DCT.
+`FrameAqAcStrategyTraceStage` composes that boundary after the shared RGB AQ/DCT
+block source, and the focused core route selects it without adding the heavy
+search to the default all-route shell. This trace-only route does not yet feed
+the all-DCT quantization or token schedulers.
 `tools/hjxl_reference.py --scaled-dct-q12-csv ...` exports independent signed
-transform fixtures; `--ac-strategy-cost-q16-csv ...` exports the prepared
-candidate-cost seam, fixed-model result, float reference cost, and both 2x2
-decisions. The fixed arithmetic is exact against its oracle, but Q12 input
-rounding can change near-symmetric orientation choices. These pieces are
-reusable prerequisites, not a claim that `FrameAcStrategyTraceStage` is
-adaptive yet.
+transform fixtures plus the exact fixed transform result;
+`--ac-strategy-cost-q16-csv ...` exports the prepared candidate-cost seam,
+fixed-model result, float reference cost, scorer decision, and the exact
+scheduler-fixed decision including Q12 rectangular transforms and fixed CFL.
+The fixed arithmetic is exact against its oracle, but Q12 input rounding can
+change near-symmetric orientation choices.
 Standalone fixed-point primitives also cover approximate RGB-to-XYB, 1D DCT-8,
 and the scaled 8x8 DCT block layout used by libjxl-tiny. The RGB-to-XYB primitive
 applies the signed matrix at Q26, clamps
@@ -363,6 +373,8 @@ sbt 'runMain hjxl.ElaborateAqColorModulation'
 sbt 'runMain hjxl.ElaborateAqGammaModulation'
 sbt 'runMain hjxl.ElaborateAqFinalMap'
 sbt 'runMain hjxl.ElaborateAqRawQuant'
+sbt 'runMain hjxl.ElaboratePreparedAcStrategy'
+sbt 'runMain hjxl.ElaborateAqAcStrategy'
 sbt 'runMain hjxl.ElaborateAqDctOnlyQuantize'
 sbt 'runMain hjxl.ElaborateAqDctOnlyAcMetadataTokens'
 sbt 'runMain hjxl.ElaborateAqDctOnlyQuantizeTokens'
@@ -381,10 +393,11 @@ sbt 'runMain hjxl.ElaborateAcTokens'
 ```
 
 Generate the public `HjxlCore` IO shell with only the full AC-token route
-instantiated:
+or adaptive AC-strategy trace route instantiated:
 
 ```sh
 sbt 'runMain hjxl.ElaborateCoreAcTokens'
+sbt 'runMain hjxl.ElaborateCoreAcStrategy'
 ```
 
 Generate AXI4-Stream-shaped shells:

@@ -81,6 +81,7 @@ class AqModulationBlockInput extends Bundle {
   import AqHfModulationFixedPoint._
 
   val seedQ24 = SInt(SeedValueBits.W)
+  val strategyMaskQ16 = UInt(AqStrategyMaskFixedPoint.ValueBits.W)
   val distanceQ8 = UInt(16.W)
   val fixedPointScale = UInt(16.W)
   val fixedInvQacQ16 = UInt(32.W)
@@ -368,6 +369,7 @@ class FrameAqModulationBlockStage(
   }
 
   io.block.bits.seedQ24 := nonlinear.io.trace.bits.value
+  io.block.bits.strategyMaskQ16 := nonlinear.io.strategyMaskQ16
   io.block.bits.distanceQ8 := latchedConfig.distanceQ8
   io.block.bits.fixedPointScale := latchedConfig.fixedPointScale
   io.block.bits.fixedInvQacQ16 := latchedConfig.fixedInvQacQ16

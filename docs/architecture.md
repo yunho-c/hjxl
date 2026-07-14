@@ -106,8 +106,10 @@ owned by the host tools for now.
   and RGB-derived tile CFL; the DC-only route remains on the earlier fixed
   scheduler. Focused Y-to-X/Y-to-B routes expose the same estimated maps, while
   the default all-route core omits those expensive diagnostic map schedulers. When
-  only `enableQuant` is true,
-  it routes into `FrameAcStrategyTraceStage`. When XYB and quantization are
+  only `enableQuant` is true, the default all-route shell routes into the
+  lightweight fixed `FrameAcStrategyTraceStage`; a compile-time focused
+  `TraceStage.AcStrategy` build instead routes into
+  `FrameAqAcStrategyTraceStage`. When XYB and quantization are
   enabled without DCT/tokenization, `tokenSelect=AqContrast` instead routes the
   global pre-erosion contrast grid; a focused `TraceStage.AqFuzzyErosion` build
   emits the erosion-derived block grid and a focused `TraceStage.AqStrategyMask`
@@ -120,8 +122,8 @@ owned by the host tools for now.
   through the inverse-response average and log term, and a focused
   `TraceStage.AqFinalMap` build completes the unsigned-Q24 map. The focused
   raw-quant build converts that map unless a nonzero fixed override is selected.
-  The default selector still
-  routes fixed AC strategy.
+  The default selector deliberately retains fixed AC strategy so the new
+  full-frame search does not inflate ordinary all-route elaboration.
   The optional compile-time `traceRoute` constructor argument restricts
   elaboration to one route for focused simulation while keeping the same public
   IO shape. Use it for tests and route-specific experiments; the default
@@ -181,8 +183,10 @@ owned by the host tools for now.
   The oracle checks the full-frame reconstruction against both the returned
   reference mask and the stitched 64x64 calls used by the real encoder; five
   RGB families stay within two percent and prepared fixtures match Q16 exactly.
-  This focused trace is not connected to `FrameAcStrategyTraceStage`, which
-  still emits fixed all-DCT choices.
+  The nonlinear/final-map pipeline also carries this exact mask alongside the
+  same block context into `FrameAqAcStrategyTraceStage`; the standalone focused
+  mask trace and the default fixed `FrameAcStrategyTraceStage` remain available
+  as narrower diagnostics.
 - `AqNonlinearMaskEvaluator` implements libjxl-tiny's separate `_compute_mask`
   branch from positive Q16 fuzzy erosion to a signed-Q24 log-domain modulation
   seed. Q24 constants preserve the reference's three rational terms, and one
@@ -273,8 +277,9 @@ owned by the host tools for now.
   inverse/AQ product and two combinational square roots will meet FPGA timing.
 - `PreparedAcStrategy2x2Selector` sequences the reference's eight-candidate
   order, retains 64-bit costs, and applies `AcStrategyDecisionSelector` behind
-  a backpressure-safe prepared interface. RGB candidate preparation and frame
-  traversal remain upstream work.
+  a backpressure-safe prepared interface. `FramePreparedAcStrategyTraceStage`
+  supplies its tile-local frame traversal and candidate preparation, while
+  `FrameAqAcStrategyTraceStage` supplies the focused RGB-connected source.
 - `FrameDct8x8TraceStage` is the first transform integration slice. It buffers
   and pads the RGB frame, converts each padded raster 8x8 block to approximate
   XYB, applies `Dct8x8Approx` for all three channels, and emits `RawDct8x8`
@@ -773,46 +778,58 @@ wrappers.
   prepared DC, AC-metadata, AC, and combined token tops.
 - Full frame-level parity remains open even though adaptive raw quant, dynamic
   reciprocal scaling, RGB-derived tile CFL, quantized traces, AC metadata, and
-  a combined token stream are connected. The RGB path still uses approximate
-  Q12 XYB/DCT and ordinary 8x8 DCT strategy; broader distance generation,
-  RGB-connected rectangular-strategy scheduling, whole-frame reference
-  comparison, and RGB-token-to-codestream proof remain separate work. Entropy
-  optimization and bitstream assembly remain host responsibilities.
+  a combined all-DCT token stream are connected, while a separate focused route
+  now emits an RGB-derived adaptive strategy map. The RGB path still uses
+  approximate Q12 XYB/DCT, and the selected rectangles do not yet reach
+  quantization or tokens; broader distance generation, strategy-adjusted quant
+  fields, whole-frame reference comparison, and RGB-token-to-codestream proof
+  remain separate work. Entropy optimization and bitstream assembly remain host
+  responsibilities.
 - `CflCoefficientSampleWeight`/`CflWeightedSumAccumulator`/
   `CflMultiplierEstimator`/`CflCoefficientSumAccumulator`/
   `CflTileCoefficientEstimator`/`CflTileCoefficientTraceStage` cover only
   inverse-weight lookup/application, weighted-sample accumulation, signed CFL
-  multiplier division/round/clamp, and tile trace emission. Keep them directly
-  tested while future CFL work adds tile DCT traversal, tile-map scheduling,
-  and frame integration.
+  multiplier division/round/clamp, and tile trace emission. They are reused by
+  the prepared/RGB frame map, quantization, metadata, token, and focused
+  strategy schedulers; keep the arithmetic primitives directly tested while
+  physical implementation and non-DCT interaction remain open.
 - `FrameRawQuantFieldTraceStage` selects completed adaptive raw quant at zero
   `fixedRawQuant` and the retained fixed scaffold for a nonzero override. The
   raw-quant byte is zero-extended into the signed trace-value field.
 - `FrameCflMapTraceStage` emits fixed scalar Y-to-X and Y-to-B CFL map traces,
   one record per 64x64 tile. Treat it as a traceable fixed-metadata scaffold
   for future chroma-from-luma work, not as libjxl-tiny CFL parity.
-- `FrameAcStrategyTraceStage` emits one `AcStrategy` value per padded 8x8 block,
-  currently always ordinary DCT with the libjxl-tiny encoding
-  `(raw_strategy << 1) | is_first_block == 1`. This matches the current
-  DCT-only RTL transform path. The rectangular DCT and 2x2 decision primitives
-  now exist, and the prepared 2x2 boundary can score supplied candidates, but
-  this scheduler still lacks candidate generation, 2x2/tile traversal, and
-  adaptive map storage.
+- `FrameAcStrategyTraceStage` remains the default all-route scaffold and emits
+  ordinary DCT with the libjxl-tiny encoding
+  `(raw_strategy << 1) | is_first_block == 1`. The focused adaptive path uses
+  `FramePreparedAcStrategyTraceStage`: it buffers prepared raster Q12 XYB and
+  ordinary-DCT blocks, estimates CFL separately for each 64x64 tile, visits
+  complete 2x2 block regions in tile-local raster order, computes the four DCT,
+  two 16x8, and two 8x16 candidates with covered-block AQ/mask maxima, stores
+  each exact fixed-point decision, and emits the full raster map. Incomplete
+  frame or tile rows/columns remain DCT. `FrameAqAcStrategyTraceStage` feeds
+  that boundary from the shared RGB final-AQ/DCT block source; the focused core
+  route therefore uses one RGB-to-XYB conversion and three ordinary DCTs.
+  This is a trace-only integration: the current quantization, metadata, and
+  token schedulers still consume and emit all-DCT strategy, and they do not yet
+  apply `adjust_quant_field` for selected rectangles.
 - `tools/hjxl_reference.py --scaled-dct-q12-csv ...` writes signed Q12 DCT-16,
-  16x8, and 8x16 inputs beside independent libjxl-tiny coefficients. The axis
-  ramps guard the two different canonical rectangular layouts.
+  16x8, and 8x16 inputs beside independent libjxl-tiny coefficients and the
+  exact integer transform model. The axis ramps guard the two different
+  canonical rectangular layouts.
 - `tools/hjxl_reference.py --ac-strategy-cost-q16-csv ...` writes all eight
   prepared candidates for one 16x16 region, the exact fixed-point estimates and
-  scaled costs, float reference costs, and reference/fixed decisions. Use it to
-  validate the scoring seam before adding RGB/frame scheduling.
+  scaled costs, float reference costs, the reference/scorer decisions, and the
+  scheduler-fixed decision after exact Q12 rectangular transforms plus fixed
+  CFL fitting. Use it to validate both the scorer and frame-composition seams.
 - `tools/hjxl_reference.py --default-ac-strategy-npy ...` writes the matching
   default DCT-first strategy map.
 - `tools/hjxl_reference.py --raw-quant-field-npy ...`,
   `--libjxl-ac-strategy-npy ...`, `--ytox-map-npy ...`, and `--ytob-map-npy ...`
   write libjxl-tiny's adjusted raw quant field, searched AC strategy, and CFL
-  maps for small whole-frame fixtures. These are oracle artifacts for the future
-  adaptive-quantization/strategy implementation, not claims about current RTL
-  parity.
+  maps for small whole-frame fixtures. These remain float-reference artifacts
+  for measuring the fixed Q12 strategy path and future downstream non-DCT
+  integration, not claims of full RTL parity.
 - `tools/hjxl_reference.py --aq-hf-modulation-q24-csv ...`,
   `--aq-color-modulation-q24-csv ...`, and
   `--aq-gamma-modulation-q24-csv ...` reconstruct the corresponding private

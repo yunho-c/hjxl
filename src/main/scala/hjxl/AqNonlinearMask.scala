@@ -288,6 +288,7 @@ class FramePreparedAqNonlinearMaskTraceStage(c: HjxlConfig = HjxlConfig()) exten
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(UInt(InputValueBits.W)))
     val trace = Decoupled(new StageTrace(c))
+    val strategyMaskQ16 = Output(UInt(AqStrategyMaskFixedPoint.ValueBits.W))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
@@ -313,20 +314,28 @@ class FramePreparedAqNonlinearMaskTraceStage(c: HjxlConfig = HjxlConfig()) exten
   val activeTraceLast = RegInit(false.B)
 
   val evaluator = Module(new AqNonlinearMaskEvaluator)
+  val strategyMask = Module(new AqStrategyMaskReciprocal)
   val selectedTotalBlocks = Mux(frameActive, activeTotalBlocks, nextTotalBlocks)
   val inputAllowed = frameActive || !configOutOfRange
   evaluator.io.input.bits := io.input.bits
-  evaluator.io.input.valid := io.input.valid && inputAllowed && !activeTraceLast
-  io.input.ready := evaluator.io.input.ready && inputAllowed && !activeTraceLast
+  evaluator.io.input.valid :=
+    io.input.valid && strategyMask.io.input.ready && inputAllowed && !activeTraceLast
+  strategyMask.io.input.bits := io.input.bits
+  strategyMask.io.input.valid :=
+    io.input.valid && evaluator.io.input.ready && inputAllowed && !activeTraceLast
+  io.input.ready :=
+    evaluator.io.input.ready && strategyMask.io.input.ready && inputAllowed && !activeTraceLast
 
-  io.trace.valid := evaluator.io.output.valid
+  io.trace.valid := evaluator.io.output.valid && strategyMask.io.output.valid
   io.trace.bits.stage := TraceStage.AqNonlinearMask.U
   io.trace.bits.group := 0.U
   io.trace.bits.index := activeTraceIndex
   io.trace.bits.value := evaluator.io.output.bits
-  evaluator.io.output.ready := io.trace.ready
-  io.traceLast := evaluator.io.output.valid && activeTraceLast
-  io.busy := frameActive || evaluator.io.busy
+  io.strategyMaskQ16 := strategyMask.io.output.bits
+  evaluator.io.output.ready := io.trace.ready && strategyMask.io.output.valid
+  strategyMask.io.output.ready := io.trace.ready && evaluator.io.output.valid
+  io.traceLast := io.trace.valid && activeTraceLast
+  io.busy := frameActive || evaluator.io.busy || strategyMask.io.busy
   io.overflow := !frameActive && evaluator.io.input.ready && configOutOfRange
 
   when(io.input.fire) {
@@ -364,6 +373,7 @@ class FrameAqNonlinearMaskTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val xybAccepted = Output(Valid(new XybPixel(c)))
     val trace = Decoupled(new StageTrace(c))
+    val strategyMaskQ16 = Output(UInt(AqStrategyMaskFixedPoint.ValueBits.W))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
@@ -390,6 +400,7 @@ class FrameAqNonlinearMaskTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
 
   io.trace.valid := nonlinearMask.io.trace.valid
   io.trace.bits := nonlinearMask.io.trace.bits
+  io.strategyMaskQ16 := nonlinearMask.io.strategyMaskQ16
   nonlinearMask.io.trace.ready := io.trace.ready
   io.traceLast := nonlinearMask.io.traceLast
   io.busy := frameActive || fuzzyErosion.io.busy || nonlinearMask.io.busy

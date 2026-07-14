@@ -375,6 +375,7 @@ class AqHfColorModulationBlockOutput extends Bundle {
   import AqColorModulationFixedPoint._
 
   val valueQ24 = SInt(OutputValueBits.W)
+  val strategyMaskQ16 = UInt(AqStrategyMaskFixedPoint.ValueBits.W)
   val distanceQ8 = UInt(16.W)
   val fixedPointScale = UInt(16.W)
   val fixedInvQacQ16 = UInt(32.W)
@@ -421,6 +422,7 @@ class AqHfColorModulationBlockPipeline extends Module {
 
   val color = Module(new AqColorModulationBlock)
   val outputContextValid = RegInit(false.B)
+  val outputStrategyMaskQ16 = RegInit(0.U(AqStrategyMaskFixedPoint.ValueBits.W))
   val outputDistanceQ8 = RegInit(0.U(16.W))
   val outputFixedPointScale = RegInit(0.U(16.W))
   val outputFixedInvQacQ16 = RegInit(0.U(32.W))
@@ -444,6 +446,7 @@ class AqHfColorModulationBlockPipeline extends Module {
   when(color.io.input.fire) {
     assert(pendingContextValid, "AQ HF/color pipeline lost its input context")
     assert(!outputContextValid, "AQ HF/color pipeline accepted overlapping output context")
+    outputStrategyMaskQ16 := pendingContext.strategyMaskQ16
     outputDistanceQ8 := pendingContext.distanceQ8
     outputFixedPointScale := pendingContext.fixedPointScale
     outputFixedInvQacQ16 := pendingContext.fixedInvQacQ16
@@ -461,6 +464,7 @@ class AqHfColorModulationBlockPipeline extends Module {
 
   io.output.valid := color.io.output.valid && outputContextValid
   io.output.bits.valueQ24 := color.io.output.bits
+  io.output.bits.strategyMaskQ16 := outputStrategyMaskQ16
   io.output.bits.distanceQ8 := outputDistanceQ8
   io.output.bits.fixedPointScale := outputFixedPointScale
   io.output.bits.fixedInvQacQ16 := outputFixedInvQacQ16
@@ -478,6 +482,7 @@ class AqHfColorModulationBlockPipeline extends Module {
   when(io.output.fire) {
     assert(outputContextValid, "AQ HF/color pipeline emitted without output context")
     outputContextValid := false.B
+    outputStrategyMaskQ16 := 0.U
     outputDistanceQ8 := 0.U
     outputFixedPointScale := 0.U
     outputFixedInvQacQ16 := 0.U

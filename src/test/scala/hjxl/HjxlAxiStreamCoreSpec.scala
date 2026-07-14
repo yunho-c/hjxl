@@ -395,7 +395,7 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
     rows.last mustBe "0,0,191,-64"
   }
 
-  "HjxlAxiStreamCore asserts output TLAST for fixed-size AC strategy traces" in {
+  "HjxlAxiStreamCore asserts output TLAST for focused adaptive AC strategy traces" in {
     simulate(new HjxlAxiStreamCore(config, traceRoute = TraceStage.AcStrategy)) { dut =>
       pokeConfig(dut, width = 2, height = 1)
       dut.io.config.enableQuant.poke(true.B)
@@ -408,6 +408,14 @@ class HjxlAxiStreamCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.input.valid.poke(false.B)
 
       dut.io.trace.ready.poke(true.B)
+      var waitCycles = 0
+      while (dut.io.trace.valid.peekValue().asBigInt == 0 && waitCycles < 5000) {
+        dut.clock.step()
+        waitCycles += 1
+      }
+      withClue("focused AC-strategy output latency") {
+        waitCycles must be < 5000
+      }
       dut.io.trace.valid.expect(true.B)
       val (stage, group, index, value) = unpackTraceData(dut.io.trace.bits.data.peekValue().asBigInt)
       stage must be(TraceStage.AcStrategy)

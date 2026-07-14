@@ -2447,7 +2447,16 @@ def write_scaled_dct_q12_csv(path: Path) -> None:
             _dct_1d((inputs.astype(np.float32) / np.float32(scale)))
             * np.float32(scale)
         ).astype(np.int64)
-        fixtures.append(("dct16", name, inputs.reshape(-1), expected.reshape(-1)))
+        fixed_expected = np.asarray(_fixed_dct16_q12(inputs.tolist()), dtype=np.int64)
+        fixtures.append(
+            (
+                "dct16",
+                name,
+                inputs.reshape(-1),
+                expected.reshape(-1),
+                fixed_expected.reshape(-1),
+            )
+        )
 
     for kind, rows, columns in (("dct16x8", 16, 8), ("dct8x16", 8, 16)):
         for name in ("constant", "x-ramp", "y-ramp", "impulse", "signed"):
@@ -2456,20 +2465,47 @@ def write_scaled_dct_q12_csv(path: Path) -> None:
                 scaled_dct(inputs.astype(np.float32) / np.float32(scale))
                 * np.float32(scale)
             ).astype(np.int64)
-            fixtures.append((kind, name, inputs.reshape(-1), expected.reshape(-1)))
+            fixed_expected = fixed_rectangular_dct_q12(inputs)
+            fixtures.append(
+                (
+                    kind,
+                    name,
+                    inputs.reshape(-1),
+                    expected.reshape(-1),
+                    fixed_expected.reshape(-1),
+                )
+            )
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
-        writer.writerow(("kind", "fixture", "index", "input_q12", "coefficient_q12"))
-        for kind, name, inputs, expected in fixtures:
-            if inputs.shape != expected.shape:
+        writer.writerow(
+            (
+                "kind",
+                "fixture",
+                "index",
+                "input_q12",
+                "coefficient_q12",
+                "fixed_coefficient_q12",
+            )
+        )
+        for kind, name, inputs, expected, fixed_expected in fixtures:
+            if inputs.shape != expected.shape or inputs.shape != fixed_expected.shape:
                 raise AssertionError(
                     f"{kind}/{name}: input and canonical coefficient sizes differ"
                 )
-            for index, (input_q12, coefficient_q12) in enumerate(zip(inputs, expected)):
+            for index, (input_q12, coefficient_q12, fixed_coefficient_q12) in enumerate(
+                zip(inputs, expected, fixed_expected)
+            ):
                 writer.writerow(
-                    (kind, name, index, int(input_q12), int(coefficient_q12))
+                    (
+                        kind,
+                        name,
+                        index,
+                        int(input_q12),
+                        int(coefficient_q12),
+                        int(fixed_coefficient_q12),
+                    )
                 )
 
 
@@ -2481,6 +2517,157 @@ AC_STRATEGY_COST_PARAMS_Q16 = {
     1024: (646862, 47762, 52674),
     2048: (646862, 49892, 55356),
 }
+
+
+_FIXED_DCT_SQRT2_Q12 = 5793
+_FIXED_DCT_WC4_Q12 = (2217, 5352)
+_FIXED_DCT_WC8_Q12 = (2088, 2463, 3686, 10498)
+_FIXED_DCT_WC16_Q12 = (2058, 2140, 2322, 2649, 3228, 4345, 7055, 20894)
+
+
+def _fixed_dct_mul_q12(value: int, coefficient_q12: int) -> int:
+    return (int(value) * int(coefficient_q12)) >> 12
+
+
+def _fixed_dct2_q12(values: list[int]) -> list[int]:
+    return [values[0] + values[1], values[0] - values[1]]
+
+
+def _fixed_dct4_q12(values: list[int]) -> list[int]:
+    even = _fixed_dct2_q12([values[0] + values[3], values[1] + values[2]])
+    odd = _fixed_dct2_q12(
+        [
+            _fixed_dct_mul_q12(values[0] - values[3], _FIXED_DCT_WC4_Q12[0]),
+            _fixed_dct_mul_q12(values[1] - values[2], _FIXED_DCT_WC4_Q12[1]),
+        ]
+    )
+    odd[0] = _fixed_dct_mul_q12(odd[0], _FIXED_DCT_SQRT2_Q12) + odd[1]
+    return [even[0], odd[0], even[1], odd[1]]
+
+
+def _fixed_dct8_q12(values: list[int]) -> list[int]:
+    even = _fixed_dct4_q12([values[i] + values[7 - i] for i in range(4)])
+    odd = _fixed_dct4_q12(
+        [
+            _fixed_dct_mul_q12(
+                values[i] - values[7 - i], _FIXED_DCT_WC8_Q12[i]
+            )
+            for i in range(4)
+        ]
+    )
+    odd[0] = _fixed_dct_mul_q12(odd[0], _FIXED_DCT_SQRT2_Q12) + odd[1]
+    for index in range(1, 3):
+        odd[index] += odd[index + 1]
+    return [
+        even[0],
+        odd[0],
+        even[1],
+        odd[1],
+        even[2],
+        odd[2],
+        even[3],
+        odd[3],
+    ]
+
+
+def _fixed_dct16_q12(values: list[int]) -> list[int]:
+    even = _fixed_dct8_q12([values[i] + values[15 - i] for i in range(8)])
+    odd = _fixed_dct8_q12(
+        [
+            _fixed_dct_mul_q12(
+                values[i] - values[15 - i], _FIXED_DCT_WC16_Q12[i]
+            )
+            for i in range(8)
+        ]
+    )
+    odd[0] = _fixed_dct_mul_q12(odd[0], _FIXED_DCT_SQRT2_Q12) + odd[1]
+    for index in range(1, 7):
+        odd[index] += odd[index + 1]
+    return [value for index in range(8) for value in (even[index], odd[index])]
+
+
+def fixed_rectangular_dct_q12(samples_q12):
+    """Independent integer model of `DctRectangularApprox`."""
+    np = _load_numpy()
+    samples = np.asarray(samples_q12, dtype=np.int64)
+    rows, columns = samples.shape
+    if (rows, columns) not in ((16, 8), (8, 16)):
+        raise ValueError("fixed rectangular DCT requires 16x8 or 8x16 samples")
+
+    transform_rows = _fixed_dct16_q12 if rows == 16 else _fixed_dct8_q12
+    transform_columns = _fixed_dct16_q12 if columns == 16 else _fixed_dct8_q12
+    row_shift = int(math.log2(rows))
+    column_shift = int(math.log2(columns))
+    column_pass = [
+        [value >> row_shift for value in transform_rows(samples[:, x].tolist())]
+        for x in range(columns)
+    ]
+    row_pass = [
+        [
+            value >> column_shift
+            for value in transform_columns(
+                [column_pass[x][y_frequency] for x in range(columns)]
+            )
+        ]
+        for y_frequency in range(rows)
+    ]
+    if rows == 16:
+        canonical = [
+            row_pass[y_frequency][x_frequency]
+            for x_frequency in range(columns)
+            for y_frequency in range(rows)
+        ]
+    else:
+        canonical = [
+            row_pass[y_frequency][x_frequency]
+            for y_frequency in range(rows)
+            for x_frequency in range(columns)
+        ]
+    return np.asarray(canonical, dtype=np.int64)
+
+
+def fixed_cfl_multipliers_from_dct_q12(block_coefficients_q12) -> tuple[int, int]:
+    """Model the Q12-to-Q16 tile estimator used by the frame scheduler."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.chroma_from_luma import (  # pylint: disable=import-outside-toplevel
+        INV_MATRIX_B,
+        INV_MATRIX_X,
+    )
+
+    blocks = np.asarray(block_coefficients_q12, dtype=np.int64)
+    if blocks.ndim != 3 or blocks.shape[1:] != (3, 64):
+        raise ValueError("fixed CFL input must have shape (blocks, 3, 64)")
+    weights = (
+        np.rint(INV_MATRIX_X * np.float32(1 << 16)).astype(np.int64),
+        np.rint(INV_MATRIX_B * np.float32(1 << 16)).astype(np.int64),
+    )
+
+    def estimate(use_b: bool) -> int:
+        matrix = weights[1 if use_b else 0]
+        sum_aa = 0
+        sum_ab = 0
+        count = 0
+        for block in blocks:
+            for coefficient in range(64):
+                weight = int(matrix[coefficient])
+                model_q16 = ((int(block[1, coefficient]) << 4) * weight) >> 16
+                signal_channel = 2 if use_b else 0
+                signal_q16 = (
+                    (int(block[signal_channel, coefficient]) << 4) * weight
+                ) >> 16
+                a_q16 = _round_divide_signed(model_q16, 84)
+                b_q16 = (model_q16 if use_b else 0) - signal_q16
+                sum_aa += (a_q16 * a_q16) >> 16
+                sum_ab += (a_q16 * b_q16) >> 16
+                count += 1
+        denominator = sum_aa + count * 33
+        numerator = -sum_ab
+        rounded = _round_divide_signed(numerator, denominator)
+        return max(-128, min(127, rounded))
+
+    return estimate(False), estimate(True)
 
 
 def _round_divide_signed(value: int, denominator: int) -> int:
@@ -2816,11 +3003,53 @@ def write_ac_strategy_candidate_cost_q16_csv(
         int(cfl.ytob),
     ).decision
     fixed_decision = _strategy_decision_from_scaled_costs(fixed_costs)
+    scheduler_xyb_q12 = np.rint(xyb[:, :16, :16] * np.float32(1 << 12)).astype(
+        np.int64
+    )
+    scheduler_ytox, scheduler_ytob = fixed_cfl_multipliers_from_dct_q12(
+        np.asarray([candidate[4] for candidate in candidates[:4]], dtype=np.int64)
+    )
+    scheduler_costs = []
+    for candidate, (strategy, block_x, block_y) in enumerate(candidate_specs):
+        if strategy == DCT:
+            scheduler_coefficients = candidates[candidate][4]
+        else:
+            rows, columns = {
+                DCT16X8: (16, 8),
+                DCT8X16: (8, 16),
+            }[strategy]
+            scheduler_coefficients = np.asarray(
+                [
+                    fixed_rectangular_dct_q12(
+                        scheduler_xyb_q12[
+                            channel,
+                            block_y * 8 : block_y * 8 + rows,
+                            block_x * 8 : block_x * 8 + columns,
+                        ]
+                    )
+                    for channel in range(3)
+                ],
+                dtype=np.int64,
+            )
+        _, scheduler_cost = fixed_ac_strategy_candidate_cost_q16(
+            strategy,
+            scheduler_coefficients,
+            candidates[candidate][5],
+            candidates[candidate][6],
+            distance_q8,
+            scheduler_ytox,
+            scheduler_ytob,
+        )
+        scheduler_costs.append(scheduler_cost)
+    scheduler_fixed_decision = _strategy_decision_from_scaled_costs(scheduler_costs)
     reference_decision_text = ":".join(
         str(int(value)) for value in reference_decision.reshape(-1)
     )
     fixed_decision_text = ":".join(
         str(int(value)) for value in fixed_decision.reshape(-1)
+    )
+    scheduler_fixed_decision_text = ":".join(
+        str(int(value)) for value in scheduler_fixed_decision.reshape(-1)
     )
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2847,6 +3076,7 @@ def write_ac_strategy_candidate_cost_q16_csv(
                 "reference_scaled_cost",
                 "reference_decision",
                 "fixed_decision",
+                "scheduler_fixed_decision",
             )
         )
         for candidate in candidates:
@@ -2873,6 +3103,7 @@ def write_ac_strategy_candidate_cost_q16_csv(
                         f"{candidate[10]:.9g}",
                         reference_decision_text,
                         fixed_decision_text,
+                        scheduler_fixed_decision_text,
                     )
                 )
 

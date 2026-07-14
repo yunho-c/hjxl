@@ -106,6 +106,10 @@ class AdaptiveInvQacQ16 extends Module {
 
 class AqDctBlockOutput(c: HjxlConfig) extends Bundle {
   val coefficients = Vec(3, Vec(HjxlConstants.BlockDim * HjxlConstants.BlockDim, SInt(c.traceValueBits.W)))
+  val xyb = Vec(3, Vec(HjxlConstants.BlockDim * HjxlConstants.BlockDim, SInt(c.traceValueBits.W)))
+  val aqMapQ24 = UInt(AqFinalModulationFixedPoint.ValueBits.W)
+  val strategyMaskQ16 = UInt(AqStrategyMaskFixedPoint.ValueBits.W)
+  val distanceQ8 = UInt(16.W)
   val quant = UInt(8.W)
   val scaleQ16 = UInt(16.W)
   val fixedInvQacQ16 = UInt(32.W)
@@ -190,6 +194,9 @@ class FrameAqDctBlockStage(c: HjxlConfig = HjxlConfig()) extends Module {
 
   val allDctValid = dcts.map(_.io.output.valid).reduce(_ && _)
   io.output.valid := aq.io.output.valid && allDctValid
+  io.output.bits.aqMapQ24 := aq.io.output.bits.aqMapQ24
+  io.output.bits.strategyMaskQ16 := aq.io.output.bits.strategyMaskQ16
+  io.output.bits.distanceQ8 := aq.io.output.bits.distanceQ8
   io.output.bits.quant := selectedRawQuant
   io.output.bits.scaleQ16 := aq.io.output.bits.scaleQ16
   io.output.bits.fixedInvQacQ16 := aq.io.output.bits.fixedInvQacQ16
@@ -204,6 +211,9 @@ class FrameAqDctBlockStage(c: HjxlConfig = HjxlConfig()) extends Module {
     io.output.bits.coefficients(0)(coefficient) := dctX.io.output.bits(coefficient)
     io.output.bits.coefficients(1)(coefficient) := dctY.io.output.bits(coefficient)
     io.output.bits.coefficients(2)(coefficient) := dctB.io.output.bits(coefficient)
+    io.output.bits.xyb(0)(coefficient) := aq.io.output.bits.xybXQ12(coefficient)
+    io.output.bits.xyb(1)(coefficient) := aq.io.output.bits.xybYQ12(coefficient)
+    io.output.bits.xyb(2)(coefficient) := aq.io.output.bits.xybBQ12(coefficient)
   }
 
   val consumeBlock = io.output.ready && allDctValid

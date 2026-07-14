@@ -74,13 +74,37 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must include("module FramePreparedCflMapTraceStage")
     text must include("module FrameAqDctOnlyBlockStage")
     text must include("module FrameAqDctBlockStage")
+    text must include("module FrameAcStrategyTraceStage")
     text must include("module AdaptiveInvQacQ16")
+    text must not include "module FrameAqAcStrategyTraceStage"
+    text must not include "module FramePreparedAcStrategyTraceStage"
     text must not include "module FrameAqCflMapTraceStage"
     text must not include "module FrameAqCflDctOnlyQuantizeTokenTraceStage"
     text must not include "module FrameAqStrategyMaskTraceStage"
     text must not include "module FrameAqHfModulationTraceStage"
     text must not include "module FrameAqColorModulationTraceStage"
     text must not include "module FrameAqGammaModulationTraceStage"
+  }
+
+  "HjxlCore focused AC-strategy route generates candidates from one adaptive RGB chain" in {
+    val files = emittedSystemVerilog(TraceStage.AcStrategy)
+    val text = combinedText(files)
+    text must include("module HjxlCore")
+    text must include("module FrameAqAcStrategyTraceStage")
+    text must include("module FramePreparedAcStrategyTraceStage")
+    text must include("module PreparedAcStrategy2x2Selector")
+    text must include("module AcStrategyCandidateCostEvaluator")
+    text must include("module CflTileCoefficientEstimator")
+    text must include("module Dct16x8Approx")
+    text must include("module Dct8x16Approx")
+    text must include("module FrameAqDctBlockStage")
+    text must include("module FrameAqFinalMapPipeline")
+    text must not include "module FrameAcStrategyTraceStage"
+    text must not include "module AdaptiveInvQacQ16"
+    val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r.findAllMatchIn(text).length
+    converterInstances mustBe 1
+    val ordinaryDctInstances = """Dct8x8Approx\s+\w+\s*\(""".r.findAllMatchIn(text).length
+    ordinaryDctInstances mustBe 3
   }
 
   "HjxlCore focused quantized route uses one adaptive estimated-CFL block source" in {

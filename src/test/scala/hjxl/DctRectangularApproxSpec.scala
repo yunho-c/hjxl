@@ -18,7 +18,13 @@ class DctRectangularApproxSpec extends AnyFreeSpec with Matchers with ChiselSim 
   private val libjxlTinyRoot =
     Path.of(sys.env.getOrElse("LIBJXL_TINY", "/Users/yunhocho/GitHub/libjxl-tiny"))
 
-  private case class Fixture(kind: String, name: String, input: Seq[Int], expected: Seq[Int])
+  private case class Fixture(
+      kind: String,
+      name: String,
+      input: Seq[Int],
+      expected: Seq[Int],
+      fixedExpected: Seq[Int]
+  )
 
   private def requireReferenceTools(): Unit = {
     assume(
@@ -52,23 +58,25 @@ class DctRectangularApproxSpec extends AnyFreeSpec with Matchers with ChiselSim 
     }
 
     val lines = Files.readAllLines(csv, StandardCharsets.UTF_8).asScala.toSeq
-    lines.head mustBe "kind,fixture,index,input_q12,coefficient_q12"
+    lines.head mustBe
+      "kind,fixture,index,input_q12,coefficient_q12,fixed_coefficient_q12"
     val rows = lines.tail.map { line =>
       val columns = line.split(",", -1)
-      columns.length mustBe 5
+      columns.length mustBe 6
       (
         columns(0),
         columns(1),
         columns(2).toInt,
         columns(3).toInt,
-        columns(4).toInt
+        columns(4).toInt,
+        columns(5).toInt
       )
     }
     rows.groupBy(row => (row._1, row._2)).toSeq.sortBy(_._1).map {
       case ((kind, name), grouped) =>
         val ordered = grouped.sortBy(_._3)
         ordered.map(_._3) mustBe (0 until ordered.length)
-        Fixture(kind, name, ordered.map(_._4), ordered.map(_._5))
+        Fixture(kind, name, ordered.map(_._4), ordered.map(_._5), ordered.map(_._6))
     }
   }
 
@@ -94,6 +102,7 @@ class DctRectangularApproxSpec extends AnyFreeSpec with Matchers with ChiselSim 
     for (index <- fixture.expected.indices) {
       val actual = dut.io.output.bits(index).peekValue().asBigInt.toInt
       withClue(s"${fixture.kind}/${fixture.name} coefficient $index: ") {
+        actual mustBe fixture.fixedExpected(index)
         math.abs(actual - fixture.expected(index)) must be <= 16
       }
     }
@@ -127,6 +136,7 @@ class DctRectangularApproxSpec extends AnyFreeSpec with Matchers with ChiselSim 
     for (index <- fixture.expected.indices) {
       val actual = dut.io.output.bits(index).peekValue().asBigInt.toInt
       withClue(s"${fixture.kind}/${fixture.name} coefficient $index: ") {
+        actual mustBe fixture.fixedExpected(index)
         math.abs(actual - fixture.expected(index)) must be <= tolerance
       }
     }

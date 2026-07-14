@@ -57,7 +57,10 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   val acTokenTrace =
     if (includeAcToken) Some(Module(new FrameAqCflDctOnlyQuantizeTokenTraceStage(c, acTokensOnly = true)))
     else None
-  val acStrategyTrace = if (includeAcStrategy) Some(Module(new FrameAcStrategyTraceStage(c))) else None
+  val fixedAcStrategyTrace =
+    if (traceRoute == HjxlCoreTraceRoute.All) Some(Module(new FrameAcStrategyTraceStage(c))) else None
+  val adaptiveAcStrategyTrace =
+    if (traceRoute == TraceStage.AcStrategy) Some(Module(new FrameAqAcStrategyTraceStage(c))) else None
   val aqContrastTrace = if (includeAqContrast) Some(Module(new FrameAqContrastTraceStage(c))) else None
   val aqFuzzyErosionTrace =
     if (includeAqFuzzyErosion) Some(Module(new FrameAqFuzzyErosionTraceStage(c))) else None
@@ -270,7 +273,13 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     stage.io.input.valid := io.input.valid && useAcTokenTrace
     stage.io.trace.ready := io.trace.ready && useAcTokenTrace
   }
-  acStrategyTrace.foreach { stage =>
+  fixedAcStrategyTrace.foreach { stage =>
+    stage.io.config := io.config
+    stage.io.input.bits := io.input.bits
+    stage.io.input.valid := io.input.valid && useAcStrategyTrace
+    stage.io.trace.ready := io.trace.ready && useAcStrategyTrace
+  }
+  adaptiveAcStrategyTrace.foreach { stage =>
     stage.io.config := io.config
     stage.io.input.bits := io.input.bits
     stage.io.input.valid := io.input.valid && useAcStrategyTrace
@@ -326,6 +335,30 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   }
 
   val inactiveTrace = WireDefault(0.U.asTypeOf(new StageTrace(c)))
+  val acStrategyInputReady = adaptiveAcStrategyTrace
+    .map(_.io.input.ready)
+    .orElse(fixedAcStrategyTrace.map(_.io.input.ready))
+    .getOrElse(false.B)
+  val acStrategyTraceValid = adaptiveAcStrategyTrace
+    .map(_.io.trace.valid)
+    .orElse(fixedAcStrategyTrace.map(_.io.trace.valid))
+    .getOrElse(false.B)
+  val acStrategyTraceBits = adaptiveAcStrategyTrace
+    .map(_.io.trace.bits)
+    .orElse(fixedAcStrategyTrace.map(_.io.trace.bits))
+    .getOrElse(inactiveTrace)
+  val acStrategyTraceLast = adaptiveAcStrategyTrace
+    .map(_.io.traceLast)
+    .orElse(fixedAcStrategyTrace.map(_.io.traceLast))
+    .getOrElse(false.B)
+  val acStrategyBusy = adaptiveAcStrategyTrace
+    .map(_.io.busy)
+    .orElse(fixedAcStrategyTrace.map(_.io.busy))
+    .getOrElse(false.B)
+  val acStrategyOverflow = adaptiveAcStrategyTrace
+    .map(_.io.overflow)
+    .orElse(fixedAcStrategyTrace.map(_.io.overflow))
+    .getOrElse(false.B)
 
   io.input.ready := MuxCase(
     inputTrace.map(_.io.input.ready).getOrElse(false.B),
@@ -346,7 +379,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useRawQuantTrace -> rawQuantTrace.map(_.io.input.ready).getOrElse(false.B),
       useYtoxTrace -> ytoxTrace.map(_.io.input.ready).getOrElse(false.B),
       useYtobTrace -> ytobTrace.map(_.io.input.ready).getOrElse(false.B),
-      useAcStrategyTrace -> acStrategyTrace.map(_.io.input.ready).getOrElse(false.B),
+      useAcStrategyTrace -> acStrategyInputReady,
       useXybTrace -> xybTrace.map(_.io.input.ready).getOrElse(false.B)
     )
   )
@@ -369,7 +402,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useRawQuantTrace -> rawQuantTrace.map(_.io.trace.valid).getOrElse(false.B),
       useYtoxTrace -> ytoxTrace.map(_.io.trace.valid).getOrElse(false.B),
       useYtobTrace -> ytobTrace.map(_.io.trace.valid).getOrElse(false.B),
-      useAcStrategyTrace -> acStrategyTrace.map(_.io.trace.valid).getOrElse(false.B),
+      useAcStrategyTrace -> acStrategyTraceValid,
       useXybTrace -> xybTrace.map(_.io.trace.valid).getOrElse(false.B)
     )
   )
@@ -392,7 +425,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useRawQuantTrace -> rawQuantTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useYtoxTrace -> ytoxTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useYtobTrace -> ytobTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
-      useAcStrategyTrace -> acStrategyTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
+      useAcStrategyTrace -> acStrategyTraceBits,
       useXybTrace -> xybTrace.map(_.io.trace.bits).getOrElse(inactiveTrace)
     )
   )
@@ -417,7 +450,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useAqStrategyMaskTrace -> aqStrategyMaskTrace.map(_.io.traceLast).getOrElse(false.B),
       useAqFuzzyErosionTrace -> aqFuzzyErosionTrace.map(_.io.traceLast).getOrElse(false.B),
       useAqContrastTrace -> aqContrastTrace.map(_.io.traceLast).getOrElse(false.B),
-      useAcStrategyTrace -> acStrategyTrace.map(_.io.traceLast).getOrElse(false.B)
+      useAcStrategyTrace -> acStrategyTraceLast
     )
   )
   io.busy := MuxCase(
@@ -441,7 +474,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useAqStrategyMaskTrace -> aqStrategyMaskTrace.map(_.io.busy).getOrElse(false.B),
       useAqFuzzyErosionTrace -> aqFuzzyErosionTrace.map(_.io.busy).getOrElse(false.B),
       useAqContrastTrace -> aqContrastTrace.map(_.io.busy).getOrElse(false.B),
-      useAcStrategyTrace -> acStrategyTrace.map(_.io.busy).getOrElse(false.B)
+      useAcStrategyTrace -> acStrategyBusy
     )
   )
   io.overflow := MuxCase(
@@ -465,7 +498,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
       useAqStrategyMaskTrace -> aqStrategyMaskTrace.map(_.io.overflow).getOrElse(false.B),
       useAqFuzzyErosionTrace -> aqFuzzyErosionTrace.map(_.io.overflow).getOrElse(false.B),
       useAqContrastTrace -> aqContrastTrace.map(_.io.overflow).getOrElse(false.B),
-      useAcStrategyTrace -> acStrategyTrace.map(_.io.overflow).getOrElse(false.B)
+      useAcStrategyTrace -> acStrategyOverflow
     )
   )
 }

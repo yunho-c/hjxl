@@ -307,6 +307,8 @@ class AqFinalMapFrameOutput extends Bundle {
   import AqFinalModulationFixedPoint._
 
   val aqMapQ24 = UInt(ValueBits.W)
+  val strategyMaskQ16 = UInt(AqStrategyMaskFixedPoint.ValueBits.W)
+  val distanceQ8 = UInt(16.W)
   val invGlobalScaleQ24 = UInt(ValueBits.W)
   val scaleQ16 = UInt(16.W)
   val fixedInvQacQ16 = UInt(32.W)
@@ -371,6 +373,8 @@ class FrameAqFinalMapPipeline(c: HjxlConfig = HjxlConfig()) extends Module {
   cumulative.io.output.ready := finalModulation.io.input.ready
 
   val contextValid = RegInit(false.B)
+  val strategyMaskQ16 = RegInit(0.U(AqStrategyMaskFixedPoint.ValueBits.W))
+  val distanceQ8 = RegInit(0.U(16.W))
   val invGlobalScaleQ24 = RegInit(0.U(32.W))
   val scaleQ16 = RegInit(0.U(16.W))
   val fixedInvQacQ16 = RegInit(0.U(32.W))
@@ -388,6 +392,8 @@ class FrameAqFinalMapPipeline(c: HjxlConfig = HjxlConfig()) extends Module {
   when(finalModulation.io.input.fire) {
     assert(!contextValid, "AQ final-map pipeline accepted overlapping metadata")
     contextValid := true.B
+    strategyMaskQ16 := cumulative.io.output.bits.strategyMaskQ16
+    distanceQ8 := cumulative.io.output.bits.distanceQ8
     invGlobalScaleQ24 := selectedDistance.io.params.aqInvGlobalScaleQ24
     scaleQ16 := Mux(
       cumulative.io.output.bits.fixedPointScale === 0.U,
@@ -409,6 +415,8 @@ class FrameAqFinalMapPipeline(c: HjxlConfig = HjxlConfig()) extends Module {
 
   io.output.valid := finalModulation.io.output.valid && contextValid
   io.output.bits.aqMapQ24 := finalModulation.io.output.bits
+  io.output.bits.strategyMaskQ16 := strategyMaskQ16
+  io.output.bits.distanceQ8 := distanceQ8
   io.output.bits.invGlobalScaleQ24 := invGlobalScaleQ24
   io.output.bits.scaleQ16 := scaleQ16
   io.output.bits.fixedInvQacQ16 := fixedInvQacQ16
@@ -430,6 +438,8 @@ class FrameAqFinalMapPipeline(c: HjxlConfig = HjxlConfig()) extends Module {
   when(io.output.fire) {
     assert(contextValid, "AQ final-map pipeline emitted without metadata")
     contextValid := false.B
+    strategyMaskQ16 := 0.U
+    distanceQ8 := 0.U
     invGlobalScaleQ24 := 0.U
     scaleQ16 := 0.U
     fixedInvQacQ16 := 0.U

@@ -244,6 +244,42 @@ object ElaborateAqRawQuant extends App {
   )
 }
 
+object ElaboratePreparedAcStrategy extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FramePreparedAcStrategyTraceStage(),
+    args = Array("--target-dir", "generated-prepared-ac-strategy"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAqAcStrategy extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqAcStrategyTraceStage(),
+    args = Array("--target-dir", "generated-aq-ac-strategy"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateCoreAcStrategy extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlCore(traceRoute = TraceStage.AcStrategy),
+    args = Array("--target-dir", "generated-core-ac-strategy"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaborateAqDctOnlyQuantize extends App {
   ChiselStage.emitSystemVerilogFile(
     new FrameAqDctOnlyQuantizeTraceStage(),

@@ -31,6 +31,7 @@ class AqNonlinearMaskSpec extends AnyFreeSpec with Matchers with ChiselSim {
       fuzzyErosionQ16: BigInt,
       nonlinearMaskQ24: BigInt,
       fixedNonlinearMaskQ24: BigInt,
+      quantizedXybFuzzyErosionQ16: BigInt,
       quantizedXybNonlinearMaskQ24: BigInt
   )
 
@@ -90,6 +91,7 @@ class AqNonlinearMaskSpec extends AnyFreeSpec with Matchers with ChiselSim {
         fuzzyErosionQ16 = BigInt(columns(3)),
         nonlinearMaskQ24 = BigInt(columns(4)),
         fixedNonlinearMaskQ24 = BigInt(columns(5)),
+        quantizedXybFuzzyErosionQ16 = BigInt(columns(6)),
         quantizedXybNonlinearMaskQ24 = BigInt(columns(7))
       )
     }
@@ -265,12 +267,16 @@ class AqNonlinearMaskSpec extends AnyFreeSpec with Matchers with ChiselSim {
           dut.io.trace.bits.group.expect(0.U)
           dut.io.trace.bits.index.expect(row.block.U)
           dut.io.trace.bits.value.expect(row.fixedNonlinearMaskQ24.S)
+          val expectedStrategyMask = AqStrategyMaskFixedPoint.maskQ16(row.fuzzyErosionQ16)
+          dut.io.strategyMaskQ16.expect(expectedStrategyMask.U)
           dut.io.traceLast.expect((rowIndex == rows.length - 1).B)
 
           val stable = signedTraceValue(dut.io.trace.bits.value.peekValue().asBigInt)
+          val stableStrategyMask = dut.io.strategyMaskQ16.peekValue().asBigInt
           dut.clock.step(2)
           dut.io.trace.valid.expect(true.B)
           dut.io.trace.bits.value.expect(stable.S)
+          dut.io.strategyMaskQ16.expect(stableStrategyMask.U)
           dut.io.trace.ready.poke(true.B)
           dut.clock.step()
           dut.io.trace.ready.poke(false.B)
@@ -291,6 +297,50 @@ class AqNonlinearMaskSpec extends AnyFreeSpec with Matchers with ChiselSim {
         val (rgb, rows) = generateFixture(pattern, width, height)
         rgb.length mustBe width * height
         pattern -> (rgb, rows)
+    }
+
+    val observedErosionByPattern = scala.collection.mutable.Map.empty[String, Seq[BigInt]]
+    simulate(new FrameAqFuzzyErosionTraceStage(config)) { dut =>
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      pokeConfig(dut.io.config, width, height)
+      dut.clock.step()
+
+      for ((pattern, (rgb, expectedRows)) <- fixtures) {
+        pokeConfig(dut.io.config, width, height)
+        for ((row, inputIndex) <- rgb.zipWithIndex) {
+          dut.io.input.valid.poke(true.B)
+          dut.io.input.bits.x.poke(row.x.U)
+          dut.io.input.bits.y.poke(row.y.U)
+          dut.io.input.bits.r.poke(row.r.S)
+          dut.io.input.bits.g.poke(row.g.S)
+          dut.io.input.bits.b.poke(row.b.S)
+          withClue(s"$pattern erosion-source RGB input $inputIndex") {
+            dut.io.input.ready.expect(true.B)
+          }
+          dut.clock.step()
+        }
+        dut.io.input.valid.poke(false.B)
+
+        val observed = expectedRows.indices.map { outputIndex =>
+          var waitCycles = 0
+          val limit = if (outputIndex == 0) 450 else 8
+          while (dut.io.trace.valid.peekValue().asBigInt == 0 && waitCycles < limit) {
+            dut.clock.step()
+            waitCycles += 1
+          }
+          withClue(s"$pattern erosion source block $outputIndex") {
+            waitCycles must be < limit
+            dut.io.trace.bits.index.expect(outputIndex.U)
+          }
+          val value = dut.io.trace.bits.value.peekValue().asBigInt
+          dut.clock.step()
+          value
+        }
+        observedErosionByPattern(pattern) = observed
+        dut.io.trace.valid.expect(false.B)
+        dut.io.busy.expect(false.B)
+      }
     }
 
     simulate(new FrameAqNonlinearMaskTraceStage(config)) { dut =>
@@ -318,7 +368,8 @@ class AqNonlinearMaskSpec extends AnyFreeSpec with Matchers with ChiselSim {
         }
         dut.io.input.valid.poke(false.B)
 
-        for ((expected, outputIndex) <- expectedRows.zipWithIndex) {
+        for (((expected, observedErosion), outputIndex) <-
+            expectedRows.zip(observedErosionByPattern(pattern)).zipWithIndex) {
           var waitCycles = 0
           val limit = if (outputIndex == 0) 750 else 200
           while (dut.io.trace.valid.peekValue().asBigInt == 0 && waitCycles < limit) {
@@ -335,6 +386,9 @@ class AqNonlinearMaskSpec extends AnyFreeSpec with Matchers with ChiselSim {
             val error = (actual - reference).abs
             val allowed = (reference.abs / 50).max(BigInt(1) << 14)
             error must be <= allowed
+            dut.io.strategyMaskQ16.expect(
+              AqStrategyMaskFixedPoint.maskQ16(observedErosion).U
+            )
             dut.io.traceLast.expect((outputIndex == expectedRows.length - 1).B)
           }
           dut.clock.step()

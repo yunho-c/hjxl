@@ -267,7 +267,8 @@ Read these libjxl-tiny files before making architectural changes:
   transforms with their intentionally different canonical 8x16 layouts. Reuse
   them for AC-strategy scoring and future rectangular quantization; do not
   duplicate their orientation logic in a scheduler. Use
-  `tools/hjxl_reference.py --scaled-dct-q12-csv ...` for signed oracle cases.
+  `tools/hjxl_reference.py --scaled-dct-q12-csv ...` for signed float-reference
+  and exact fixed-model oracle cases.
 - `AcStrategyDecisionSelector` is the exact decision-only tail for one complete
   2x2 block region. It consumes common-scale nonnegative candidate costs,
   chooses horizontal on aggregate ties, replaces a rectangle only on a strict
@@ -280,14 +281,17 @@ Read these libjxl-tiny files before making architectural changes:
   estimate and distance-scaled Q16 cost. Unsupported distances use distance 1
   and are reported, while extreme arithmetic saturates with an overflow flag.
   The integer model is exact against
-  `tools/hjxl_reference.py --ac-strategy-cost-q16-csv ...`, but it remains an
-  approximation of the float reference after Q12 coefficient rounding.
+  `tools/hjxl_reference.py --ac-strategy-cost-q16-csv ...`; that artifact also
+  records the exact scheduler decision after fixed rectangular transforms and
+  fixed CFL. The scorer remains an approximation of the float reference after
+  Q12 coefficient rounding.
 - `PreparedAcStrategy2x2Selector` accepts eight prepared candidates in strict
   order: four raster 8x8 blocks, left/right 16x8 rectangles, then top/bottom
   8x16 rectangles. It retains their 64-bit costs, feeds
   `AcStrategyDecisionSelector`, and holds the decision and diagnostics under
-  backpressure. It is not a frame scheduler and is not wired into
-  `FrameAcStrategyTraceStage`.
+  backpressure. `FramePreparedAcStrategyTraceStage` now supplies its frame/tile
+  scheduling; the default `FrameAcStrategyTraceStage` remains a separate fixed
+  all-DCT scaffold.
 - `DistanceParamsLookup` is the first hardware boundary for libjxl-tiny
   distance-derived scalar parameters. It supports common Q8 distances
   `64`, `128`, `256`, `512`, `1024`, and `2048`, defaulting unsupported values
@@ -763,11 +767,24 @@ Read these libjxl-tiny files before making architectural changes:
   contain one RGB-to-XYB converter, three DCTs, and one CFL estimator;
   reciprocal hardware belongs only in the quantized and combined-token tops.
 - `FrameAcStrategyTraceStage` emits one default DCT-first AC strategy value per
-  padded block. This matches the current all-8x8-DCT transform path but not
-  libjxl-tiny's adaptive 16x8/8x16 strategy search. The reusable rectangular
-  transform and 2x2 decision primitives are present, but entropy scoring and
-  frame/tile traversal are not connected. Its `traceLast` output marks the
-  final padded raster block's strategy record.
+  padded block and remains the lightweight default all-route choice.
+  `FramePreparedAcStrategyTraceStage` is the adaptive prepared-frame boundary:
+  it buffers Q12 XYB/DCT blocks, fits per-tile CFL, generates and scores the
+  four 8x8 plus four rectangular candidates for every complete tile-local 2x2
+  region, leaves incomplete edges DCT, and emits the raster decision map.
+  `FrameAqAcStrategyTraceStage` feeds it from the shared RGB AQ/DCT block source;
+  a focused `HjxlCore(traceRoute = TraceStage.AcStrategy)` selects this path
+  while the default shell stays fixed. This is not yet downstream non-DCT
+  quantization: current quant/token paths remain all-DCT and do not apply the
+  rectangle-adjusted quant field.
+- Use `sbt 'runMain hjxl.ElaboratePreparedAcStrategy'` for the prepared frame
+  search, `sbt 'runMain hjxl.ElaborateAqAcStrategy'` for its RGB composition,
+  and `sbt 'runMain hjxl.ElaborateCoreAcStrategy'` for the focused public-core
+  shell. They write `generated-prepared-ac-strategy/`,
+  `generated-aq-ac-strategy/`, and `generated-core-ac-strategy/`; keep all
+  generated directories out of git. The RGB/core hierarchy must contain one
+  RGB-to-XYB converter, three ordinary DCTs, the two rectangular transform
+  shapes, one CFL estimator, and no adaptive reciprocal quantizer.
 - `tools/hjxl_reference.py --xyb-q12-csv ...` exports padded signed-Q8 RGB rows
   beside libjxl-tiny signed-Q12 XYB values. Keep the gradient, checkerboard, and
   random oracle cases in `RgbToXybApproxSpec` when changing matrix precision,
@@ -1290,8 +1307,9 @@ Read these libjxl-tiny files before making architectural changes:
   map when `traceRoute = TraceStage.AqFinalMap`; a focused
   `TraceStage.RawQuantField` build emits real adaptive bytes at zero
   `fixedRawQuant` and the explicit fixed byte otherwise;
-  `enableQuant` alone
-  selects fixed AC strategy metadata. Do not describe it as an encoder yet;
+  `enableQuant` alone selects fixed AC strategy metadata in the default
+  all-route shell, while a focused `TraceStage.AcStrategy` build selects the
+  adaptive trace-only map. Do not describe either as a complete encoder yet;
   these are traceable pipeline slices.
 
 ## Verification Commands

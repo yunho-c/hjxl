@@ -395,6 +395,7 @@ class HjxlCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
 
       driveOnePixel(dut)
       dut.io.trace.ready.poke(true.B)
+      waitForTraceValid(dut, maxCycles = 5000)
       dut.io.trace.valid.expect(true.B)
       dut.io.trace.bits.stage.expect(TraceStage.AcStrategy.U)
       dut.io.trace.bits.index.expect(0.U)
