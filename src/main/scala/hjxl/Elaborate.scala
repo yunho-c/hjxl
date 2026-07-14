@@ -40,6 +40,18 @@ object ElaborateCoreAcTokens extends App {
   )
 }
 
+object ElaborateCoreAqVarDctTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlCore(traceRoute = HjxlCoreTraceRoute.AqVarDctTokens),
+    args = Array("--target-dir", "generated-core-aq-var-dct-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaborateAxiStream extends App {
   ChiselStage.emitSystemVerilogFile(
     new HjxlAxiStreamCore(),
@@ -64,6 +76,18 @@ object ElaborateAxiStreamCoreAcTokens extends App {
   )
 }
 
+object ElaborateAxiStreamCoreAqVarDctTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlAxiStreamCore(traceRoute = HjxlCoreTraceRoute.AqVarDctTokens),
+    args = Array("--target-dir", "generated-axi-stream-core-aq-var-dct-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
 object ElaborateAxiLiteStream extends App {
   ChiselStage.emitSystemVerilogFile(
     new HjxlAxiLiteStreamCore(),
@@ -80,6 +104,18 @@ object ElaborateAxiLiteStreamCoreAcTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new HjxlAxiLiteStreamCore(traceRoute = TraceStage.AcTokens),
     args = Array("--target-dir", "generated-axi-lite-stream-core-ac-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAxiLiteStreamCoreAqVarDctTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new HjxlAxiLiteStreamCore(traceRoute = HjxlCoreTraceRoute.AqVarDctTokens),
+    args = Array("--target-dir", "generated-axi-lite-stream-core-aq-var-dct-tokens"),
     firtoolOpts = Array(
       "-disable-all-randomization",
       "-strip-debug-info",
@@ -128,6 +164,18 @@ object ElaboratePreparedVarDctQuantizeTokens extends App {
   ChiselStage.emitSystemVerilogFile(
     new FramePreparedVarDctQuantizeTokenTraceStage(),
     args = Array("--target-dir", "generated-prepared-var-dct-quantize-tokens"),
+    firtoolOpts = Array(
+      "-disable-all-randomization",
+      "-strip-debug-info",
+      "-default-layer-specialization=enable"
+    )
+  )
+}
+
+object ElaborateAqVarDctQuantizeTokens extends App {
+  ChiselStage.emitSystemVerilogFile(
+    new FrameAqVarDctQuantizeTokenTraceStage(),
+    args = Array("--target-dir", "generated-aq-var-dct-quantize-tokens"),
     firtoolOpts = Array(
       "-disable-all-randomization",
       "-strip-debug-info",

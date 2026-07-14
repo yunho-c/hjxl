@@ -180,6 +180,13 @@ class FramePreparedAcStrategyTraceStageSpec
     dut.io.input.bits.aqMapQ24.poke((BigInt(1) << 24).U)
     dut.io.input.bits.strategyMaskQ16.poke(0.U)
     dut.io.input.bits.distanceQ8.poke(distanceQ8.U)
+    dut.io.input.bits.scaleQ16.poke(1.U)
+    dut.io.input.bits.fixedInvQacQ16.poke(1.U)
+    dut.io.input.bits.adaptiveRawQuant.poke(false.B)
+    for (channel <- 0 until 3) {
+      dut.io.input.bits.invDcFactorQ16(channel).poke(1.U)
+    }
+    dut.io.input.bits.xQmMultiplierQ16.poke((1 << 16).U)
     for (channel <- 0 until 3; sample <- 0 until blockSize) {
       dut.io.input.bits.xyb(channel)(sample).poke(0.S)
       dut.io.input.bits.dct8x8(channel)(sample).poke(0.S)
@@ -212,6 +219,13 @@ class FramePreparedAcStrategyTraceStageSpec
       dut.io.input.bits.strategyMaskQ16.poke(block.strategyMaskQ16.U)
       dut.io.input.bits.rawQuant.poke(rawQuants.lift(blockIndex).getOrElse(5).U)
       dut.io.input.bits.distanceQ8.poke(block.distanceQ8.U)
+      dut.io.input.bits.scaleQ16.poke(1.U)
+      dut.io.input.bits.fixedInvQacQ16.poke(1.U)
+      dut.io.input.bits.adaptiveRawQuant.poke(false.B)
+      for (channel <- 0 until 3) {
+        dut.io.input.bits.invDcFactorQ16(channel).poke(1.U)
+      }
+      dut.io.input.bits.xQmMultiplierQ16.poke((1 << 16).U)
       dut.io.input.bits.last.poke((blockIndex == blocks.length - 1).B)
       for (channel <- 0 until 3; sample <- 0 until blockSize) {
         dut.io.input.bits.xyb(channel)(sample).poke(block.xyb(channel)(sample).S)

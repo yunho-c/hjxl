@@ -62,6 +62,8 @@ class FramePreparedVarDctQuantizeStage(
 
   private def ceilDiv(value: UInt, divisor: Int): UInt =
     (value +& (divisor - 1).U) / divisor.U
+  private def blockAt[T <: Data](values: Vec[T], index: UInt): T =
+    if (maxBlocks == 1) values(0) else values(index(blockAddressBits - 1, 0))
 
   val frameActive = RegInit(false.B)
   val xBlocks = RegInit(0.U(blockCountBits.W))
@@ -92,13 +94,11 @@ class FramePreparedVarDctQuantizeStage(
   val activeTotalBlocks = Mux(frameActive, totalBlocks, nextTotalBlocks)
   val ownerOrdinalWide = io.input.bits.blockY * activeXBlocks + io.input.bits.blockX
   val ownerOrdinal = ownerOrdinalWide(blockCountBits - 1, 0)
-  val ownerAddress = ownerOrdinal(blockAddressBits - 1, 0)
   val strategy = io.input.bits.quantize.strategy
   val isVertical = strategy === AcStrategyCode.Dct16x8.U
   val isHorizontal = strategy === AcStrategyCode.Dct8x16.U
   val isRectangular = isVertical || isHorizontal
   val secondOrdinal = Mux(isVertical, ownerOrdinal + activeXBlocks, ownerOrdinal + 1.U)
-  val secondAddress = secondOrdinal(blockAddressBits - 1, 0)
 
   val coveredBefore = Wire(Vec(maxBlocks, Bool()))
   for (index <- 0 until maxBlocks) {
@@ -114,9 +114,9 @@ class FramePreparedVarDctQuantizeStage(
       Mux(isHorizontal, io.input.bits.blockX + 1.U < activeXBlocks, true.B)
     )
   val supportedStrategy = strategy <= AcStrategyCode.Dct8x16.U
-  val ownerAlreadyCovered = Mux(coordinateInBounds, coveredBefore(ownerAddress), true.B)
+  val ownerAlreadyCovered = Mux(coordinateInBounds, blockAt(coveredBefore, ownerOrdinal), true.B)
   val secondAlreadyCovered =
-    Mux(isRectangular && rectangleInBounds, coveredBefore(secondAddress), false.B)
+    Mux(isRectangular && rectangleInBounds, blockAt(coveredBefore, secondOrdinal), false.B)
   val earlierUncovered = (0 until maxBlocks).map { index =>
     index.U < ownerOrdinal && index.U < activeTotalBlocks && !coveredBefore(index)
   }.reduce(_ || _)
@@ -128,9 +128,9 @@ class FramePreparedVarDctQuantizeStage(
   val coveredAfter = Wire(Vec(maxBlocks, Bool()))
   coveredAfter := coveredBefore
   when(geometryValid) {
-    coveredAfter(ownerAddress) := true.B
+    blockAt(coveredAfter, ownerOrdinal) := true.B
     when(isRectangular) {
-      coveredAfter(secondAddress) := true.B
+      blockAt(coveredAfter, secondOrdinal) := true.B
     }
   }
   val allCoveredAfter = (0 until maxBlocks).map { index =>

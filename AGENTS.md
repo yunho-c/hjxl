@@ -281,8 +281,7 @@ Read these libjxl-tiny files before making architectural changes:
   It maps the second 16x8 cell below the owner and the second 8x16 cell to its
   right; gaps, overlaps, out-of-bounds rectangles, and incorrect `last` markers
   drop the frame and set sticky `overflow`. Output metadata is latched through
-  quantizer latency and stalls. This boundary is not yet fed by the RGB
-  strategy scheduler. `FramePreparedVarDctAcMetadataTokenTraceStage` and
+  quantizer latency and stalls. `FramePreparedVarDctAcMetadataTokenTraceStage` and
   `FramePreparedVarDctAcTokenTraceStage` now consume the resulting owner shape:
   they suppress continuation metadata/AC ownership, replicate shifted nonzero
   counts for neighbor prediction, use the 128-entry rectangular scan and block
@@ -293,6 +292,21 @@ Read these libjxl-tiny files before making architectural changes:
   `tools/hjxl_reference.py --var-dct-quantize-q16-csv ...` for exact frozen-Q16
   and native-float DCT/16x8/8x16 fixtures, and
   `--var-dct-token-fixture-dir ...` for a mixed-shape owner/token oracle.
+- `FramePreparedAcStrategyTraceStage` also emits an aligned
+  `PreparedAcStrategySelectedCell` for every raster decision. It carries the
+  encoded strategy, adjusted raw quant, first-block ownership, scalar quant
+  parameters, tile CFL, current ordinary DCT, and the covered neighbor block.
+  `AcStrategySelectedCellToVarDctOwnerStage` consumes continuation decisions,
+  reuses DCT or recomputes the selected rectangular transform, and regenerates
+  the adaptive reciprocal from the adjusted byte before producing the existing
+  first-block-owned prepared ABI. `FramePreparedAcStrategyVarDctQuantizeTokenTraceStage`
+  composes prepared strategy search, ownership conversion, variable-shape
+  quantization, and logical tokens. `FrameAqVarDctQuantizeTokenTraceStage`
+  supplies that path from the single shared RGB AQ/DCT source. Use
+  `tools/hjxl_reference.py --strategy-var-dct-zero-fixture-dir ...` for the
+  exact 2x2 zero-coefficient integration oracle. It proves ownership, adjusted
+  bytes, continuation suppression, and native token order; it is not a broad
+  nonzero RGB parity oracle.
 - `AcStrategyDecisionSelector` is the exact decision-only tail for one complete
   2x2 block region. It consumes common-scale nonnegative candidate costs,
   chooses horizontal on aggregate ties, replaces a rectangle only on a strict
@@ -606,6 +620,22 @@ Read these libjxl-tiny files before making architectural changes:
   out of git. `FramePreparedVarDctTokenElaborationSpec` guards the structured
   input, trace/status surface, metadata/AC schedulers, and narrow coefficient
   frame store.
+- Use `sbt 'runMain hjxl.ElaborateAqVarDctQuantizeTokens'` to generate the
+  focused RGB adaptive DCT/16x8/8x16 quantize-to-token hierarchy. It writes
+  `generated-aq-var-dct-quantize-tokens/`; keep the generated directory out of
+  git. `FrameAqVarDctQuantizeTokenElaborationSpec` guards the shared RGB source,
+  selected-cell adapter, strategy search, and direct variable-shape token path.
+- Use `sbt 'runMain hjxl.ElaborateCoreAqVarDctTokens'`,
+  `sbt 'runMain hjxl.ElaborateAxiStreamCoreAqVarDctTokens'`, or
+  `sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAqVarDctTokens'` for the public
+  core and stream-shaped focused variants. They write
+  `generated-core-aq-var-dct-tokens/`,
+  `generated-axi-stream-core-aq-var-dct-tokens/`, and
+  `generated-axi-lite-stream-core-aq-var-dct-tokens/`; keep them out of git.
+  This route uses the compile-time value `HjxlCoreTraceRoute.AqVarDctTokens` and
+  discovery reports its public identity as `TraceStage.AcTokens`. Do not
+  confuse it with the older `traceRoute = TraceStage.AcTokens` all-DCT focused
+  route, and do not add this heavy hierarchy to the default all-route shell.
 - Use `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'` to generate
   the direct prepared-DCT quantize-to-token wrapper. It writes
   `generated-prepared-dct-only-quantize-tokens/`; keep the generated directory
@@ -818,11 +848,15 @@ Read these libjxl-tiny files before making architectural changes:
   `FrameAqAcStrategyTraceStage` feeds it from the shared RGB AQ/DCT block source;
   a focused `HjxlCore(traceRoute = TraceStage.AcStrategy)` selects this path
   while `FrameAqAdjustedRawQuantTraceStage` adapts the same sideband for the
-  focused raw-quant route and the default shell stays fixed. This RGB route is
-  not yet downstream non-DCT quantization: the prepared variable-shape
-  quantize-to-token path now exists and is oracle-validated, but the current RGB
-  search does not yet produce its first-block-owned 64/128-coefficient input or
-  consume the rectangle-adjusted quant field at that boundary.
+  focused raw-quant route and the default shell stays fixed. The aligned
+  selected-cell sideband now feeds `AcStrategySelectedCellToVarDctOwnerStage`,
+  which suppresses continuations, forms the first-block-owned 64/128-coefficient
+  input, applies the rectangle-adjusted quant field and reciprocal, and drives
+  the prepared variable-shape quantize-to-token path. Select that complete
+  logical-token composition only with
+  `HjxlCoreTraceRoute.AqVarDctTokens`; the ordinary
+  `traceRoute = TraceStage.AcTokens` route remains the earlier all-DCT
+  estimated-CFL AC-token-only hierarchy.
 - Use `sbt 'runMain hjxl.ElaboratePreparedAcStrategy'` for the prepared frame
   search, `sbt 'runMain hjxl.ElaborateAqAcStrategy'` for its RGB composition,
   and `sbt 'runMain hjxl.ElaborateCoreAcStrategy'` for the focused public-core
@@ -831,6 +865,12 @@ Read these libjxl-tiny files before making architectural changes:
   generated directories out of git. The RGB/core hierarchy must contain one
   RGB-to-XYB converter, three ordinary DCTs, the two rectangular transform
   shapes, one CFL estimator, and no adaptive reciprocal quantizer.
+- The adaptive variable-shape token hierarchy must also contain exactly one
+  shared RGB AQ/DCT source and one selected-cell adapter. Its zero-coefficient
+  2x2 native-token oracle, live 16x16 RGB phase coverage, and focused 8x8 AXI
+  TLAST test establish functional wiring. They do not establish nonzero
+  RGB-to-codestream parity, entropy/assembly hardware, synthesis feasibility,
+  timing closure, or KV260 execution.
 - Use `sbt 'runMain hjxl.ElaborateAqAdjustedRawQuant'` for the standalone
   strategy-adjusted RGB byte trace and
   `sbt 'runMain hjxl.ElaborateCoreRawQuant'` for the focused public-core shell.

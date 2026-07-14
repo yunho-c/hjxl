@@ -34,6 +34,8 @@ class FramePreparedVarDctTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends M
   private def ceilDiv(value: UInt, divisor: Int): UInt =
     (value +& (divisor - 1).U) / divisor.U
   private def blockIndex(value: UInt): UInt = value(blockBits - 1, 0)
+  private def blockAt[T <: Data](values: Vec[T], value: UInt): T =
+    if (maxBlocks == 1) values(0) else values(blockIndex(value))
 
   val quantizedDc = Reg(Vec(maxBlocks, Vec(3, SInt(c.traceValueBits.W))))
   val strategyGrid = Reg(Vec(maxBlocks, UInt(3.W)))
@@ -95,13 +97,13 @@ class FramePreparedVarDctTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends M
     Mux(dcSample < totalBlocks * 2.U, dcSample - totalBlocks, dcSample - totalBlocks * 2.U)
   )
   dcTokens.io.input.valid := state === feedDc
-  dcTokens.io.input.bits := quantizedDc(blockIndex(dcBlock))(dcChannel)
+  dcTokens.io.input.bits := blockAt(quantizedDc, dcBlock)(dcChannel)
 
   val strategyTrace = Wire(new StageTrace(c))
   strategyTrace.stage := TraceStage.AcStrategy.U
   strategyTrace.group := 0.U
   strategyTrace.index := emitIndex
-  strategyTrace.value := Cat(0.U(1.W), strategyGrid(blockIndex(emitIndex))).asSInt.pad(c.traceValueBits)
+  strategyTrace.value := Cat(0.U(1.W), blockAt(strategyGrid, emitIndex)).asSInt.pad(c.traceValueBits)
 
   io.trace.valid := MuxCase(
     false.B,
@@ -137,13 +139,11 @@ class FramePreparedVarDctTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends M
       "an accepted VarDCT owner must reach both owning frame stores"
     )
     val ownerOrdinal = io.input.bits.blockOrdinal
-    val ownerAddress = blockIndex(ownerOrdinal)
     val strategy = io.input.bits.result.strategy
     val isVertical = strategy === AcStrategyCode.Dct16x8.U
     val isHorizontal = strategy === AcStrategyCode.Dct8x16.U
     val isRectangular = isVertical || isHorizontal
     val secondOrdinal = Mux(isVertical, ownerOrdinal + activeXBlocks, ownerOrdinal + 1.U)
-    val secondAddress = blockIndex(secondOrdinal)
     val encodedOwner = Cat(strategy, 1.U(1.W))
     val encodedContinuation = Cat(strategy, 0.U(1.W))
 
@@ -154,14 +154,14 @@ class FramePreparedVarDctTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends M
       totalBlocks := nextTotalBlocks(countBits - 1, 0)
     }
     for (channel <- 0 until 3) {
-      quantizedDc(ownerAddress)(channel) := io.input.bits.result.quantizedDc(channel)(0)
+      blockAt(quantizedDc, ownerOrdinal)(channel) := io.input.bits.result.quantizedDc(channel)(0)
       when(isRectangular) {
-        quantizedDc(secondAddress)(channel) := io.input.bits.result.quantizedDc(channel)(1)
+        blockAt(quantizedDc, secondOrdinal)(channel) := io.input.bits.result.quantizedDc(channel)(1)
       }
     }
-    strategyGrid(ownerAddress) := encodedOwner
+    blockAt(strategyGrid, ownerOrdinal) := encodedOwner
     when(isRectangular) {
-      strategyGrid(secondAddress) := encodedContinuation
+      blockAt(strategyGrid, secondOrdinal) := encodedContinuation
     }
 
     when(io.input.bits.last) {

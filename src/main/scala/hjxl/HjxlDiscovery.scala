@@ -38,7 +38,10 @@ object HjxlDiscovery {
       tokenSelect: UInt
   ): UInt = {
     if (traceRoute != HjxlCoreTraceRoute.All) {
-      traceRoute.U(HjxlAbiGenerated.Trace.StageBits.W)
+      val discoveredRoute =
+        if (traceRoute == HjxlCoreTraceRoute.AqVarDctTokens) TraceStage.AcTokens
+        else traceRoute
+      discoveredRoute.U(HjxlAbiGenerated.Trace.StageBits.W)
     } else {
       val useDcTokens =
         enableDct && enableQuant && enableTokenize && tokenSelect === TokenTraceSelect.Dc.U

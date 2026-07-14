@@ -4125,6 +4125,128 @@ def write_var_dct_token_fixture(directory: Path, image, distance: float) -> None
             writer.writerow((section, int(group), int(context), int(value), int(index == len(trace_rows) - 1)))
 
 
+def write_strategy_var_dct_zero_fixture(directory: Path, image) -> None:
+    """Write an exact zero-coefficient strategy-to-token integration fixture.
+
+    The prepared 2x2 frame has four ordinary-DCT input cells with distinct raw
+    quant bytes. Zero candidate coefficients make both rectangular orientations
+    strictly cheaper than DCT and preserve the reference tie-break toward two
+    horizontal 8x16 owners. Quantized AC/DC state remains exactly zero, while
+    native libjxl-tiny tokenization still exercises owner-only strategy/quant
+    metadata, covered-cell prediction, and full rectangular scan termination.
+    """
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from types import SimpleNamespace
+    from jxl_tiny.ac_strategy import DCT8X16  # pylint: disable=import-outside-toplevel
+    from jxl_tiny.tokenization import (  # pylint: disable=import-outside-toplevel
+        ac_metadata_tokens,
+        ac_tokens_from_quantized_blocks,
+        dc_tokens,
+    )
+
+    if image.shape != (3, 16, 16):
+        raise ValueError("strategy VarDCT zero fixture requires --width 16 --height 16")
+
+    horizontal_first = np.uint8((DCT8X16 << 1) | 1)
+    horizontal_continuation = np.uint8(DCT8X16 << 1)
+    strategy = np.asarray(
+        (
+            (horizontal_first, horizontal_continuation),
+            (horizontal_first, horizontal_continuation),
+        ),
+        dtype=np.uint8,
+    )
+    input_raw_quant = np.asarray(((3, 7), (11, 13)), dtype=np.uint8)
+    adjusted_raw_quant = np.asarray(((7, 7), (13, 13)), dtype=np.uint8)
+    ytox = np.zeros((1, 1), dtype=np.int8)
+    ytob = np.zeros((1, 1), dtype=np.int8)
+    quant_dc = np.zeros((3, 2, 2), dtype=np.int16)
+    nzeros_map = np.zeros((3, 2, 2), dtype=np.uint8)
+    quantized = {
+        (0, 0): SimpleNamespace(
+            quantized_ac=np.zeros((3, 128), dtype=np.int16),
+            num_nonzeros=np.zeros(3, dtype=np.uint8),
+        ),
+        (1, 0): SimpleNamespace(
+            quantized_ac=np.zeros((3, 128), dtype=np.int16),
+            num_nonzeros=np.zeros(3, dtype=np.uint8),
+        ),
+    }
+
+    dc = dc_tokens(quant_dc)
+    metadata = ac_metadata_tokens(ytox, ytob, strategy, adjusted_raw_quant)
+    ac = ac_tokens_from_quantized_blocks(strategy, quantized, nzeros_map)
+
+    directory.mkdir(parents=True, exist_ok=True)
+    zeros = ";".join("0" for _ in range(64))
+    with (directory / "blocks.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            (
+                "block",
+                "last",
+                "raw_quant",
+                "aq_map_q24",
+                "strategy_mask_q16",
+                "distance_q8",
+                "scale_q16",
+                "fixed_inv_qac_q16",
+                "adaptive_raw_quant",
+                "inv_dc_factor_q16",
+                "x_qm_multiplier_q16",
+                "xyb_x_q12",
+                "xyb_y_q12",
+                "xyb_b_q12",
+                "dct_x_q12",
+                "dct_y_q12",
+                "dct_b_q12",
+            )
+        )
+        for block, raw_quant in enumerate(input_raw_quant.reshape(-1)):
+            writer.writerow(
+                (
+                    block,
+                    int(block == 3),
+                    int(raw_quant),
+                    1 << 24,
+                    0,
+                    256,
+                    1,
+                    1,
+                    0,
+                    "1;1;1",
+                    1 << 16,
+                    zeros,
+                    zeros,
+                    zeros,
+                    zeros,
+                    zeros,
+                    zeros,
+                )
+            )
+
+    trace_rows = []
+    trace_rows.extend(("dc", index, context, value) for index, (context, value) in enumerate(dc))
+    trace_rows.extend(
+        ("strategy", 0, index, int(value))
+        for index, value in enumerate(strategy.reshape(-1))
+    )
+    trace_rows.extend(
+        ("metadata", index, context, value)
+        for index, (context, value) in enumerate(metadata)
+    )
+    trace_rows.extend(("ac", index, context, value) for index, (context, value) in enumerate(ac))
+    with (directory / "trace.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(("section", "group", "index", "value", "last"))
+        for index, (section, group, context, value) in enumerate(trace_rows):
+            writer.writerow(
+                (section, int(group), int(context), int(value), int(index == len(trace_rows) - 1))
+            )
+
+
 def fixed_dct_only_prepared_token_inputs_from_python_port(
     image,
     distance: float,
@@ -4417,6 +4539,11 @@ def main() -> int:
         "--var-dct-token-fixture-dir",
         type=Path,
         help="optional mixed-shape first-block owner and logical-token CSV directory",
+    )
+    parser.add_argument(
+        "--strategy-var-dct-zero-fixture-dir",
+        type=Path,
+        help="optional exact 2x2 strategy-to-VarDCT zero-token CSV directory",
     )
     parser.add_argument(
         "--default-ac-strategy-npy",
@@ -4770,6 +4897,11 @@ def main() -> int:
             image,
             args.distance,
         )
+    if args.strategy_var_dct_zero_fixture_dir is not None:
+        write_strategy_var_dct_zero_fixture(
+            args.strategy_var_dct_zero_fixture_dir,
+            image,
+        )
     if args.default_ac_strategy_npy is not None:
         np = _load_numpy()
         args.default_ac_strategy_npy.parent.mkdir(parents=True, exist_ok=True)
@@ -4949,6 +5081,7 @@ def main() -> int:
         and args.ac_strategy_cost_q16_csv is None
         and args.var_dct_quantize_q16_csv is None
         and args.var_dct_token_fixture_dir is None
+        and args.strategy_var_dct_zero_fixture_dir is None
         and args.default_ac_strategy_npy is None
         and args.raw_quant_field_npy is None
         and args.libjxl_ac_strategy_npy is None

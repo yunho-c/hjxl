@@ -61,6 +61,23 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must include("io_overflow")
   }
 
+  "HjxlCore focused AQ VarDCT-token route includes the first-block strategy pipeline" in {
+    val files = emittedSystemVerilog(HjxlCoreTraceRoute.AqVarDctTokens)
+    files.map(_._1) must contain("HjxlCore.sv")
+    val text = combinedText(files)
+    text must include("module HjxlCore")
+    text must include("module FrameAqVarDctQuantizeTokenTraceStage")
+    text must include("module FramePreparedAcStrategyTraceStage")
+    text must include("module AcStrategySelectedCellToVarDctOwnerStage")
+    text must include("module FramePreparedVarDctQuantizeTokenTraceStage")
+    text must include("module Dct16x8Approx")
+    text must include("module Dct8x16Approx")
+    text must include("module AdaptiveInvQacQ16")
+    text must not include "module FrameAqCflDctOnlyQuantizeTokenTraceStage"
+    val converterInstances = """RgbToXybApprox\s+\w+\s*\(""".r.findAllMatchIn(text).length
+    converterInstances mustBe 1
+  }
+
   "HjxlCore default all-route elaboration keeps the full AC-token scheduler out" in {
     val files = emittedSystemVerilog(HjxlCoreTraceRoute.All)
     val text = combinedText(files)
@@ -80,6 +97,7 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must not include "module FramePreparedAcStrategyTraceStage"
     text must not include "module FrameAqCflMapTraceStage"
     text must not include "module FrameAqCflDctOnlyQuantizeTokenTraceStage"
+    text must not include "module FrameAqVarDctQuantizeTokenTraceStage"
     text must not include "module FrameAqStrategyMaskTraceStage"
     text must not include "module FrameAqHfModulationTraceStage"
     text must not include "module FrameAqColorModulationTraceStage"

@@ -76,6 +76,13 @@ class HjxlDiscoverySpec extends AnyFreeSpec with Matchers with ChiselSim {
   }
 
   "focused discovery reports its compile-time trace stage" in {
+    simulate(new HjxlRouteDiscoveryHarness(traceRoute = HjxlCoreTraceRoute.AqVarDctTokens)) { dut =>
+      expectRoute(
+        dut,
+        RouteConfig(dct = true, quant = true, tokenize = true, tokenSelect = TokenTraceSelect.AcTokens),
+        TraceStage.AcTokens
+      )
+    }
     simulate(new HjxlRouteDiscoveryHarness(traceRoute = TraceStage.RawQuantField)) { dut =>
       expectRoute(
         dut,

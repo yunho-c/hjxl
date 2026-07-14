@@ -48,6 +48,8 @@ class FramePreparedVarDctAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig())
   private def ceilDiv(value: UInt, divisor: Int): UInt =
     (value +& (divisor - 1).U) / divisor.U
   private def blockIndex(value: UInt): UInt = value(blockBits - 1, 0)
+  private def blockAt[T <: Data](values: Vec[T], value: UInt): T =
+    if (maxBlocks == 1) values(0) else values(blockIndex(value))
   private def tileIndex(value: UInt): UInt = value(tileBits - 1, 0)
   private def tileSeenAt(value: UInt): Bool =
     if (maxTiles == 1) tileSeen(0) else tileSeen(tileIndex(value))
@@ -100,8 +102,6 @@ class FramePreparedVarDctAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig())
   val ownerOrdinalWide = io.input.bits.blockY * activeXBlocks + io.input.bits.blockX
   val ownerOrdinal = ownerOrdinalWide(blockCountBits - 1, 0)
   val secondOrdinal = Mux(isVertical, ownerOrdinal + activeXBlocks, ownerOrdinal + 1.U)
-  val ownerAddress = blockIndex(ownerOrdinal)
-  val secondAddress = blockIndex(secondOrdinal)
   val ownerTile =
     (io.input.bits.blockY / tileBlocks.U) * activeXTiles + (io.input.bits.blockX / tileBlocks.U)
   val ownerTileAddress = tileIndex(ownerTile)
@@ -112,8 +112,9 @@ class FramePreparedVarDctAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig())
     io.input.bits.blockY + 1.U < activeYBlocks,
     Mux(isHorizontal, io.input.bits.blockX + 1.U < activeXBlocks, true.B)
   )
-  val ownerAlreadyCovered = Mux(coordinateInBounds, covered(ownerAddress), true.B)
-  val secondAlreadyCovered = Mux(isRectangular && rectangleInBounds, covered(secondAddress), false.B)
+  val ownerAlreadyCovered = Mux(coordinateInBounds, blockAt(covered, ownerOrdinal), true.B)
+  val secondAlreadyCovered =
+    Mux(isRectangular && rectangleInBounds, blockAt(covered, secondOrdinal), false.B)
   val earlierUncovered = (0 until maxBlocks).map { index =>
     index.U < ownerOrdinal && index.U < activeTotalBlocks && !covered(index)
   }.reduce(_ || _)
@@ -128,9 +129,9 @@ class FramePreparedVarDctAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig())
   val coveredAfter = Wire(Vec(maxBlocks, Bool()))
   coveredAfter := covered
   when(geometryValid) {
-    coveredAfter(ownerAddress) := true.B
+    blockAt(coveredAfter, ownerOrdinal) := true.B
     when(isRectangular) {
-      coveredAfter(secondAddress) := true.B
+      blockAt(coveredAfter, secondOrdinal) := true.B
     }
   }
   val allCoveredAfter = (0 until maxBlocks).map { index =>
@@ -149,7 +150,6 @@ class FramePreparedVarDctAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig())
   val cflMap = emitIndex / Mux(totalTiles === 0.U, 1.U, totalTiles)
   val cflOrdinal = emitIndex - cflMap * Mux(totalTiles === 0.U, 1.U, totalTiles)
   val ownerOrdinalInPhase = Mux(isStrategy, emitIndex - strategyStart, emitIndex - quantStart)
-  val ownerAddressInPhase = blockIndex(ownerOrdinalInPhase)
   val tileX = cflOrdinal - (cflOrdinal / Mux(xTiles === 0.U, 1.U, xTiles)) * Mux(xTiles === 0.U, 1.U, xTiles)
   val tileY = cflOrdinal / Mux(xTiles === 0.U, 1.U, xTiles)
   val westTile = cflOrdinal - 1.U
@@ -173,17 +173,17 @@ class FramePreparedVarDctAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig())
   )
   val cflResidual = currentCfl - DcTokenize.clampedGradient(northCfl, westCfl, northwestCfl)
 
-  val strategyCode = Tokenize.strategyCode(ownerStrategy(ownerAddressInPhase))
+  val strategyCode = Tokenize.strategyCode(blockAt(ownerStrategy, ownerOrdinalInPhase))
   val strategyLeft = Mux(
     ownerOrdinalInPhase === 0.U,
     0.U,
-    Tokenize.strategyCode(ownerStrategy(blockIndex(ownerOrdinalInPhase - 1.U)))
+    Tokenize.strategyCode(blockAt(ownerStrategy, ownerOrdinalInPhase - 1.U))
   )
-  val quantCurrent = Cat(0.U(1.W), ownerRawQuant(ownerAddressInPhase) - 1.U).asSInt
+  val quantCurrent = Cat(0.U(1.W), blockAt(ownerRawQuant, ownerOrdinalInPhase) - 1.U).asSInt
   val quantLeft = Mux(
     ownerOrdinalInPhase === 0.U,
     Tokenize.strategyCode(ownerStrategy(0)),
-    ownerRawQuant(blockIndex(ownerOrdinalInPhase - 1.U)) - 1.U
+    blockAt(ownerRawQuant, ownerOrdinalInPhase - 1.U) - 1.U
   )
   val quantResidual = quantCurrent - Cat(0.U(1.W), quantLeft).asSInt
 
@@ -210,8 +210,8 @@ class FramePreparedVarDctAcMetadataTokenTraceStage(c: HjxlConfig = HjxlConfig())
 
   when(io.input.fire) {
     when(validRecord) {
-      ownerStrategy(blockIndex(ownerCount)) := strategy
-      ownerRawQuant(blockIndex(ownerCount)) := io.input.bits.rawQuant
+      blockAt(ownerStrategy, ownerCount) := strategy
+      blockAt(ownerRawQuant, ownerCount) := io.input.bits.rawQuant
       if (maxTiles == 1) {
         ytox(0) := io.input.bits.ytox
         ytob(0) := io.input.bits.ytob

@@ -22,7 +22,42 @@ class PreparedAcStrategyFrameBlock(c: HjxlConfig) extends Bundle {
   val strategyMaskQ16 = UInt(AqStrategyMaskFixedPoint.ValueBits.W)
   val rawQuant = UInt(8.W)
   val distanceQ8 = UInt(16.W)
+  val scaleQ16 = UInt(16.W)
+  val fixedInvQacQ16 = UInt(32.W)
+  val adaptiveRawQuant = Bool()
+  val invDcFactorQ16 = Vec(3, UInt(32.W))
+  val xQmMultiplierQ16 = UInt(32.W)
   val last = Bool()
+}
+
+/** One raster cell selected by the prepared AC-strategy scheduler.
+  *
+  * This sideband is stable whenever the matching strategy trace is valid. It
+  * keeps the trace route useful on its own while exposing the already-buffered
+  * frame state needed by the downstream first-block owner adapter. For a
+  * rectangular first block, `coveredXyb(1)` is the below/right continuation
+  * block in transform order; ordinary DCT uses only `coveredXyb(0)` and
+  * `dct8x8`.
+  */
+class PreparedAcStrategySelectedCell(c: HjxlConfig) extends Bundle {
+  private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
+
+  val blockX = UInt(c.coordBits.W)
+  val blockY = UInt(c.coordBits.W)
+  val blockIndex = UInt(c.groupBits.W)
+  val encodedStrategy = UInt(3.W)
+  val adjustedRawQuant = UInt(8.W)
+  val ownerLast = Bool()
+  val distanceQ8 = UInt(16.W)
+  val scaleQ16 = UInt(16.W)
+  val fixedInvQacQ16 = UInt(32.W)
+  val adaptiveRawQuant = Bool()
+  val invDcFactorQ16 = Vec(3, UInt(32.W))
+  val xQmMultiplierQ16 = UInt(32.W)
+  val ytox = SInt(8.W)
+  val ytob = SInt(8.W)
+  val dct8x8 = Vec(3, Vec(blockSize, SInt(c.traceValueBits.W)))
+  val coveredXyb = Vec(2, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))
 }
 
 /** Searches AC strategy for a complete prepared frame and emits a raster map.
@@ -60,6 +95,7 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new PreparedAcStrategyFrameBlock(c)))
     val trace = Decoupled(new StageTrace(c))
+    val selected = Output(new PreparedAcStrategySelectedCell(c))
     val adjustedRawQuant = Output(UInt(8.W))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
@@ -118,6 +154,11 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
   val totalBlocks = RegInit(0.U(32.W))
   val totalTiles = RegInit(0.U(32.W))
   val activeDistanceQ8 = RegInit(0.U(16.W))
+  val activeScaleQ16 = RegInit(0.U(16.W))
+  val activeFixedInvQacQ16 = RegInit(0.U(32.W))
+  val activeAdaptiveRawQuant = RegInit(false.B)
+  val activeInvDcFactorQ16 = Reg(Vec(3, UInt(32.W)))
+  val activeXQmMultiplierQ16 = RegInit(0.U(32.W))
   val tileOrdinal = RegInit(0.U(32.W))
   val tileSampleOrdinal = RegInit(0.U(32.W))
   val regionX = RegInit(0.U(32.W))
@@ -178,11 +219,24 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
       totalBlocks := nextTotalBlocks
       totalTiles := nextXTiles * nextYTiles
       activeDistanceQ8 := io.input.bits.distanceQ8
+      activeScaleQ16 := io.input.bits.scaleQ16
+      activeFixedInvQacQ16 := io.input.bits.fixedInvQacQ16
+      activeAdaptiveRawQuant := io.input.bits.adaptiveRawQuant
+      activeInvDcFactorQ16 := io.input.bits.invDcFactorQ16
+      activeXQmMultiplierQ16 := io.input.bits.xQmMultiplierQ16
       unsupportedDistance := !inputDistance.io.supported
     }.otherwise {
       assert(
         io.input.bits.distanceQ8 === activeDistanceQ8,
         "prepared AC-strategy distance changed within a frame"
+      )
+      assert(
+        io.input.bits.scaleQ16 === activeScaleQ16 &&
+          io.input.bits.fixedInvQacQ16 === activeFixedInvQacQ16 &&
+          io.input.bits.adaptiveRawQuant === activeAdaptiveRawQuant &&
+          io.input.bits.invDcFactorQ16.asUInt === activeInvDcFactorQ16.asUInt &&
+          io.input.bits.xQmMultiplierQ16 === activeXQmMultiplierQ16,
+        "prepared AC-strategy quantization parameters changed within a frame"
       )
     }
 
@@ -491,6 +545,43 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
   io.trace.bits.value :=
     Cat(0.U(1.W), decisions(blockAddress(emitIndex))).asSInt.pad(c.traceValueBits)
   io.adjustedRawQuant := adjustedRawQuant(blockAddress(emitIndex))
+  val emitXBlocksSafe = Mux(xBlocks === 0.U, 1.U, xBlocks)
+  val emitX = emitIndex - (emitIndex / emitXBlocksSafe) * emitXBlocksSafe
+  val emitY = emitIndex / emitXBlocksSafe
+  val emitDecision = decisions(blockAddress(emitIndex))
+  val emitRawStrategy = emitDecision(2, 1)
+  val emitSecondIndex = Mux(
+    emitRawStrategy === AcStrategyCode.Dct16x8.U,
+    emitIndex + xBlocks,
+    Mux(emitRawStrategy === AcStrategyCode.Dct8x16.U, emitIndex + 1.U, emitIndex)
+  )
+  val emitTileX = emitX >> log2Ceil(blocksPerTile)
+  val emitTileY = emitY >> log2Ceil(blocksPerTile)
+  val emitTileIndex = emitTileY * xTiles + emitTileX
+  val laterOwnerExists = (0 until maxBlocks).map { index =>
+    index.U > emitIndex && index.U < totalBlocks && decisions(index)(0)
+  }.reduce(_ || _)
+
+  io.selected.blockX := emitX
+  io.selected.blockY := emitY
+  io.selected.blockIndex := emitIndex
+  io.selected.encodedStrategy := emitDecision
+  io.selected.adjustedRawQuant := adjustedRawQuant(blockAddress(emitIndex))
+  io.selected.ownerLast := emitDecision(0) && !laterOwnerExists
+  io.selected.distanceQ8 := activeDistanceQ8
+  io.selected.scaleQ16 := activeScaleQ16
+  io.selected.fixedInvQacQ16 := activeFixedInvQacQ16
+  io.selected.adaptiveRawQuant := activeAdaptiveRawQuant
+  io.selected.invDcFactorQ16 := activeInvDcFactorQ16
+  io.selected.xQmMultiplierQ16 := activeXQmMultiplierQ16
+  io.selected.ytox := ytoxMap(tileAddress(emitTileIndex))
+  io.selected.ytob := ytobMap(tileAddress(emitTileIndex))
+  for (channel <- 0 until 3; sample <- 0 until blockSize) {
+    io.selected.dct8x8(channel)(sample) := storedDct(emitIndex, channel, sample.U)
+    io.selected.coveredXyb(0)(channel)(sample) := storedXyb(emitIndex, channel, sample)
+    io.selected.coveredXyb(1)(channel)(sample) :=
+      storedXyb(emitSecondIndex, channel, sample)
+  }
   io.traceLast := io.trace.valid && emitIndex === totalBlocks - 1.U
   io.busy := state =/= receiving || receivedBlock =/= 0.U || selector.io.busy
   io.overflow := protocolOverflow || arithmeticOverflow || (acceptingFirstBlock && configOutOfRange)
@@ -506,6 +597,10 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
       totalBlocks := 0.U
       totalTiles := 0.U
       activeDistanceQ8 := 0.U
+      activeScaleQ16 := 0.U
+      activeFixedInvQacQ16 := 0.U
+      activeAdaptiveRawQuant := false.B
+      activeXQmMultiplierQ16 := 0.U
       tileOrdinal := 0.U
       tileSampleOrdinal := 0.U
       regionX := 0.U
@@ -556,6 +651,11 @@ class FrameAqAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   strategy.io.input.bits.strategyMaskQ16 := blocks.io.output.bits.strategyMaskQ16
   strategy.io.input.bits.rawQuant := blocks.io.output.bits.quant
   strategy.io.input.bits.distanceQ8 := blocks.io.output.bits.distanceQ8
+  strategy.io.input.bits.scaleQ16 := blocks.io.output.bits.scaleQ16
+  strategy.io.input.bits.fixedInvQacQ16 := blocks.io.output.bits.fixedInvQacQ16
+  strategy.io.input.bits.adaptiveRawQuant := blocks.io.output.bits.adaptiveRawQuant
+  strategy.io.input.bits.invDcFactorQ16 := blocks.io.output.bits.invDcFactorQ16
+  strategy.io.input.bits.xQmMultiplierQ16 := blocks.io.output.bits.xQmMultiplierQ16
   strategy.io.input.bits.last := blocks.io.output.bits.blockLast
   blocks.io.output.ready := strategy.io.input.ready
 

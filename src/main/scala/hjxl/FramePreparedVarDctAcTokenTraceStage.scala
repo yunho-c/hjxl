@@ -148,6 +148,8 @@ class FramePreparedVarDctAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends
 
   private def blockIndex(value: UInt): UInt = value(blockBits - 1, 0)
   private def ownerIndex(value: UInt): UInt = value(blockBits - 1, 0)
+  private def blockAt[T <: Data](values: Vec[T], value: UInt): T =
+    if (maxBlocks == 1) values(0) else values(blockIndex(value))
 
   val ownerBlockOrdinal = Reg(Vec(maxBlocks, UInt(countBits.W)))
   val ownerStrategy = Reg(Vec(maxBlocks, UInt(2.W)))
@@ -187,8 +189,6 @@ class FramePreparedVarDctAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends
   val ownerOrdinalWide = io.input.bits.blockY * activeXBlocks + io.input.bits.blockX
   val inputOwnerOrdinal = ownerOrdinalWide(countBits - 1, 0)
   val secondOrdinal = Mux(isVertical, inputOwnerOrdinal + activeXBlocks, inputOwnerOrdinal + 1.U)
-  val ownerAddress = blockIndex(inputOwnerOrdinal)
-  val secondAddress = blockIndex(secondOrdinal)
   val coordinateInBounds =
     io.input.bits.blockX < activeXBlocks && io.input.bits.blockY < activeYBlocks
   val rectangleInBounds = Mux(
@@ -201,8 +201,9 @@ class FramePreparedVarDctAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends
     io.input.bits.result.coefficientCount === Mux(isDct, 64.U, 128.U) &&
       io.input.bits.result.coveredBlocks === Mux(isDct, 1.U, 2.U)
   val ordinalMatches = io.input.bits.blockOrdinal === inputOwnerOrdinal
-  val ownerAlreadyCovered = Mux(coordinateInBounds, covered(ownerAddress), true.B)
-  val secondAlreadyCovered = Mux(isRectangular && rectangleInBounds, covered(secondAddress), false.B)
+  val ownerAlreadyCovered = Mux(coordinateInBounds, blockAt(covered, inputOwnerOrdinal), true.B)
+  val secondAlreadyCovered =
+    Mux(isRectangular && rectangleInBounds, blockAt(covered, secondOrdinal), false.B)
   val earlierUncovered = (0 until maxBlocks).map { index =>
     index.U < inputOwnerOrdinal && index.U < activeTotalBlocks && !covered(index)
   }.reduce(_ || _)
@@ -213,9 +214,9 @@ class FramePreparedVarDctAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends
   val coveredAfter = Wire(Vec(maxBlocks, Bool()))
   coveredAfter := covered
   when(geometryValid) {
-    coveredAfter(ownerAddress) := true.B
+    blockAt(coveredAfter, inputOwnerOrdinal) := true.B
     when(isRectangular) {
-      coveredAfter(secondAddress) := true.B
+      blockAt(coveredAfter, secondOrdinal) := true.B
     }
   }
   val allCoveredAfter = (0 until maxBlocks).map { index =>
@@ -231,10 +232,9 @@ class FramePreparedVarDctAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends
   coefficientStore.io.readRequest.valid := state === requestOwner
   coefficientStore.io.readRequest.bits.owner := ownerIndex(emitOwnerOrdinal)
   coefficientStore.io.readRequest.bits.coefficientCount :=
-    ownerCoefficientCount(ownerIndex(emitOwnerOrdinal))
+    blockAt(ownerCoefficientCount, emitOwnerOrdinal)
 
-  val currentOwnerIndex = ownerIndex(emitOwnerOrdinal)
-  val currentBlockOrdinal = ownerBlockOrdinal(currentOwnerIndex)
+  val currentBlockOrdinal = blockAt(ownerBlockOrdinal, emitOwnerOrdinal)
   val xBlocksSafe = Mux(xBlocks === 0.U, 1.U, xBlocks)
   val blockX = currentBlockOrdinal - (currentBlockOrdinal / xBlocksSafe) * xBlocksSafe
   val blockY = currentBlockOrdinal / xBlocksSafe
@@ -242,8 +242,8 @@ class FramePreparedVarDctAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends
   val northOrdinal = currentBlockOrdinal - xBlocksSafe
   val predicted = Wire(Vec(3, UInt(8.W)))
   for (channel <- 0 until 3) {
-    val west = predictionMap(blockIndex(westOrdinal))(channel)
-    val north = predictionMap(blockIndex(northOrdinal))(channel)
+    val west = blockAt(predictionMap, westOrdinal)(channel)
+    val north = blockAt(predictionMap, northOrdinal)(channel)
     predicted(channel) := Mux(
       blockX === 0.U,
       Mux(blockY === 0.U, 32.U, north),
@@ -254,11 +254,11 @@ class FramePreparedVarDctAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends
   val ownerTokens = Module(new VarDctAcOwnerTokenTraceStage(c))
   ownerTokens.io.input.valid := state === waitForOwner && coefficientStore.io.readResponse.valid
   ownerTokens.io.input.bits.group := tokenOrdinal
-  ownerTokens.io.input.bits.strategy := ownerStrategy(currentOwnerIndex)
-  ownerTokens.io.input.bits.coefficientCount := ownerCoefficientCount(currentOwnerIndex)
-  ownerTokens.io.input.bits.coveredBlocks := ownerCoveredBlocks(currentOwnerIndex)
+  ownerTokens.io.input.bits.strategy := blockAt(ownerStrategy, emitOwnerOrdinal)
+  ownerTokens.io.input.bits.coefficientCount := blockAt(ownerCoefficientCount, emitOwnerOrdinal)
+  ownerTokens.io.input.bits.coveredBlocks := blockAt(ownerCoveredBlocks, emitOwnerOrdinal)
   ownerTokens.io.input.bits.predictedNonzeros := predicted
-  ownerTokens.io.input.bits.numNonzeros := ownerNumNonzeros(currentOwnerIndex)
+  ownerTokens.io.input.bits.numNonzeros := blockAt(ownerNumNonzeros, emitOwnerOrdinal)
   ownerTokens.io.input.bits.quantized := coefficientStore.io.readResponse.bits.quantized
   ownerTokens.io.trace.ready := io.trace.ready && state === emitOwner
   coefficientStore.io.readResponse.ready := state === waitForOwner && ownerTokens.io.input.ready
@@ -273,15 +273,14 @@ class FramePreparedVarDctAcTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends
 
   when(io.input.fire) {
     when(validRecord) {
-      val index = ownerIndex(ownerCount)
-      ownerBlockOrdinal(index) := inputOwnerOrdinal
-      ownerStrategy(index) := strategy
-      ownerCoefficientCount(index) := io.input.bits.result.coefficientCount
-      ownerCoveredBlocks(index) := io.input.bits.result.coveredBlocks
-      ownerNumNonzeros(index) := io.input.bits.result.numNonzeros
-      predictionMap(ownerAddress) := io.input.bits.result.shiftedNumNonzeros
+      blockAt(ownerBlockOrdinal, ownerCount) := inputOwnerOrdinal
+      blockAt(ownerStrategy, ownerCount) := strategy
+      blockAt(ownerCoefficientCount, ownerCount) := io.input.bits.result.coefficientCount
+      blockAt(ownerCoveredBlocks, ownerCount) := io.input.bits.result.coveredBlocks
+      blockAt(ownerNumNonzeros, ownerCount) := io.input.bits.result.numNonzeros
+      blockAt(predictionMap, inputOwnerOrdinal) := io.input.bits.result.shiftedNumNonzeros
       when(isRectangular) {
-        predictionMap(secondAddress) := io.input.bits.result.shiftedNumNonzeros
+        blockAt(predictionMap, secondOrdinal) := io.input.bits.result.shiftedNumNonzeros
       }
       covered := coveredAfter
       ownerCount := ownerCount + 1.U

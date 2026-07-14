@@ -7,6 +7,7 @@ import chisel3.util._
 
 object HjxlCoreTraceRoute {
   val All = -1
+  val AqVarDctTokens = -2
 }
 
 class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRoute.All) extends Module {
@@ -32,6 +33,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   private val includeDcToken = includes(TraceStage.DcTokens)
   private val includeAcMetadataToken = includes(TraceStage.AcMetadataTokens)
   private val includeAcToken = traceRoute == TraceStage.AcTokens
+  private val includeAqVarDctTokens = traceRoute == HjxlCoreTraceRoute.AqVarDctTokens
   private val includeAcStrategy = includes(TraceStage.AcStrategy)
   private val includeAqContrast = includes(TraceStage.AqContrast)
   private val includeAqFuzzyErosion = traceRoute == TraceStage.AqFuzzyErosion
@@ -57,6 +59,9 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     if (includeAcMetadataToken) Some(Module(new FrameAqCflDctOnlyAcMetadataTokenTraceStage(c))) else None
   val acTokenTrace =
     if (includeAcToken) Some(Module(new FrameAqCflDctOnlyQuantizeTokenTraceStage(c, acTokensOnly = true)))
+    else None
+  val aqVarDctTokenTrace =
+    if (includeAqVarDctTokens) Some(Module(new FrameAqVarDctQuantizeTokenTraceStage(c)))
     else None
   val fixedAcStrategyTrace =
     if (traceRoute == HjxlCoreTraceRoute.All) Some(Module(new FrameAcStrategyTraceStage(c))) else None
@@ -94,6 +99,13 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     }
   val useAcTokenTrace =
     if (includeAcToken) {
+      io.config.enableDct && io.config.enableQuant && io.config.enableTokenize &&
+        io.config.tokenSelect === TokenTraceSelect.AcTokens.U
+    } else {
+      false.B
+    }
+  val useAqVarDctTokenTrace =
+    if (includeAqVarDctTokens) {
       io.config.enableDct && io.config.enableQuant && io.config.enableTokenize &&
         io.config.tokenSelect === TokenTraceSelect.AcTokens.U
     } else {
@@ -274,6 +286,12 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
     stage.io.input.valid := io.input.valid && useAcTokenTrace
     stage.io.trace.ready := io.trace.ready && useAcTokenTrace
   }
+  aqVarDctTokenTrace.foreach { stage =>
+    stage.io.config := io.config
+    stage.io.input.bits := io.input.bits
+    stage.io.input.valid := io.input.valid && useAqVarDctTokenTrace
+    stage.io.trace.ready := io.trace.ready && useAqVarDctTokenTrace
+  }
   fixedAcStrategyTrace.foreach { stage =>
     stage.io.config := io.config
     stage.io.input.bits := io.input.bits
@@ -364,6 +382,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   io.input.ready := MuxCase(
     inputTrace.map(_.io.input.ready).getOrElse(false.B),
     Seq(
+      useAqVarDctTokenTrace -> aqVarDctTokenTrace.map(_.io.input.ready).getOrElse(false.B),
       useDcTokenTrace -> dcTokenTrace.map(_.io.input.ready).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.input.ready).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.input.ready).getOrElse(false.B),
@@ -387,6 +406,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   io.trace.valid := MuxCase(
     inputTrace.map(_.io.trace.valid).getOrElse(false.B),
     Seq(
+      useAqVarDctTokenTrace -> aqVarDctTokenTrace.map(_.io.trace.valid).getOrElse(false.B),
       useDcTokenTrace -> dcTokenTrace.map(_.io.trace.valid).getOrElse(false.B),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.trace.valid).getOrElse(false.B),
       useAcTokenTrace -> acTokenTrace.map(_.io.trace.valid).getOrElse(false.B),
@@ -410,6 +430,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   io.trace.bits := MuxCase(
     inputTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
     Seq(
+      useAqVarDctTokenTrace -> aqVarDctTokenTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useDcTokenTrace -> dcTokenTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAcMetadataTokenTrace -> acMetadataTokenTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
       useAcTokenTrace -> acTokenTrace.map(_.io.trace.bits).getOrElse(inactiveTrace),
@@ -433,6 +454,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   io.traceLast := MuxCase(
     false.B,
     Seq(
+      useAqVarDctTokenTrace -> aqVarDctTokenTrace.map(_.io.traceLast).getOrElse(false.B),
       useInputTrace -> inputTrace.map(_.io.traceLast).getOrElse(false.B),
       useXybTrace -> xybTrace.map(_.io.traceLast).getOrElse(false.B),
       useDctTrace -> dctTrace.map(_.io.traceLast).getOrElse(false.B),
@@ -457,6 +479,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   io.busy := MuxCase(
     false.B,
     Seq(
+      useAqVarDctTokenTrace -> aqVarDctTokenTrace.map(_.io.busy).getOrElse(false.B),
       useInputTrace -> inputTrace.map(_.io.busy).getOrElse(false.B),
       useXybTrace -> xybTrace.map(_.io.busy).getOrElse(false.B),
       useDctTrace -> dctTrace.map(_.io.busy).getOrElse(false.B),
@@ -481,6 +504,7 @@ class HjxlCore(c: HjxlConfig = HjxlConfig(), traceRoute: Int = HjxlCoreTraceRout
   io.overflow := MuxCase(
     false.B,
     Seq(
+      useAqVarDctTokenTrace -> aqVarDctTokenTrace.map(_.io.overflow).getOrElse(false.B),
       useInputTrace -> inputTrace.map(_.io.overflow).getOrElse(false.B),
       useXybTrace -> xybTrace.map(_.io.overflow).getOrElse(false.B),
       useDctTrace -> dctTrace.map(_.io.overflow).getOrElse(false.B),

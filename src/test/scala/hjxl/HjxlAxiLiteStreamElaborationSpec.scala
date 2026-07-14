@@ -97,4 +97,14 @@ class HjxlAxiLiteStreamElaborationSpec extends AnyFreeSpec with Matchers {
     text must include("module AdaptiveInvQacQ16")
     text must not include "module FrameDctOnlyAcTokenTraceStage"
   }
+
+  "HjxlAxiLiteStreamCore focused AQ VarDCT-token route includes first-block tokenization" in {
+    val text = emittedSystemVerilog(HjxlCoreTraceRoute.AqVarDctTokens)
+    text must include("module HjxlAxiLiteStreamCore")
+    expectAxiLiteStreamPorts(text)
+    text must include("module FrameAqVarDctQuantizeTokenTraceStage")
+    text must include("module FramePreparedAcStrategyTraceStage")
+    text must include("module FramePreparedVarDctQuantizeTokenTraceStage")
+    text must not include "module FrameAqCflDctOnlyQuantizeTokenTraceStage"
+  }
 }

@@ -13,7 +13,7 @@ board-proven FPGA encoder.
 | Area | Current state |
 | --- | --- |
 | Strongest validated boundary | Host-prepared, all-DCT coefficients through quantization and logical token traces, followed by host-side codestream assembly |
-| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and a combined all-DCT logical-token path; focused routes generate a tile-correct adaptive 8x8/16x8/8x16 strategy map and adjusted raw-quant field, and a separate prepared first-block boundary quantizes all three shapes, but the RGB search is not yet composed with that boundary and non-DCT metadata/tokens remain incomplete |
+| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and combined logical tokens; a focused compile-time route composes the tile-correct adaptive 8x8/16x8/8x16 search with first-block-owned variable-shape quantization and tokenization, but RGB non-DCT codestream parity, broader nonzero end-to-end oracles, and physical feasibility remain open |
 | Hardware output | Trace/token records; entropy optimization and final JPEG XL bitstream assembly remain host software responsibilities |
 | Near-term FPGA top | `HjxlKv260PreparedDctTop`, the direct prepared-DCT variant, is frozen as the first synthesis and bring-up target |
 | Physical validation | Chisel simulation and generated SystemVerilog are covered; Vivado synthesis, timing closure, resource use, bitstream generation, and KV260 execution have not been demonstrated |
@@ -117,11 +117,8 @@ the metadata route omits the unused reciprocal. The combined
 AC-metadata, and AC logical tokens, and supplies the focused core AC-token
 route. Focused `TraceStage.YtoxMap` and `TraceStage.YtobMap` routes expose the
 estimated maps directly. The earlier `FrameAqDctOnly*` and
-`FrameCflMapTraceStage` wrappers remain fixed-CFL diagnostics. The focused RGB
-search still needs to feed selected rectangles and strategy-adjusted raw quant
-into the prepared variable-shape quantizer and then into non-DCT metadata/token
-schedulers, plus entropy coding, bitstream assembly, and an RGB-token-to-
-codestream parity proof. `Dct16Approx`, `Dct16x8Approx`, and
+`FrameCflMapTraceStage` wrappers remain fixed-CFL diagnostics. `Dct16Approx`,
+`Dct16x8Approx`, and
 `Dct8x16Approx` now provide the Q12 recursive kernel and both canonical
 rectangular coefficient layouts required by scoring and later quantization.
 `AcStrategyCandidateCostEvaluator` walks prepared canonical Q12 X/Y/B
@@ -157,9 +154,25 @@ retain raw versus shifted nonzero semantics, and apply the rectangular scan and
 block contexts. `FramePreparedVarDctTokenTraceStage` reconstructs the covered-
 cell DC and encoded-strategy grids before emitting exact DC, strategy,
 metadata, and AC traces; `FramePreparedVarDctQuantizeTokenTraceStage` composes
-that boundary directly after the prepared quantizer. The remaining missing
-connection is the RGB strategy/AQ/CFL source into this prepared 64/128-
-coefficient boundary.
+that boundary directly after the prepared quantizer.
+`FramePreparedAcStrategyTraceStage` now also emits an aligned
+`PreparedAcStrategySelectedCell` for every raster decision. It carries the
+adjusted quant byte, tile CFL, distance-derived scalar parameters, current DCT,
+and covered neighbor block while marking only first-block owners.
+`AcStrategySelectedCellToVarDctOwnerStage` consumes continuation decisions,
+recomputes the selected 16x8 or 8x16 transform when necessary, regenerates the
+adaptive reciprocal from the rectangle-adjusted byte, and converts each owner
+to the prepared 64/128-coefficient ABI. The composed
+`FramePreparedAcStrategyVarDctQuantizeTokenTraceStage` and
+`FrameAqVarDctQuantizeTokenTraceStage` therefore carry the shared RGB AQ/DCT
+source through strategy selection, variable-shape quantization, and combined
+DC/strategy/metadata/AC logical tokens. This heavy path is selected only by
+the compile-time `HjxlCoreTraceRoute.AqVarDctTokens`; the default shell and the
+existing all-DCT `TraceStage.AcTokens` focused route are unchanged. The
+remaining functional evidence gap is RGB non-DCT token-to-codestream parity,
+especially on nonzero mixed-shape fixtures; entropy coding and final bitstream
+assembly remain host responsibilities, and synthesis/timing/resource fit is
+still unproven.
 `tools/hjxl_reference.py --scaled-dct-q12-csv ...` exports independent signed
 transform fixtures plus the exact fixed transform result;
 `--ac-strategy-cost-q16-csv ...` exports the prepared candidate-cost seam,
@@ -176,7 +189,11 @@ symmetric orientation choices.
 fixture and the complete reference DC/strategy/metadata/AC trace. It covers
 DCT, 16x8, and 8x16 ownership in one frame, including continuation suppression,
 two-cell prediction history, distinct raw/shifted counts, and both 64/128-entry
-coefficient scans.
+coefficient scans. `--strategy-var-dct-zero-fixture-dir ...` exports an exact
+2x2 strategy-to-variable-shape integration fixture whose zero coefficients
+force two horizontal owners while distinct input bytes prove post-search quant
+adjustment and continuation suppression. Its 32 native libjxl-tiny token rows
+are the focused composition oracle, not broad nonzero RGB parity evidence.
 Standalone fixed-point primitives also cover approximate RGB-to-XYB, 1D DCT-8,
 and the scaled 8x8 DCT block layout used by libjxl-tiny. The RGB-to-XYB primitive
 applies the signed matrix at Q26, clamps
@@ -428,12 +445,14 @@ Generate the standalone full AC-token trace top-level:
 sbt 'runMain hjxl.ElaborateAcTokens'
 ```
 
-Generate the public `HjxlCore` IO shell with only the full AC-token route
-or adaptive AC-strategy trace route instantiated:
+Generate the public `HjxlCore` IO shell with only the all-DCT AC-token route,
+adaptive AC-strategy trace route, or adaptive variable-shape combined-token
+route instantiated:
 
 ```sh
 sbt 'runMain hjxl.ElaborateCoreAcTokens'
 sbt 'runMain hjxl.ElaborateCoreAcStrategy'
+sbt 'runMain hjxl.ElaborateCoreAqVarDctTokens'
 ```
 
 Generate AXI4-Stream-shaped shells:
@@ -441,6 +460,7 @@ Generate AXI4-Stream-shaped shells:
 ```sh
 sbt 'runMain hjxl.ElaborateAxiStream'
 sbt 'runMain hjxl.ElaborateAxiStreamCoreAcTokens'
+sbt 'runMain hjxl.ElaborateAxiStreamCoreAqVarDctTokens'
 ```
 
 Generate AXI4-Lite-controlled AXI4-Stream shells:
@@ -448,6 +468,7 @@ Generate AXI4-Lite-controlled AXI4-Stream shells:
 ```sh
 sbt 'runMain hjxl.ElaborateAxiLiteStream'
 sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAcTokens'
+sbt 'runMain hjxl.ElaborateAxiLiteStreamCoreAqVarDctTokens'
 ```
 
 Generate the exact prepared-token trace top-levels:
@@ -456,6 +477,7 @@ Generate the exact prepared-token trace top-levels:
 sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantize'
 sbt 'runMain hjxl.ElaboratePreparedVarDctQuantize'
 sbt 'runMain hjxl.ElaboratePreparedVarDctQuantizeTokens'
+sbt 'runMain hjxl.ElaborateAqVarDctQuantizeTokens'
 sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'
 sbt 'runMain hjxl.ElaboratePreparedDctAxiStream'
 sbt 'runMain hjxl.ElaboratePreparedDctAxiLiteStream'
@@ -1443,6 +1465,17 @@ places the only rectangular nonzero at coefficient 127 and proves that the
 explicit carry bit reaches the 128 termination value without wrapping.
 `FramePreparedVarDctTokenElaborationSpec` guards the direct hierarchy and its
 narrow synchronous 64/128-coefficient owner store.
+`FrameAqVarDctQuantizeTokenTraceStageSpec` checks the new selected-cell adapter
+for horizontal adaptive-reciprocal and vertical fixed-reciprocal ownership,
+then composes the prepared strategy search with variable-shape quantization and
+compares all 32 native token rows from the zero-coefficient 2x2 fixture under
+periodic output stalls. It also drives a live 16x16 RGB frame through every
+logical-token phase, checks unsupported-distance reporting, verifies packed
+mixed-stage AXI output and final-only TLAST on an 8x8 frame, and requires an
+immediate assertion for an unsupported first-block strategy. The companion
+elaboration spec plus the core, AXI-stream, AXI-Lite, and discovery regressions
+guard inclusion only for `HjxlCoreTraceRoute.AqVarDctTokens`; the default and
+existing all-DCT AC-token hierarchies remain separate.
 `FramePreparedAcMetadataTokenTraceStageSpec` separately covers two-tile
 prepared metadata fixtures for CFL residual prediction and raw-quant residual
 contexts, including a libjxl-tiny oracle-backed 72x8 all-DCT case.
@@ -1464,7 +1497,8 @@ the assembled frame and codestream bytes match the direct libjxl-tiny
 fixed-token oracle. It also checks `tools/hjxl_trace_to_codestream.py`, the
 one-step StageTrace-to-byte assembler, against the same token arrays and byte
 oracle. The full RGB-input token schedulers still depend on the approximate
-fixed-point RGB/XYB/DCT path and are tracked as a separate parity gap.
+fixed-point RGB/XYB/DCT path; the new adaptive variable-shape route establishes
+wiring and focused logical-token evidence, not broad RGB-to-codestream parity.
 
 ## ABI generation
 
