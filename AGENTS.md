@@ -433,10 +433,13 @@ Read these libjxl-tiny files before making architectural changes:
   integration.
 - `FramePreparedDctOnlyQuantizeTokenTraceStage` is the direct prepared-DCT
   quantize-to-token RTL wrapper. Feed it the same prepared DCT-only raster block
-  inputs; it runs `DctOnlyQuantizeBlock`, stores DC for plane-order replay, and
-  atomically streams AC/nonzero results plus metadata into the dedicated frame
-  schedulers that own those stores. Do not reintroduce orchestration-level
-  AC/metadata frame arrays. This wrapper preserves prepared raw-quant and CFL
+  inputs; it runs `DctOnlyQuantizeBlock` and atomically streams DC triplets,
+  AC/nonzero results, and metadata into the dedicated frame schedulers that own
+  those stores. `FramePreparedDcBlockTokenTraceStage` performs Y/X/B plane-order
+  replay directly from its raster triplet store; do not reintroduce an
+  orchestration-level DC reorder array or post-input feed phase. Likewise, do
+  not reintroduce orchestration-level AC/metadata frame arrays. This wrapper
+  preserves prepared raw-quant and CFL
   metadata instead of falling back to fixed raw-quant/scalar-CFL metadata, and
   its `traceLast` output marks the final AC-token trace beat.
 - `FrameRawQuantFieldTraceStage` is the narrow pre-strategy real/fixed
@@ -508,6 +511,11 @@ Read these libjxl-tiny files before making architectural changes:
   computes west/north/northwest predictors, and emits `DcTokens` trace records.
   Prefer this in host-boundary tests over hand-building predictor-neighbor
   inputs for `DcTokenTraceStage`.
+- `FramePreparedDcBlockTokenTraceStage` is the direct-composition DC owner.
+  Feed it one quantized X/Y/B triplet per raster block. It stores that triplet
+  once, maps output planes to Y/X/B order, and emits the same exact predictor
+  tokens. The direct prepared-DCT wrapper forks quantizer results into this
+  owner beside the AC and metadata owners in one atomic handshake.
 - `FrameDctOnlyDcTokenTraceStage` is the first token trace stage. It uses the
   same fixed-parameter DCT-only frame path and emits only DC tokens, in Y/X/B
   plane order. For token traces, `trace.group` is the token ordinal,

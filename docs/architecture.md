@@ -415,14 +415,15 @@ wrappers.
   `NumNonzeros` record of the final prepared raster block.
 - `FramePreparedDctOnlyQuantizeTokenTraceStage` is the first direct RTL bridge
   from prepared DCT-only block inputs to fixed all-DCT logical token traces. It
-  runs `DctOnlyQuantizeBlock`, stores DC values for the required Y/X/B plane
-  reorder, and atomically streams each quantized AC/nonzero result and metadata
-  record into the dedicated prepared schedulers that own those frame stores.
-  This removes the orchestration layer's duplicate AC/nonzero and metadata
-  arrays while preserving the required DC, strategy, metadata, and AC output
-  order. Unlike `FramePreparedTokenTraceStage`, it can describe the prepared
-  raw-quant and CFL values used during quantization. It exposes `traceLast` on
-  the final AC-token trace beat for host capture.
+  runs `DctOnlyQuantizeBlock` and atomically streams each DC triplet,
+  quantized AC/nonzero result, and metadata record into the dedicated prepared
+  schedulers that own those frame stores. The DC owner accepts raster X/Y/B
+  triplets and performs Y/X/B plane replay itself. This removes the
+  orchestration layer's duplicate DC, AC/nonzero, and metadata arrays plus the
+  former post-input DC copy phase while preserving the required DC, strategy,
+  metadata, and AC output order. Unlike `FramePreparedTokenTraceStage`, it can
+  describe the prepared raw-quant and CFL values used during quantization. It
+  exposes `traceLast` on the final AC-token trace beat for host capture.
 - `FrameAdjustedRawQuantFieldTraceStage` is the public focused raw-quant
   selector. Zero `FrameConfig.fixedRawQuant` routes RGB through the completed AQ
   map, adaptive strategy search, and post-search rectangle adjustment; a
@@ -500,6 +501,11 @@ wrappers.
   libjxl-tiny token order: Y plane, X plane, then B plane, each in raster block
   order. It buffers the frame, computes west/north/northwest predictors from
   the prepared planes, and emits `DcTokens` trace records.
+- `FramePreparedDcBlockTokenTraceStage` is the matching owner for direct
+  quantizer composition. It accepts one X/Y/B DC triplet per raster block,
+  stores the triplet once, maps plane emission to Y/X/B, and computes the same
+  exact predictors. The direct prepared-DCT quantize-to-token wrapper uses this
+  boundary so it need not retain or replay a second frame-sized DC array.
 - `FrameDctOnlyDcTokenTraceStage` emits DC residual token traces from the same
   fixed-parameter DCT-only frame path. It emits tokens in libjxl-tiny order:
   Y plane, X plane, then B plane, each in raster block order. Token traces use
@@ -1356,7 +1362,7 @@ baseline for this target. Under continuous source/sink traffic, the direct
 stream currently measures 342 cycles for one zero 8x8 block, 347 cycles when
 one AC coefficient is nonzero in each channel, and 611 cycles for two zero
 blocks. A parameterized 72x72 profiling elaboration additionally measures
-22,493 cycles for an 81-block/four-tile zero frame and 33,620 cycles when all
+22,250 cycles for an 81-block/four-tile zero frame and 33,377 cycles when all
 63 AC positions in every channel and block are nonzero. See
 `docs/performance.md` for phase definitions, exact token counts, and
 limitations. These numbers isolate core behavior and do not include AXI-Lite

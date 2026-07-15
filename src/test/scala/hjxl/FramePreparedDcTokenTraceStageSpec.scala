@@ -10,20 +10,20 @@ import org.scalatest.matchers.must.Matchers
 class FramePreparedDcTokenTraceStageSpec extends AnyFreeSpec with Matchers with ChiselSim {
   private val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 16)
 
-  private def pokeConfig(dut: FramePreparedDcTokenTraceStage, width: Int, height: Int): Unit = {
-    dut.io.config.xsize.poke(width.U)
-    dut.io.config.ysize.poke(height.U)
-    dut.io.config.distanceQ8.poke(256.U)
-    dut.io.config.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
-    dut.io.config.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
-    dut.io.config.fixedRawQuant.poke(0.U)
-    dut.io.config.fixedYtox.poke(0.S)
-    dut.io.config.fixedYtob.poke(0.S)
-    dut.io.config.enableXyb.poke(false.B)
-    dut.io.config.enableDct.poke(false.B)
-    dut.io.config.enableQuant.poke(true.B)
-    dut.io.config.enableTokenize.poke(true.B)
-    dut.io.config.tokenSelect.poke(TokenTraceSelect.Dc.U)
+  private def pokeConfig(frameConfig: FrameConfig, width: Int, height: Int): Unit = {
+    frameConfig.xsize.poke(width.U)
+    frameConfig.ysize.poke(height.U)
+    frameConfig.distanceQ8.poke(256.U)
+    frameConfig.fixedPointScale.poke(QuantizeDct8x8Block.DefaultScaleQ16.U)
+    frameConfig.fixedInvQacQ16.poke(QuantizeDct8x8Block.DefaultInvQacQ16.U)
+    frameConfig.fixedRawQuant.poke(0.U)
+    frameConfig.fixedYtox.poke(0.S)
+    frameConfig.fixedYtob.poke(0.S)
+    frameConfig.enableXyb.poke(false.B)
+    frameConfig.enableDct.poke(false.B)
+    frameConfig.enableQuant.poke(true.B)
+    frameConfig.enableTokenize.poke(true.B)
+    frameConfig.tokenSelect.poke(TokenTraceSelect.Dc.U)
   }
 
   private def clampedGradient(north: Int, west: Int, northwest: Int): Int = {
@@ -81,7 +81,7 @@ class FramePreparedDcTokenTraceStageSpec extends AnyFreeSpec with Matchers with 
       val samples = planes.flatten
       val expected = expectedTokens(planes, xBlocks)
 
-      pokeConfig(dut, width, height)
+      pokeConfig(dut.io.config, width, height)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
       dut.clock.step()
@@ -127,7 +127,7 @@ class FramePreparedDcTokenTraceStageSpec extends AnyFreeSpec with Matchers with 
       val samples = planes.flatten
       val expected = expectedTokens(planes, xBlocks)
 
-      pokeConfig(dut, width, height)
+      pokeConfig(dut.io.config, width, height)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(false.B)
       dut.clock.step()
@@ -155,6 +155,68 @@ class FramePreparedDcTokenTraceStageSpec extends AnyFreeSpec with Matchers with 
 
       dut.io.trace.valid.expect(false.B)
       dut.io.input.ready.expect(true.B)
+      dut.io.overflow.expect(false.B)
+    }
+  }
+
+  "FramePreparedDcBlockTokenTraceStage owns raster block triplets without a reorder copy" in {
+    simulate(new FramePreparedDcBlockTokenTraceStage(config)) { dut =>
+      val width = 9
+      val height = 9
+      val xBlocks = 2
+      val yPlane = Seq(10, 12, 20, 25)
+      val xPlane = Seq(-3, -1, 4, 7)
+      val bPlane = Seq(50, 49, 51, 60)
+      val expected = expectedTokens(Seq(yPlane, xPlane, bPlane), xBlocks)
+      val rasterBlocks = yPlane.indices.map(index => Seq(xPlane(index), yPlane(index), bPlane(index)))
+
+      pokeConfig(dut.io.config, width, height)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(false.B)
+      dut.clock.step()
+
+      for (block <- rasterBlocks) {
+        dut.io.input.valid.poke(true.B)
+        for (channel <- 0 until 3) {
+          dut.io.input.bits(channel).poke(block(channel).S)
+        }
+        dut.io.input.ready.expect(true.B)
+        dut.clock.step()
+      }
+      dut.io.input.valid.poke(false.B)
+
+      // The owner must retain the first-beat geometry while the external
+      // configuration bus is prepared for a later frame.
+      pokeConfig(dut.io.config, width = 8, height = 8)
+      dut.io.trace.ready.poke(true.B)
+
+      for (((context, value), ordinal) <- expected.zipWithIndex) {
+        withClue(s"raster-block DC token $ordinal context=$context value=$value") {
+          dut.io.trace.valid.expect(true.B)
+          dut.io.trace.bits.stage.expect(TraceStage.DcTokens.U)
+          dut.io.trace.bits.group.expect(ordinal.U)
+          dut.io.trace.bits.index.expect(context.U)
+          dut.io.trace.bits.value.expect(value.S)
+          dut.io.traceLast.expect((ordinal == expected.length - 1).B)
+        }
+
+        if (ordinal == 2) {
+          dut.io.trace.ready.poke(false.B)
+          for (_ <- 0 until 3) {
+            dut.io.trace.valid.expect(true.B)
+            dut.io.trace.bits.group.expect(ordinal.U)
+            dut.io.trace.bits.index.expect(context.U)
+            dut.io.trace.bits.value.expect(value.S)
+            dut.clock.step()
+          }
+          dut.io.trace.ready.poke(true.B)
+        }
+        dut.clock.step()
+      }
+
+      dut.io.trace.valid.expect(false.B)
+      dut.io.input.ready.expect(true.B)
+      dut.io.busy.expect(false.B)
       dut.io.overflow.expect(false.B)
     }
   }

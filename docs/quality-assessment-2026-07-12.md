@@ -142,10 +142,10 @@ Snapshot size is approximately:
 
 | Area | Files | Lines |
 | --- | ---: | ---: |
-| Main HJXL Scala/Chisel | 70 | 17,576 |
-| Scala tests | 72 | 28,479 |
+| Main HJXL Scala/Chisel | 70 | 17,695 |
+| Scala tests | 72 | 28,544 |
 | Python host/oracle tools | 18 | 14,678 |
-| `README.md` + `docs/architecture.md` + `AGENTS.md` | 3 | 4,346 |
+| `README.md` + `docs/architecture.md` + `AGENTS.md` | 3 | 4,366 |
 
 The test-to-RTL ratio is a strength, but these counts also reveal where
 complexity has moved: host tooling and test harnesses are now materially larger
@@ -535,17 +535,19 @@ a complete and physically viable RGB-to-JXL FPGA encoder.
    Use inferred BRAM/URAM, tile buffers, ping-pong buffers, or external-memory
    scheduling. Define which stage owns each stored plane and whether stages can
    overlap.
-   **Partially completed 2026-07-12:** the direct prepared-DCT orchestration
-   stage no longer duplicates full-frame quantized AC/nonzero and metadata
+   **Partially completed 2026-07-15:** the direct prepared-DCT orchestration
+   stage no longer duplicates full-frame DC, quantized AC/nonzero, or metadata
    arrays already owned by its downstream schedulers. Atomic streaming removes
-   6,192 register bits per configured block (99,072 bits at the frozen 32x32
-   default) and shortens pre-output feed latency. The owning AC scheduler now
+   6,288 register bits per configured block (100,608 bits at the frozen 32x32
+   default). The raster-triplet DC owner also removes the former three-cycle-
+   per-block plane-reorder feed phase. The owning AC scheduler now
    serializes its frame coefficient plane into a 96-bit-wide `SyncReadMem`; the
    default generated RTL contains one 1024x96 memory instead of another 98,304
    frame-scaled coefficient register bits, and read prefetch overlaps dense
-   token emission. Small nonzero/DC/metadata register planes and other frame
-   schedulers still need conversion, and Vivado must confirm BRAM inference,
-   utilization, timing, and the sparse-content latency tradeoff.
+   token emission. One DC triplet plane plus small nonzero/metadata register
+   planes and other frame schedulers still need conversion, and Vivado must
+   confirm BRAM inference, utilization, timing, and the sparse-content latency
+   tradeoff.
 6. **Create an explicit throughput model.** Record cycles per input word, block,
    tile, token, and frame; initiation interval; worst-case token expansion;
    input/output bandwidth; and target clock. Add counters or a simulation
@@ -872,8 +874,9 @@ a complete and physically viable RGB-to-JXL FPGA encoder.
 The following local checks were run immediately before committing the complete
 implementation and documentation tree described by this assessment. The
 2026-07-14 prepared variable-shape quantization, token, RGB composition, and
-shared-precision conversion follow-ups were validated from the complete working
-tree rather than inferred from component tests:
+shared-precision conversion follow-ups plus the 2026-07-15 direct DC-owner
+refactor were validated from the complete working tree rather than inferred
+from component tests:
 
 - `git diff --check` — passed.
 - `python3 -m py_compile tools/*.py` — passed.
@@ -885,13 +888,16 @@ tree rather than inferred from component tests:
 - `hjxl_reference.py --pattern impulse --var-dct-*-tokens-npy ...
   --var-dct-ac-strategy-npy ... --var-dct-codestream-bin ...` at 16x16 — passed;
   the token-built reference codestream was identical to direct native encoding.
-- `sbt test` — passed on the exact commit candidate with test concurrency
-  capped at two: 85 suites completed, 341 tests succeeded, 0
-  failed/canceled/ignored/pending, in 22 minutes.
+- `sbt test` — exercised all 85 suites and 342 tests on the exact candidate.
+  It reported 341 successes and one infrastructure failure when local Clang
+  crashed while Verilator compiled the unchanged `HjxlCoreSpec` DC-route case
+  beside another suite; no RTL assertion or expectation failed. An immediate
+  isolated `sbt 'testOnly hjxl.HjxlCoreSpec'` retry after the parallel workers
+  drained passed all 20 tests in 112 seconds.
 - `HJXL_REPO_ROOT=$PWD ./mill --no-server -j 2 hjxl.test` — passed the complete
-  same 85-suite/341-test candidate in 1,331 seconds, confirming the changed
+  same 85-suite/342-test candidate in 2,021 seconds, confirming the changed
   production and test sources through the second build definition. Its two
-  forked workers reported 201 and 140 successful tests respectively, with zero
+  forked workers reported 194 and 148 successful tests respectively, with zero
   failures, aborts, cancellations, ignored tests, or pending tests.
 - Focused sbt execution of the prepared variable-shape quantizer/token suites,
   the strategy scheduler, the new RGB composition/AXI suite, core and stream
@@ -1021,6 +1027,16 @@ tree rather than inferred from component tests:
 - `sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'` followed by
   `tclsh fpga/vivado/synth.tcl --preflight-only` — passed with the expected 19
   generated RTL files. This is a source/constraint preflight, not synthesis.
+- `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'` and the frozen
+  KV260 elaboration now list 15 files/13,051 lines and 19 files/14,465 lines in
+  their authoritative `filelist.f` inputs. The frozen top contains one
+  `FramePreparedDcBlockTokenTraceStage` triplet plane and no orchestration-level
+  quantized-DC register array, removing 292 emitted lines from the immediately
+  preceding top. Eight focused suites passed 31 behavioral, codestream,
+  throughput, AXI/AXI-Lite, flat-wrapper, and structural tests. The 81-block
+  sparse and dense totals both fell by the expected 243 cycles. These are
+  structural and simulation results; only Vivado can establish their resource
+  and timing effect.
 - Tool availability — Java, sbt, and Verilator 5.048 were found; Vivado, Vitis,
   and Yosys were not found.
 

@@ -101,5 +101,8 @@ class PreparedDctElaborationSpec extends AnyFreeSpec with Matchers {
       new FramePreparedDctOnlyQuantizeTokenTraceStage(config)
     )
     expectPreparedDctPorts(quantizeTokens, expectTraceLast = true)
+    quantizeTokens must include("FramePreparedDcBlockTokenTraceStage dcTokens")
+    """reg[ ]+\[31:0\][ ]+quantizedDc_[0-9]+_[0-2]""".r
+      .findFirstIn(quantizeTokens) mustBe None
   }
 }

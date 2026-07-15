@@ -282,10 +282,13 @@ the new RGB adaptive handoff explicitly reuses the same prepared schedulers at
 Q12.
 `FramePreparedDctOnlyQuantizeTokenTraceStage` bridges the same prepared-DCT
 input boundary directly into fixed all-DCT logical token traces by internally
-retaining DC values for plane reordering while streaming quantized AC/nonzero
-data and metadata into their owning prepared frame schedulers. This avoids a
-second full-frame AC store in the orchestration layer. It also exposes
-`traceLast` on the final AC-token trace beat.
+streaming each raster X/Y/B DC triplet, quantized AC/nonzero result, and metadata
+record atomically into the prepared frame schedulers that own those stores.
+`FramePreparedDcBlockTokenTraceStage` retains each DC triplet once and emits the
+required Y/X/B plane order, so the orchestration layer has neither a second DC
+array nor a post-input reorder-copy phase. The same boundary already avoided
+duplicate AC and metadata frame stores. It exposes `traceLast` on the final
+AC-token trace beat.
 The combined prepared-token boundary exposes `traceLast` on the final AC-token
 trace beat, so generated prepared-token RTL has a concrete frame delimiter for
 host capture.
@@ -302,7 +305,10 @@ predictor contexts and packed residuals in libjxl-tiny Y/X/B plane order, with
 `DcTokenTraceStage` exposes the same DC predictor/token packing as a prepared
 single-sample boundary once quantized DC planes already exist, and
 `FramePreparedDcTokenTraceStage` schedules complete prepared quantized DC planes
-through that exact token boundary in libjxl-tiny Y/X/B raster order.
+through that exact token boundary in libjxl-tiny Y/X/B raster order. The direct
+quantize-to-token composition instead uses
+`FramePreparedDcBlockTokenTraceStage`, whose raster X/Y/B triplet input matches
+the quantizer and makes that scheduler the sole DC frame owner.
 `FrameDctOnlyAcMetadataTokenTraceStage` emits fixed-path scalar CFL, AC-strategy,
 quant-field, and block-metadata tokens, with `traceLast` on the final metadata
 token.

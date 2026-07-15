@@ -32,15 +32,15 @@ field below exactly. An intentional microarchitecture change may lower a cycle
 count, but the test and this document must be updated together with an
 explanation.
 
-## Baseline measured 2026-07-12
+## Baseline updated 2026-07-15
 
 | Case | Blocks | Tiles | Input words | Input span | Input stalls | First-output latency | Output words | Output span | Output bubbles | Total cycles | Time at 200 MHz |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Zero 8x8 | 1 | 1 | 201 | 201 | 0 | 5 | 12 | 137 | 125 | 342 | 1.710 us |
-| Three-AC 8x8 | 1 | 1 | 201 | 201 | 0 | 5 | 15 | 142 | 127 | 347 | 1.735 us |
-| Zero 16x8 | 2 | 1 | 402 | 403 | 1 | 8 | 22 | 201 | 179 | 611 | 3.055 us |
-| Zero 72x72 | 81 | 4 | 16,281 | 16,361 | 80 | 245 | 818 | 5,888 | 5,070 | 22,493 | 112.465 us |
-| Dense-AC 72x72 | 81 | 4 | 16,281 | 16,361 | 80 | 245 | 16,127 | 17,015 | 888 | 33,620 | 168.100 us |
+| Zero 8x8 | 1 | 1 | 201 | 201 | 0 | 2 | 12 | 140 | 128 | 342 | 1.710 us |
+| Three-AC 8x8 | 1 | 1 | 201 | 201 | 0 | 2 | 15 | 145 | 130 | 347 | 1.735 us |
+| Zero 16x8 | 2 | 1 | 402 | 403 | 1 | 2 | 22 | 207 | 185 | 611 | 3.055 us |
+| Zero 72x72 | 81 | 4 | 16,281 | 16,361 | 80 | 2 | 818 | 5,888 | 5,070 | 22,250 | 111.250 us |
+| Dense-AC 72x72 | 81 | 4 | 16,281 | 16,361 | 80 | 2 | 16,127 | 17,015 | 888 | 33,377 | 166.885 us |
 
 Cycle zero is the first accepted input word. Input span runs through the final
 accepted input word, first-output latency is measured from that final input to
@@ -59,33 +59,37 @@ measured 16,127 output words.
 
 ## Interpretation
 
-The five-cycle first-output latency still reflects the DC path; AC storage does
-not delay the beginning of the trace stream. The prepared parser incurs one
-input stall between blocks. At 81 blocks this creates 80 stalls, while the
-internal DC plane-reorder feed phase increases final-input-to-first-output
-latency to 245 cycles. Those input figures are unchanged by the AC memory:
-`PreparedAcCoefficientFrameStore` serializes each accepted block into 64
-96-bit writes, which complete before the 201-word parser can present the next
-block.
+The two-cycle first-output latency reflects direct DC-owner startup; AC storage
+does not delay the beginning of the trace stream. The quantizer now forks each
+raster X/Y/B DC triplet into `FramePreparedDcBlockTokenTraceStage` while it
+atomically feeds the AC and metadata owners. The DC owner performs Y/X/B plane
+replay from that sole store, eliminating the former three-sample-per-block
+post-input copy phase. The prepared parser still incurs one input stall between
+blocks, so 81 blocks create 80 stalls. `PreparedAcCoefficientFrameStore`
+serializes each accepted block into 64 96-bit writes, which complete before the
+201-word parser can present the next block.
 
 Readback is content-sensitive because the scheduler prefetches the next 64-word
 block while current AC tokens emit. A zero block provides too little output
-work to hide the read, so the 72x72 sparse case measures 277.69 cycles/block
+work to hide the read, so the 72x72 sparse case measures 274.69 cycles/block
 and 5,070 output bubbles. A dense block provides enough work to hide every
-subsequent prefetch; its 17,015-cycle output span and 33,620-cycle frame total
-are unchanged from the previous register-array baseline. This is an explicit
-area/latency tradeoff rather than an unexplained regression.
+subsequent prefetch and now measures 412.06 cycles/block. Both 81-block totals
+drop by exactly 243 cycles—the removed three-cycle DC copy per block—while
+their AC output spans remain unchanged. Tiny-frame totals remain unchanged
+because coefficient-store preparation, not the removed DC copy, determines the
+final completion cycle. This is an explicit area/latency tradeoff rather than
+an unexplained regression.
 
 Steady-state input demand is at least 201 cycles per block because the ABI is a
 32-bit word stream. At the unproven 200 MHz synthesis target this corresponds
 to an ideal 800 MB/s input bus and about 995 thousand prepared blocks/s before
 parser stalls and drain cost. The complete observed 72x72 zero-frame rate is
-about 720 thousand blocks/s from 277.69 cycles per block.
+about 728 thousand blocks/s from 274.69 cycles per block.
 
 Output work is content-dependent. Three nonzero AC coefficients add three trace
 beats and five total cycles in the one-block fixture. The dense multi-tile case
-expands to 415.06 cycles/block and 168.100 microseconds per 72x72 frame at the
-unproven 200 MHz target, versus 277.69 cycles/block and 112.465 microseconds for
+expands to 412.06 cycles/block and 166.885 microseconds per 72x72 frame at the
+unproven 200 MHz target, versus 274.69 cycles/block and 111.250 microseconds for
 the zero frame. This bounds logical trace expansion for the current ordinary-
 DCT scheduler, but it is not a bound on DMA time, host entropy assembly, or
 future non-DCT strategies.
