@@ -31,6 +31,8 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
       last: Boolean
   )
 
+  private case class RgbInput(x: Int, y: Int, rQ8: Int, gQ8: Int, bQ8: Int)
+
   private def pokeConfig(
       dut: FramePreparedAcStrategyVarDctQuantizeTokenTraceStage,
       width: Int = 16,
@@ -183,6 +185,17 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
       ("stage,group,index,value" +: rows).mkString("", "\n", "\n"),
       StandardCharsets.UTF_8
     )
+  }
+
+  private def readRgbInputs(path: Path, width: Int, height: Int): Seq[RgbInput] = {
+    val lines = Files.readAllLines(path, StandardCharsets.UTF_8).asScala.toSeq
+    lines.head mustBe "raster,x,y,r_q8,g_q8,b_q8,xyb_x_q12,xyb_y_q12,xyb_b_q12"
+    lines.tail
+      .map { line =>
+        val row = line.split(",", -1)
+        RgbInput(row(1).toInt, row(2).toInt, row(3).toInt, row(4).toInt, row(5).toInt)
+      }
+      .filter(row => row.x < width && row.y < height)
   }
 
   "the selected-cell adapter maps a horizontal owner and waits for its adjusted reciprocal" in {
@@ -367,18 +380,23 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     }
   }
 
-  "a nonzero-AC RGB impulse assembles to the native VarDCT codestream" in {
+  private def verifyRgbCodestream(
+      pattern: String,
+      expectedStrategyValues: Seq[Int],
+      expectedCodestreamBytes: Int
+  ): Unit = {
     assume(
       Files.isDirectory(libjxlTinyRoot.resolve("python")),
       s"libjxl-tiny Python checkout not found at $libjxlTinyRoot"
     )
-    val temp = Files.createTempDirectory("hjxl-rgb-var-dct-codestream-")
+    val temp = Files.createTempDirectory(s"hjxl-rgb-var-dct-$pattern-codestream-")
     val expectedDc = temp.resolve("expected-dc.npy")
     val expectedMetadata = temp.resolve("expected-metadata.npy")
     val expectedAc = temp.resolve("expected-ac.npy")
     val expectedStrategy = temp.resolve("expected-strategy.npy")
     val expectedCodestream = temp.resolve("expected.jxl")
     val nativeCodestream = temp.resolve("native.jxl")
+    val rgbCsv = temp.resolve("rgb.csv")
     val traceCsv = temp.resolve("rtl-trace.csv")
     val actualDc = temp.resolve("actual-dc.npy")
     val actualMetadata = temp.resolve("actual-metadata.npy")
@@ -395,7 +413,10 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
         "--height",
         "16",
         "--pattern",
-        "impulse",
+        pattern,
+        "--quantize-input-q8",
+        "--xyb-q12-csv",
+        rgbCsv.toString,
         "--jxl",
         nativeCodestream.toString,
         "--var-dct-dc-tokens-npy",
@@ -412,6 +433,9 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     )
     Files.readAllBytes(expectedCodestream).toSeq mustBe
       Files.readAllBytes(nativeCodestream).toSeq
+    Files.size(expectedCodestream) mustBe expectedCodestreamBytes.toLong
+    val inputs = readRgbInputs(rgbCsv, width = 16, height = 16)
+    inputs.length mustBe 16 * 16
 
     val observed = scala.collection.mutable.ArrayBuffer.empty[ExpectedTrace]
     val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 16)
@@ -422,13 +446,12 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
       dut.clock.step()
 
       dut.io.input.valid.poke(true.B)
-      for (y <- 0 until 16; x <- 0 until 16) {
-        dut.io.input.bits.x.poke(x.U)
-        dut.io.input.bits.y.poke(y.U)
-        val impulse = x == 8 && y == 8
-        dut.io.input.bits.r.poke((if (impulse) 256 else 0).S)
-        dut.io.input.bits.g.poke((if (impulse) 128 else 0).S)
-        dut.io.input.bits.b.poke((if (impulse) 64 else 0).S)
+      for (input <- inputs) {
+        dut.io.input.bits.x.poke(input.x.U)
+        dut.io.input.bits.y.poke(input.y.U)
+        dut.io.input.bits.r.poke(input.rQ8.S)
+        dut.io.input.bits.g.poke(input.gQ8.S)
+        dut.io.input.bits.b.poke(input.bQ8.S)
         var waitCycles = 0
         while (!dut.io.input.ready.peek().litToBoolean && waitCycles < 16) {
           dut.clock.step()
@@ -457,7 +480,7 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
         dut.clock.step()
         cycles += 1
       }
-      withClue("nonzero-AC impulse RGB VarDCT completion wait: ") {
+      withClue(s"nonzero-AC $pattern RGB VarDCT completion wait: ") {
         finished mustBe true
       }
       dut.io.overflow.expect(false.B)
@@ -465,7 +488,7 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     }
 
     observed.filter(_.stage == TraceStage.AcStrategy).map(_.value) mustBe
-      Seq(5, 4, 1, 1).map(BigInt(_))
+      expectedStrategyValues.map(BigInt(_))
     observed.filter(_.stage == TraceStage.DcTokens).exists(_.value != 0) mustBe true
     observed.filter(_.stage == TraceStage.AcTokens).exists(_.value != 0) mustBe true
     writeTraceCsv(traceCsv, observed.toSeq)
@@ -521,6 +544,22 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     )
     Files.readAllBytes(actualCodestream).toSeq mustBe
       Files.readAllBytes(expectedCodestream).toSeq
+  }
+
+  "a nonzero-AC Q8 RGB impulse assembles to the native VarDCT codestream" in {
+    verifyRgbCodestream(
+      pattern = "impulse",
+      expectedStrategyValues = Seq(5, 4, 1, 1),
+      expectedCodestreamBytes = 197
+    )
+  }
+
+  "a nonzero-AC Q8 RGB gradient assembles to the native VarDCT codestream" in {
+    verifyRgbCodestream(
+      pattern = "gradient",
+      expectedStrategyValues = Seq(1, 1, 5, 4),
+      expectedCodestreamBytes = 230
+    )
   }
 
   "the RGB route reaches every logical-token phase and drains before another frame" in {

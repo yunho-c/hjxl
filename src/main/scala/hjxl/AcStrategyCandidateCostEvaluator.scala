@@ -31,18 +31,26 @@ class AcStrategyCandidateCostOutput extends Bundle {
 
 /** Sequential fixed-point implementation of libjxl-tiny `estimate_entropy`.
   *
-  * One transformed coefficient is evaluated per cycle. Inputs are Q12 scaled
-  * DCT coefficients, the maximum Q24 AQ value and Q16 strategy mask over the
-  * candidate's covered blocks, and the tile CFL multipliers. The output also
-  * applies the distance-dependent outer multiplier used by
-  * `find_best_16x16_transform`; ordinary DCT receives the reference's +3 bias.
+  * One transformed coefficient is evaluated per cycle. Inputs use the common
+  * `coefficientFractionBits` scale, together with the maximum Q24 AQ value and
+  * Q16 strategy mask over the candidate's covered blocks and the tile CFL
+  * multipliers. The output also applies the distance-dependent outer multiplier
+  * used by `find_best_16x16_transform`; ordinary DCT receives the reference's
+  * +3 bias.
   * Unsupported Q8 distances use the shared distance-1 fallback and are
   * reported explicitly.
   */
-class AcStrategyCandidateCostEvaluator(coefficientBits: Int = 32) extends Module {
+class AcStrategyCandidateCostEvaluator(
+    coefficientBits: Int = 32,
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Module {
   import AcStrategyCostTables._
 
-  require(coefficientBits >= 16, "AC-strategy coefficients must contain signed Q12")
+  require(coefficientBits >= 16, "AC-strategy coefficient inputs must be at least 16 bits")
+  require(
+    coefficientFractionBits > 0 && coefficientFractionBits < coefficientBits,
+    "AC-strategy coefficient fractional precision must fit its signed input"
+  )
 
   val io = IO(new Bundle {
     val input = Flipped(Decoupled(new AcStrategyCandidateCostInput(coefficientBits)))
@@ -154,12 +162,12 @@ class AcStrategyCandidateCostEvaluator(coefficientBits: Int = 32) extends Module
   )
   val coefficient = latched.coefficients(channel)(coefficientIndex)
   val yCoefficient = latched.coefficients(1)(coefficientIndex)
-  val coefficientQ28 = coefficient.pad(64) << FractionBits
-  val predictionQ28 = yCoefficient.pad(64) * cflFactorQ16.pad(64)
-  val residualQ28 = coefficientQ28 -& predictionQ28
+  val coefficientWithCflFraction = coefficient.pad(64) << FractionBits
+  val predictionWithCflFraction = yCoefficient.pad(64) * cflFactorQ16.pad(64)
+  val residualWithCflFraction = coefficientWithCflFraction -& predictionWithCflFraction
   val valueProduct =
-    residualQ28 * inverseWeight.zext * latched.quantQ24.zext
-  val valueQ16 = roundShiftSigned(valueProduct, 52)
+    residualWithCflFraction * inverseWeight.zext * latched.quantQ24.zext
+  val valueQ16 = roundShiftSigned(valueProduct, coefficientFractionBits + 40)
   val valueMagnitude = Mux(valueQ16 < 0.S, -valueQ16, valueQ16).asUInt
   val integerMagnitude = valueMagnitude >> FractionBits
   val fraction = valueMagnitude(FractionBits - 1, 0)

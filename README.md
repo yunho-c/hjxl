@@ -175,16 +175,20 @@ source through strategy selection, variable-shape quantization, and combined
 DC/strategy/metadata/AC logical tokens. This heavy path is selected only by
 the compile-time `HjxlCoreTraceRoute.AqVarDctTokens`; the default shell and the
 existing all-DCT `TraceStage.AcTokens` focused route are unchanged. The
-live route keeps the Q12 XYB/DCT seam for AQ and strategy scoring, but carries
-an aligned Q16 XYB/DCT sideband from the same conversion through selected-owner CFL fitting and
-quantization so low-frequency rounding is not prematurely lost. A 16x16
-exact-Q8 impulse fixture selects one horizontal rectangle plus two DCT owners,
-produces nonzero DC and AC values, and matches libjxl-tiny's complete
-DC/strategy/metadata/AC arrays and assembled codestream byte-for-byte under
-periodic output stalls. This is one narrow nonzero proof, not broad image
-parity: known near-symmetric Q12 strategy-scoring disagreements remain, entropy
-coding and final bitstream assembly remain host responsibilities, and
-synthesis/timing/resource fit is still unproven.
+live route keeps the established Q12 XYB seam for AQ, but carries an aligned
+Q16 XYB/DCT sideband from the same conversion through CFL fitting, strategy
+scoring, selected-owner rectangular transforms, and quantization so
+low-frequency rounding is not prematurely lost. The DCT-8/DCT-16 kernels and
+candidate scorer retain their Q12 defaults for prepared users and accept an
+explicit coefficient precision for this focused route. Two 16x16 signed-Q8
+fixtures now prove the complete nonzero path under periodic output stalls: an
+impulse selects `[5, 4, 1, 1]` and matches a 197-byte codestream, while a
+gradient selects `[1, 1, 5, 4]` and matches a 230-byte codestream. Every native
+DC/strategy/metadata/AC row is exact in both cases. This is still narrow image
+parity: the checkerboard audit now agrees on strategy and DC but differs by one
+CFL-map unit, a random fixture first differs in DC quantization, entropy coding
+and assembly remain host responsibilities, and synthesis/timing/resource fit
+is unproven.
 `tools/hjxl_reference.py --scaled-dct-q12-csv ...` exports independent signed
 transform fixtures plus the exact fixed transform result;
 `--ac-strategy-cost-q16-csv ...` exports the prepared candidate-cost seam,
@@ -211,7 +215,10 @@ are the focused composition oracle, not broad nonzero RGB parity evidence.
 native searched-strategy arrays for one at-most-256x256 AC group.
 `--var-dct-frame-bin ...` and `--var-dct-codestream-bin ...` assemble those
 same arrays through libjxl-tiny's frame/bitstream boundary. These flags are the
-end-to-end oracle for the nonzero RGB impulse regression.
+end-to-end oracle for the nonzero RGB regressions. Pass
+`--quantize-input-q8` when comparing an RGB fixture with RTL so native
+libjxl-tiny consumes the same rounded host-input samples instead of the
+pre-quantized generator values.
 Standalone fixed-point primitives also cover approximate RGB-to-XYB, 1D DCT-8,
 and the scaled 8x8 DCT block layout used by libjxl-tiny. The RGB-to-XYB primitive
 applies the signed matrix at Q26, clamps
@@ -1494,10 +1501,12 @@ narrow synchronous 64/128-coefficient owner store.
 for horizontal adaptive-reciprocal and vertical fixed-reciprocal ownership,
 then composes the prepared strategy search with variable-shape quantization and
 compares all 32 native token rows from the zero-coefficient 2x2 fixture under
-periodic output stalls. Its nonzero 16x16 impulse regression compares all four
-native token arrays and the final assembled codestream while stalling output,
-including nonzero DC and AC values. It also drives a live 16x16 RGB frame through every
-logical-token phase, checks unsupported-distance reporting, verifies packed
+periodic output stalls. Its nonzero signed-Q8 16x16 impulse and gradient
+regressions compare all four native token arrays and the final 197-byte and
+230-byte assembled codestreams while stalling output, including nonzero DC and
+AC values. The reference fixtures are explicitly rounded onto the Q8 host
+input grid. The suite also drives a live 16x16 RGB frame through every logical-
+token phase, checks unsupported-distance reporting, verifies packed
 mixed-stage AXI output and final-only TLAST on an 8x8 frame, and requires an
 immediate assertion for an unsupported first-block strategy. The companion
 elaboration spec plus the core, AXI-stream, AXI-Lite, and discovery regressions
@@ -1523,10 +1532,11 @@ the generated token arrays back to `tools/hjxl_reference.py`, and checks that
 the assembled frame and codestream bytes match the direct libjxl-tiny
 fixed-token oracle. It also checks `tools/hjxl_trace_to_codestream.py`, the
 one-step StageTrace-to-byte assembler, against the same token arrays and byte
-oracle. The full RGB-input token schedulers still depend on approximate
-fixed-point RGB/XYB/DCT and Q12 strategy scoring; the adaptive variable-shape
-route now establishes one exact nonzero RGB-to-codestream fixture, not broad
-image parity.
+oracle. The full RGB-input token schedulers still depend on approximate fixed-
+point RGB/XYB/AQ arithmetic; the adaptive variable-shape route now establishes
+two exact nonzero RGB-to-codestream fixtures, not broad image parity. The
+current checkerboard audit first differs by one CFL-map unit and the
+deterministic random audit first differs in DC tokens.
 
 ## ABI generation
 

@@ -11,7 +11,10 @@ import chisel3.util._
   * 1/8 scale, transform rows of that intermediate with another 1/8 scale, and
   * emit the transposed canonical coefficient layout used by quantization.
   */
-class Dct8x8Approx(c: HjxlConfig = HjxlConfig()) extends Module {
+class Dct8x8Approx(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Module {
   private val blockDim = HjxlConstants.BlockDim
   private val blockSize = blockDim * blockDim
 
@@ -28,7 +31,12 @@ class Dct8x8Approx(c: HjxlConfig = HjxlConfig()) extends Module {
   val inputValues = (0 until blockSize).map(i => io.input.bits(i))
 
   val columnDct = Seq.tabulate(blockDim) { x =>
-    Dct8Approx.dct8((0 until blockDim).map(y => at(inputValues, y, x)), c.traceValueBits)
+    Dct8Approx
+      .dct8(
+        (0 until blockDim).map(y => at(inputValues, y, x)),
+        c.traceValueBits,
+        coefficientFractionBits
+      )
       .map(scaleByBlock)
   }
   val columnMajorIntermediate = Seq.tabulate(blockSize) { i =>
@@ -38,7 +46,12 @@ class Dct8x8Approx(c: HjxlConfig = HjxlConfig()) extends Module {
   }
 
   val rowDct = Seq.tabulate(blockDim) { y =>
-    Dct8Approx.dct8((0 until blockDim).map(x => at(columnMajorIntermediate, y, x)), c.traceValueBits)
+    Dct8Approx
+      .dct8(
+        (0 until blockDim).map(x => at(columnMajorIntermediate, y, x)),
+        c.traceValueBits,
+        coefficientFractionBits
+      )
       .map(scaleByBlock)
   }
 

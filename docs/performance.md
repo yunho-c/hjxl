@@ -119,3 +119,22 @@ timing measurements. Before making RGB throughput claims, add a deterministic
 phase/cycle regression for sparse and dense multi-block frames and then obtain
 Vivado utilization and timing evidence; the prepared-DCT numbers must not be
 used as a proxy for this substantially larger hierarchy.
+
+## Focused RGB VarDCT precision note — 2026-07-15
+
+The focused RGB variable-shape hierarchy now keeps its existing Q16 sideband
+through CFL fitting, candidate scoring, rectangular transforms, and
+quantization. Q12 prepared paths are unchanged, but the focused hierarchy's
+DCT multipliers use four additional fractional coefficient bits. This is a
+correctness change: the signed-Q8 gradient now matches every native logical
+token and its 230-byte codestream. It is not a timing-neutral claim; the wider
+constant products still require synthesis evidence.
+
+Fresh elaboration emits 64 SystemVerilog files/135,394 lines for
+`ElaborateAqVarDctQuantizeTokens` and 66 files/135,565 lines for
+`ElaborateAxiStreamCoreAqVarDctTokens`. Each hierarchy contains separate Q12
+and Q16 `Dct8x8Approx` specializations plus one candidate scorer and both
+rectangular transform shapes. The lower line totals than the earlier 160k-line
+snapshot also include subsequent frame-store ownership cleanups, so they must
+not be attributed solely to the precision change. File/line counts remain
+structural complexity indicators, not utilization, timing, or power evidence.

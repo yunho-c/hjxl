@@ -250,13 +250,16 @@ owned by the host tools for now.
   raw-quant-5 AC reciprocal, X/Y/B inverse DC factors, X quant-matrix
   multiplier, EPF iteration count, and the Q24 AQ scale/damping/inverse-global-
   scale triplet generated from the current libjxl-tiny Python formulas.
-- `Dct8Approx` is a standalone Q12 1D DCT-8 primitive matching libjxl-tiny's
-  recursive scaled-DCT structure within fixed-point tolerance. It is the shared
+- `Dct8Approx` is a standalone fixed-point 1D DCT-8 primitive matching
+  libjxl-tiny's recursive scaled-DCT structure. Its Q12 coefficient constants
+  remain the default; the focused RGB VarDCT route selects Q16 constants to
+  retain the precision of its existing Q16 XYB sideband. It is the shared
   kernel for the current 8x8 and rectangular transform stages.
 - `Dct8x8Approx` composes the 1D kernel into libjxl-tiny's scaled 8x8 DCT
   coefficient layout. It applies the 1/8 scale after each dimension and emits
   the transposed canonical order consumed by later quantization work.
-- `Dct16Approx` extends the same recursive Q12 kernel to 16 samples.
+- `Dct16Approx` extends the same precision-parameterized recursive kernel to 16
+  samples.
   `Dct16x8Approx` and `Dct8x16Approx` apply the correct 1/16 and 1/8
   per-dimension scales and emit libjxl-tiny's canonical 8x16 coefficient
   layouts. The vertical transform is intentionally transposed; the horizontal
@@ -268,13 +271,13 @@ owned by the host tools for now.
   tie selection, strict subregion replacement, and raster first/continuation
   encoding. It accepts already-scaled unsigned candidate costs.
 - `AcStrategyCandidateCostEvaluator` is the prepared scoring boundary upstream
-  of that selector. It consumes canonical Q12 coefficients plus the maximum
-  Q24 AQ and Q16 mask over the candidate, signed tile CFL, and supported Q8
-  distance; one coefficient is evaluated per cycle. Its raw and outer-scaled
-  Q16 outputs match the host integer model exactly. The integer model preserves
-  the reference formula and nearest-even coefficient rounding, but remains
-  approximate relative to float libjxl-tiny because the transform input seam is
-  Q12. Unsupported distances fall back to distance 1 with an explicit flag.
+  of that selector. It consumes canonical coefficients at an explicit common
+  fractional precision plus the maximum Q24 AQ and Q16 mask over the candidate,
+  signed tile CFL, and supported Q8 distance; one coefficient is evaluated per
+  cycle. Its raw and outer-scaled Q16 outputs match the host integer model
+  exactly. Prepared users default to Q12, while the focused RGB VarDCT route
+  scores its Q16 DCT/rectangular values directly. Unsupported distances fall
+  back to distance 1 with an explicit flag.
   Its one-coefficient-per-cycle control does not prove that the wide residual/
   inverse/AQ product and two combinational square roots will meet FPGA timing.
 - `PreparedAcStrategy2x2Selector` sequences the reference's eight-candidate
@@ -452,10 +455,12 @@ wrappers.
   metadata-only hierarchies from elaborating unused divider hardware. The
   focused RGB VarDCT build also captures exact Q12 and Q16 results from one
   cube-root lookup path, stores one optional Q16 frame at the final-AQ owner,
-  and emits Q16 ordinary-DCT values for selected-owner CFL fitting and
-  quantization. A one-bit correction ROM preserves the original Q12 lookup
-  contract without a second full converter; older all-DCT routes do not
-  elaborate the Q16 sideband or frame store.
+  and emits Q16 ordinary-DCT values for CFL fitting, strategy scoring,
+  selected-owner transforms, and quantization. Its dedicated Q16 DCT constants
+  avoid throwing away that sideband's extra precision. A one-bit correction
+  ROM preserves the original Q12 lookup contract without a second full
+  converter; older all-DCT routes do not elaborate the Q16 sideband or frame
+  store.
   `FrameAqDctOnlyBlockStage` enriches the same record for quantization:
   adaptive blocks compute `round(2^32 / (scaleQ16 * rawQuant))` with the
   33-cycle `AdaptiveInvQacQ16` restoring divider; zero divisors saturate and no
@@ -873,10 +878,10 @@ wrappers.
   route therefore uses one RGB-to-XYB conversion and three ordinary DCTs.
   `FrameAqAdjustedRawQuantTraceStage` exposes the sideband as raw-quant traces.
   The selected-owner composition can optionally buffer a higher-precision
-  coefficient sideband for CFL fitting and quantization while the scorer keeps
-  the established Q12 inputs and decisions. The live VarDCT route obtains both
-  precisions from one converter and uses Q16 downstream; prepared Q12 strategy
-  users retain their original interface.
+  coefficient sideband for CFL fitting, candidate scoring, and quantization.
+  The live VarDCT route obtains both precisions from one converter and uses Q16
+  throughout those downstream operations; prepared Q12 strategy users retain
+  their original interface and decisions.
 - `tools/hjxl_reference.py --scaled-dct-q12-csv ...` writes signed Q12 DCT-16,
   16x8, and 8x16 inputs beside independent libjxl-tiny coefficients and the
   exact integer transform model. The axis ramps guard the two different
@@ -895,8 +900,11 @@ wrappers.
   `--var-dct-ac-metadata-tokens-npy ...`, `--var-dct-ac-tokens-npy ...`, and
   `--var-dct-ac-strategy-npy ...` export native searched-VarDCT arrays for one
   AC group. `--var-dct-frame-bin ...` and `--var-dct-codestream-bin ...`
-  serialize those same arrays. The exact-Q8 16x16 impulse regression uses this
-  seam to prove nonzero DC/AC RTL traces and final codestream parity.
+  serialize those same arrays. `--quantize-input-q8` first rounds the generated
+  fixture onto the signed-Q8 RTL input grid so the native oracle and hardware
+  consume identical samples. The 16x16 impulse and gradient regressions use
+  this seam to prove exact nonzero DC/strategy/metadata/AC traces and 197-byte
+  and 230-byte codestream parity respectively.
 - `tools/hjxl_reference.py --default-ac-strategy-npy ...` writes the matching
   default DCT-first strategy map.
 - `tools/hjxl_reference.py --raw-quant-field-npy ...`,

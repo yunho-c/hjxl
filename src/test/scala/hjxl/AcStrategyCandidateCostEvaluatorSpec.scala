@@ -288,6 +288,27 @@ class AcStrategyCandidateCostEvaluatorSpec
     }
   }
 
+  "the evaluator preserves Q12 costs when equivalent coefficients use Q16" in {
+    val current = fixture("gradient", 1.0)
+    simulate(
+      new AcStrategyCandidateCostEvaluator(
+        coefficientBits = 32,
+        coefficientFractionBits = 16
+      )
+    ) { dut =>
+      current.candidates.foreach { candidate =>
+        val q16Candidate = candidate.copy(
+          coefficients = candidate.coefficients.map(_.map(_ << 4))
+        )
+        val (estimate, scaled) = evaluate(dut, q16Candidate)
+        withClue(s"Q16-scaled candidate ${candidate.index}: ") {
+          estimate mustBe candidate.estimateQ16
+          scaled mustBe candidate.scaledCostQ16
+        }
+      }
+    }
+  }
+
   "the distance-cost lookup covers every supported point and the distance-1 fallback" in {
     simulate(new AcStrategyCostParamsLookup) { dut =>
       AcStrategyCostTables.DistanceEntries.foreach { entry =>

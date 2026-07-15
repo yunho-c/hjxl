@@ -97,10 +97,12 @@ class PreparedAcStrategySelectedCell(
   * The scheduler first buffers raster blocks, estimates one CFL pair per
   * 64x64 tile from ordinary-DCT coefficients, then visits tile-local 2x2 block
   * regions in libjxl-tiny order. Every region feeds four 8x8, two 16x8, and two
-  * 8x16 candidates through `PreparedAcStrategy2x2Selector`. Incomplete rows or
-  * columns at tile edges remain ordinary DCT, matching the reference loop. A
-  * final raster pass raises both raw-quant bytes in each selected rectangle to
-  * their maximum and emits that byte beside the strategy trace.
+  * 8x16 candidates through `PreparedAcStrategy2x2Selector`. When a higher
+  * precision sideband is present, CFL, candidate scoring, and selected-owner
+  * quantization all consume that common scale. Incomplete rows or columns at
+  * tile edges remain ordinary DCT, matching the reference loop. A final raster
+  * pass raises both raw-quant bytes in each selected rectangle to their maximum
+  * and emits that byte beside the strategy trace.
   */
 class FramePreparedAcStrategyTraceStage(
     c: HjxlConfig = HjxlConfig(),
@@ -421,8 +423,12 @@ class FramePreparedAcStrategyTraceStage(
   val horizontalLeftBlock = Mux(candidateIndex(0), bottomLeftBlock, topLeftBlock)
   val horizontalRightBlock = Mux(candidateIndex(0), bottomRightBlock, topRightBlock)
 
-  val verticalDct = Seq.fill(3)(Module(new Dct16x8Approx(c)))
-  val horizontalDct = Seq.fill(3)(Module(new Dct8x16Approx(c)))
+  val verticalDct = Seq.fill(3)(
+    Module(new Dct16x8Approx(c, quantizationCoefficientFractionBits))
+  )
+  val horizontalDct = Seq.fill(3)(
+    Module(new Dct8x16Approx(c, quantizationCoefficientFractionBits))
+  )
   for (channel <- 0 until 3) {
     verticalDct(channel).io.input.valid :=
       state === feedCandidates && candidateIndex >= 4.U && candidateIndex < 6.U
@@ -435,7 +441,7 @@ class FramePreparedAcStrategyTraceStage(
         if (verticalY < 8) verticalTopBlock else verticalBottomBlock
       val verticalSourceSample = (verticalY % 8) * 8 + verticalX
       verticalDct(channel).io.input.bits(sample) :=
-        storedXyb(verticalSourceBlock, channel, verticalSourceSample)
+        storedQuantizationXyb(verticalSourceBlock, channel, verticalSourceSample)
 
       val horizontalY = sample / 16
       val horizontalX = sample % 16
@@ -443,11 +449,13 @@ class FramePreparedAcStrategyTraceStage(
         if (horizontalX < 8) horizontalLeftBlock else horizontalRightBlock
       val horizontalSourceSample = horizontalY * 8 + (horizontalX % 8)
       horizontalDct(channel).io.input.bits(sample) :=
-        storedXyb(horizontalSourceBlock, channel, horizontalSourceSample)
+        storedQuantizationXyb(horizontalSourceBlock, channel, horizontalSourceSample)
     }
   }
 
-  val selector = Module(new PreparedAcStrategy2x2Selector(c.traceValueBits))
+  val selector = Module(
+    new PreparedAcStrategy2x2Selector(c.traceValueBits, quantizationCoefficientFractionBits)
+  )
   val verticalValid = verticalDct.map(_.io.output.valid).reduce(_ && _)
   val horizontalValid = horizontalDct.map(_.io.output.valid).reduce(_ && _)
   val selectedCoefficientsValid = Mux(
@@ -494,7 +502,7 @@ class FramePreparedAcStrategyTraceStage(
   for (channel <- 0 until 3; coefficient <- 0 until 128) {
     val dctValue =
       if (coefficient < blockSize) {
-        storedDct(dctCandidateBlock, channel, coefficient.U)
+        storedQuantizationDct(dctCandidateBlock, channel, coefficient.U)
       } else {
         0.S(c.traceValueBits.W)
       }

@@ -70,6 +70,17 @@ def generate_fixture(width: int, height: int, pattern: str):
     raise ValueError(f"unknown pattern: {pattern}")
 
 
+def quantize_rgb_q8(image):
+    """Round a linear-RGB fixture onto the RTL host input's signed-Q8 grid."""
+    np = _load_numpy()
+    rgb_q8 = np.rint(np.asarray(image, dtype=np.float64) * (1 << 8)).astype(np.int64)
+    if np.any(rgb_q8 < np.iinfo(np.int16).min) or np.any(
+        rgb_q8 > np.iinfo(np.int16).max
+    ):
+        raise ValueError("RGB Q8 fixture does not fit signed 16-bit")
+    return (rgb_q8.astype(np.float32) / np.float32(1 << 8)).astype(np.float32)
+
+
 def write_pfm(path: Path, image) -> None:
     np = _load_numpy()
     if image.shape[0] != 3:
@@ -108,10 +119,8 @@ def xyb_from_python_port(image):
 def write_xyb_q12_csv(path: Path, image) -> None:
     """Write the signed-Q8 RGB to signed-Q12 XYB hardware oracle seam."""
     np = _load_numpy()
-    rgb_q8 = np.rint(np.asarray(image, dtype=np.float64) * (1 << 8)).astype(np.int64)
-    if np.any(rgb_q8 < np.iinfo(np.int16).min) or np.any(rgb_q8 > np.iinfo(np.int16).max):
-        raise ValueError("RGB Q8 fixture does not fit signed 16-bit")
-    quantized_rgb = (rgb_q8.astype(np.float32) / np.float32(1 << 8)).astype(np.float32)
+    quantized_rgb = quantize_rgb_q8(image)
+    rgb_q8 = np.rint(quantized_rgb.astype(np.float64) * (1 << 8)).astype(np.int64)
     padded_rgb = padded_input_from_python_port(quantized_rgb)
     xyb_q12 = np.rint(xyb_from_python_port(quantized_rgb) * np.float32(1 << 12)).astype(
         np.int64
@@ -2626,8 +2635,10 @@ def fixed_rectangular_dct_q12(samples_q12):
     return np.asarray(canonical, dtype=np.int64)
 
 
-def fixed_cfl_multipliers_from_dct_q12(block_coefficients_q12) -> tuple[int, int]:
-    """Model the Q12-to-Q16 tile estimator used by the frame scheduler."""
+def fixed_cfl_multipliers_from_dct(
+    block_coefficients, coefficient_fraction_bits: int = 12
+) -> tuple[int, int]:
+    """Model the fixed-point tile estimator used by the frame scheduler."""
     np = _load_numpy()
     root = _libjxl_tiny_root()
     _add_libjxl_tiny(root)
@@ -2636,13 +2647,19 @@ def fixed_cfl_multipliers_from_dct_q12(block_coefficients_q12) -> tuple[int, int
         INV_MATRIX_X,
     )
 
-    blocks = np.asarray(block_coefficients_q12, dtype=np.int64)
+    if not 0 < coefficient_fraction_bits <= 30:
+        raise ValueError("coefficient fractional precision must be in 1..30")
+    blocks = np.asarray(block_coefficients, dtype=np.int64)
     if blocks.ndim != 3 or blocks.shape[1:] != (3, 64):
         raise ValueError("fixed CFL input must have shape (blocks, 3, 64)")
     weights = (
         np.rint(INV_MATRIX_X * np.float32(1 << 16)).astype(np.int64),
         np.rint(INV_MATRIX_B * np.float32(1 << 16)).astype(np.int64),
     )
+
+    def to_q16(value: int) -> int:
+        shift = 16 - coefficient_fraction_bits
+        return int(value) << shift if shift >= 0 else int(value) >> -shift
 
     def estimate(use_b: bool) -> int:
         matrix = weights[1 if use_b else 0]
@@ -2652,11 +2669,9 @@ def fixed_cfl_multipliers_from_dct_q12(block_coefficients_q12) -> tuple[int, int
         for block in blocks:
             for coefficient in range(64):
                 weight = int(matrix[coefficient])
-                model_q16 = ((int(block[1, coefficient]) << 4) * weight) >> 16
+                model_q16 = (to_q16(block[1, coefficient]) * weight) >> 16
                 signal_channel = 2 if use_b else 0
-                signal_q16 = (
-                    (int(block[signal_channel, coefficient]) << 4) * weight
-                ) >> 16
+                signal_q16 = (to_q16(block[signal_channel, coefficient]) * weight) >> 16
                 a_q16 = _round_divide_signed(model_q16, 84)
                 b_q16 = (model_q16 if use_b else 0) - signal_q16
                 sum_aa += (a_q16 * a_q16) >> 16
@@ -2668,6 +2683,11 @@ def fixed_cfl_multipliers_from_dct_q12(block_coefficients_q12) -> tuple[int, int
         return max(-128, min(127, rounded))
 
     return estimate(False), estimate(True)
+
+
+def fixed_cfl_multipliers_from_dct_q12(block_coefficients_q12) -> tuple[int, int]:
+    """Compatibility wrapper for the Q12 prepared-frame estimator model."""
+    return fixed_cfl_multipliers_from_dct(block_coefficients_q12, 12)
 
 
 def _round_divide_signed(value: int, denominator: int) -> int:
@@ -2688,14 +2708,15 @@ def _ceil_log2_nonzero(value: int) -> int:
 
 def fixed_ac_strategy_candidate_cost_q16(
     strategy: int,
-    coefficients_q12,
+    coefficients,
     quant_q24: int,
     mask_q16: int,
     distance_q8: int,
     ytox: int,
     ytob: int,
+    coefficient_fraction_bits: int = 12,
 ) -> tuple[int, int]:
-    """Evaluate the integer model used by `AcStrategyCandidateCostEvaluator`."""
+    """Evaluate the scale-aware `AcStrategyCandidateCostEvaluator` model."""
     np = _load_numpy()
     root = _libjxl_tiny_root()
     _add_libjxl_tiny(root)
@@ -2709,10 +2730,12 @@ def fixed_ac_strategy_candidate_cost_q16(
     if strategy not in (DCT, DCT16X8, DCT8X16):
         raise ValueError(f"unsupported AC strategy: {strategy}")
     coefficient_count = 64 if strategy == DCT else 128
-    coefficients = np.asarray(coefficients_q12, dtype=np.int64)
+    if not 0 < coefficient_fraction_bits <= 30:
+        raise ValueError("coefficient fractional precision must be in 1..30")
+    coefficients = np.asarray(coefficients, dtype=np.int64)
     if coefficients.shape != (3, coefficient_count):
         raise ValueError(
-            f"strategy {strategy} requires Q12 coefficients shaped "
+            f"strategy {strategy} requires coefficients shaped "
             f"(3, {coefficient_count}), got {coefficients.shape}"
         )
     if distance_q8 not in AC_STRATEGY_COST_PARAMS_Q16:
@@ -2741,15 +2764,15 @@ def fixed_ac_strategy_candidate_cost_q16(
     for channel in range(3):
         nonzeros = 0
         for coefficient in range(coefficient_count):
-            residual_q28 = (
+            residual_with_cfl_fraction = (
                 int(coefficients[channel, coefficient]) * scale
                 - int(coefficients[1, coefficient]) * cfl_factor_q16[channel]
             )
             value_q16 = _round_shift_signed(
-                residual_q28
+                residual_with_cfl_fraction
                 * int(inverse_q16[channel][coefficient])
                 * int(quant_q24),
-                52,
+                coefficient_fraction_bits + 40,
             )
             magnitude = abs(value_q16)
             integer = magnitude >> 16
@@ -4499,6 +4522,11 @@ def main() -> int:
     )
     parser.add_argument("--distance", type=float, default=1.0)
     parser.add_argument(
+        "--quantize-input-q8",
+        action="store_true",
+        help="round the generated RGB fixture to the RTL host input's Q8 grid",
+    )
+    parser.add_argument(
         "--fixed-raw-quant",
         type=int,
         default=5,
@@ -4807,6 +4835,8 @@ def main() -> int:
             raise SystemExit(f"{name} must fit in signed 8-bit")
 
     image = generate_fixture(args.width, args.height, args.pattern)
+    if args.quantize_input_q8:
+        image = quantize_rgb_q8(image)
     quant_metadata = None
     dct_only_quant_outputs = None
     dct_only_token_outputs = None

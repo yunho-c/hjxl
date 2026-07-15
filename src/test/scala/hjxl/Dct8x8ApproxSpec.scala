@@ -47,8 +47,8 @@ class Dct8x8ApproxSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
-  private def scaledDct8x8(values: Seq[Int]): Seq[Int] = {
-    val block = values.map(_.toDouble / scale)
+  private def scaledDct8x8(values: Seq[Int], valueScale: Int = scale): Seq[Int] = {
+    val block = values.map(_.toDouble / valueScale)
     def at(y: Int, x: Int): Double = block(y * blockDim + x)
 
     val columnPass = Array.ofDim[Double](blockDim, blockDim)
@@ -67,11 +67,16 @@ class Dct8x8ApproxSpec extends AnyFreeSpec with Matchers with ChiselSim {
       }
     }
 
-    coeff.flatten.toSeq.map(toQ)
+    coeff.flatten.toSeq.map(value => math.round(value * valueScale).toInt)
   }
 
-  private def expectBlock(dut: Dct8x8Approx, values: Seq[Int]): Unit = {
-    val expected = scaledDct8x8(values)
+  private def expectBlock(
+      dut: Dct8x8Approx,
+      values: Seq[Int],
+      valueScale: Int = scale,
+      tolerance: Int = 64
+  ): Unit = {
+    val expected = scaledDct8x8(values, valueScale)
     dut.io.input.valid.poke(true.B)
     dut.io.output.ready.poke(true.B)
     for (i <- 0 until blockSize) {
@@ -80,7 +85,7 @@ class Dct8x8ApproxSpec extends AnyFreeSpec with Matchers with ChiselSim {
     dut.io.output.valid.expect(true.B)
     for (i <- 0 until blockSize) {
       val actual = dut.io.output.bits(i).peekValue().asBigInt.toInt
-      math.abs(actual - expected(i)) must be <= 64
+      math.abs(actual - expected(i)) must be <= tolerance
     }
     dut.clock.step()
   }
@@ -90,6 +95,26 @@ class Dct8x8ApproxSpec extends AnyFreeSpec with Matchers with ChiselSim {
       expectBlock(dut, Seq.fill(blockSize)(toQ(1.0)))
       expectBlock(dut, Seq.tabulate(blockSize)(i => toQ((i % blockDim).toDouble / blockDim)))
       expectBlock(dut, Seq.tabulate(blockSize)(i => (i % 11 - 5) * 73))
+    }
+  }
+
+  "the Q16 transform constants retain selected-owner coefficient precision" in {
+    val q16Scale = 1 << 16
+    def toQ16(value: Double): Int = math.round(value * q16Scale).toInt
+    simulate(new Dct8x8Approx(coefficientFractionBits = 16)) { dut =>
+      expectBlock(dut, Seq.fill(blockSize)(toQ16(1.0)), q16Scale, tolerance = 4)
+      expectBlock(
+        dut,
+        Seq.tabulate(blockSize)(index => toQ16((index % blockDim).toDouble / blockDim)),
+        q16Scale,
+        tolerance = 4
+      )
+      expectBlock(
+        dut,
+        Seq.tabulate(blockSize)(index => (index % 11 - 5) * 73),
+        q16Scale,
+        tolerance = 4
+      )
     }
   }
 }

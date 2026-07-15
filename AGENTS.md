@@ -256,12 +256,15 @@ Read these libjxl-tiny files before making architectural changes:
   the distance-1 fallback before color/final arithmetic, and retains the X/Y/B
   Q12 block plus all quantization scalars. `TraceStage.AqFinalMap` is the
   completed unsigned-Q24 diagnostic seam.
-- `Dct8Approx` is the shared standalone Q12 1D DCT-8 primitive for the current
-  8x8 and rectangular transform stages.
+- `Dct8Approx` is the shared standalone fixed-point 1D DCT-8 primitive for the
+  current 8x8 and rectangular transform stages. Q12 transform constants remain
+  the default; the focused RGB VarDCT route selects Q16 constants so its Q16
+  sideband is not rounded through a Q12 transform.
 - `Dct8x8Approx` is the first block-level transform primitive. It uses
   `Dct8Approx` for both dimensions, applies libjxl-tiny's per-dimension 1/8
   scale, and emits the scaled 8x8 coefficient layout used before quantization.
-- `Dct16Approx` is the matching recursive Q12 16-point kernel.
+- `Dct16Approx` is the matching precision-parameterized recursive 16-point
+  kernel.
   `Dct16x8Approx` and `Dct8x16Approx` implement libjxl-tiny's two rectangular
   transforms with their intentionally different canonical 8x16 layouts. Reuse
   them for AC-strategy scoring and prepared rectangular quantization; do not
@@ -302,35 +305,43 @@ Read these libjxl-tiny files before making architectural changes:
   first-block-owned prepared ABI. `FramePreparedAcStrategyVarDctQuantizeTokenTraceStage`
   composes prepared strategy search, ownership conversion, variable-shape
   quantization, and logical tokens. `FrameAqVarDctQuantizeTokenTraceStage`
-  supplies that path from the shared RGB AQ/DCT source. It retains Q12 for AQ
-  and strategy scoring, but its optional Q16 XYB/DCT sideband must feed CFL
-  estimation and selected-owner quantization; do not collapse that sideband
-  back to Q12, because low-frequency rounding can change DC tokens. The focused
-  path must use the shared converter's exact-Q12 tap plus its Q16 primary output
-  and one final-AQ-owned Q16 frame store, not parallel RGB converters. Use
+  supplies that path from the shared RGB AQ/DCT source. It retains Q12 for AQ,
+  but its optional Q16 XYB/DCT sideband must feed CFL estimation, all eight
+  strategy candidates, selected-owner rectangular transforms, and
+  quantization; do not collapse that sideband back to Q12, because transform
+  choice and low-frequency rounding can change tokens. The focused path must
+  use the shared converter's exact-Q12 tap plus its Q16 primary output and one
+  final-AQ-owned Q16 frame store, not parallel RGB converters. Use
   `tools/hjxl_reference.py --strategy-var-dct-zero-fixture-dir ...` for the
   exact 2x2 zero-coefficient integration oracle. It proves ownership, adjusted
   bytes, continuation suppression, and native token order. Use the
   `--var-dct-*-tokens-npy`, `--var-dct-ac-strategy-npy`, and
   `--var-dct-codestream-bin` outputs for one-group searched-strategy end-to-end
-  comparisons. The exact-Q8 16x16 impulse is the current nonzero DC/AC and
-  codestream regression; it is not broad RGB parity evidence.
+  comparisons. Pass `--quantize-input-q8` so the native reference consumes the
+  same host-input samples as RTL. Exact-Q8 16x16 impulse and gradient fixtures
+  are the current nonzero DC/AC and 197-byte/230-byte codestream regressions;
+  they are not broad RGB parity evidence. Checkerboard currently differs first
+  by one Y-to-X CFL unit, while the deterministic random fixture differs first
+  in DC tokens.
 - `AcStrategyDecisionSelector` is the exact decision-only tail for one complete
   2x2 block region. It consumes common-scale nonnegative candidate costs,
   chooses horizontal on aggregate ties, replaces a rectangle only on a strict
   win, and emits raster `(rawStrategy << 1) | isFirstBlock` values. It does not
   calculate entropy costs or schedule a frame.
 - `AcStrategyCandidateCostEvaluator` is the prepared fixed-point scoring seam.
-  It consumes canonical Q12 X/Y/B coefficients for one 8x8, 16x8, or 8x16
-  candidate plus Q24 AQ, Q16 strategy mask, Q8 distance, and signed CFL values;
-  it walks one coefficient per cycle and emits both the raw Q16 entropy/loss
-  estimate and distance-scaled Q16 cost. Unsupported distances use distance 1
-  and are reported, while extreme arithmetic saturates with an overflow flag.
+  It consumes canonical X/Y/B coefficients at an explicit common fractional
+  precision for one 8x8, 16x8, or 8x16 candidate plus Q24 AQ, Q16 strategy
+  mask, Q8 distance, and signed CFL values; it walks one coefficient per cycle
+  and emits both the raw Q16 entropy/loss estimate and distance-scaled Q16 cost.
+  Prepared users default to Q12 and the focused RGB VarDCT route uses Q16.
+  Unsupported distances use distance 1 and are reported, while extreme
+  arithmetic saturates with an overflow flag.
   The integer model is exact against
   `tools/hjxl_reference.py --ac-strategy-cost-q16-csv ...`; that artifact also
   records the exact scheduler decision after fixed rectangular transforms and
-  fixed CFL. The scorer remains an approximation of the float reference after
-  Q12 coefficient rounding.
+  fixed CFL. The prior Q12 30-region audit matches 27 float decisions; the Q16
+  audit matches 28, with only the symmetric checkerboard cases at distances 4
+  and 8 remaining.
 - `PreparedAcStrategy2x2Selector` accepts eight prepared candidates in strict
   order: four raster 8x8 blocks, left/right 16x8 rectangles, then top/bottom
   8x16 rectangles. It retains their 64-bit costs, feeds
@@ -883,8 +894,9 @@ Read these libjxl-tiny files before making architectural changes:
   shapes, one CFL estimator, and no adaptive reciprocal quantizer.
 - The adaptive variable-shape token hierarchy must also contain exactly one
   shared RGB AQ/DCT source and one selected-cell adapter. Its zero-coefficient
-  2x2 native-token oracle, live 16x16 RGB phase coverage, and focused 8x8 AXI
-  TLAST test establish functional wiring. They do not establish nonzero
+  2x2 native-token oracle, exact nonzero 16x16 impulse/gradient codestreams,
+  live RGB phase coverage, and focused 8x8 AXI TLAST test establish functional
+  wiring and two narrow end-to-end cases. They do not establish broad
   RGB-to-codestream parity, entropy/assembly hardware, synthesis feasibility,
   timing closure, or KV260 execution.
 - Use `sbt 'runMain hjxl.ElaborateAqAdjustedRawQuant'` for the standalone

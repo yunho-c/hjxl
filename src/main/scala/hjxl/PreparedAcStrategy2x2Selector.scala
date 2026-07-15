@@ -16,18 +16,24 @@ class PreparedAcStrategy2x2Output extends Bundle {
   *
   * Inputs arrive in the same order used by libjxl-tiny's search: four raster
   * 8x8 candidates, left/right 16x8 candidates, then top/bottom 8x16
-  * candidates. Each record carries canonical Q12 coefficients and its covered
-  * AQ/mask maxima. The module retains all eight scaled costs, applies the exact
-  * orientation/subregion decision, and holds the result under backpressure.
+  * candidates. Each record carries canonical fixed-point coefficients and its
+  * covered AQ/mask maxima. The module retains all eight scaled costs, applies
+  * the exact orientation/subregion decision, and holds the result under
+  * backpressure.
   */
-class PreparedAcStrategy2x2Selector(coefficientBits: Int = 32) extends Module {
+class PreparedAcStrategy2x2Selector(
+    coefficientBits: Int = 32,
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Module {
   val io = IO(new Bundle {
     val input = Flipped(Decoupled(new AcStrategyCandidateCostInput(coefficientBits)))
     val output = Decoupled(new PreparedAcStrategy2x2Output)
     val busy = Output(Bool())
   })
 
-  val evaluator = Module(new AcStrategyCandidateCostEvaluator(coefficientBits))
+  val evaluator = Module(
+    new AcStrategyCandidateCostEvaluator(coefficientBits, coefficientFractionBits)
+  )
   val selector = Module(new AcStrategyDecisionSelector(costBits = 64))
 
   val candidateIndex = RegInit(0.U(3.W))

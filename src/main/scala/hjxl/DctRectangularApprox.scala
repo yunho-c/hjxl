@@ -16,7 +16,8 @@ import chisel3.util._
 class DctRectangularApprox(
     pixelRows: Int,
     pixelColumns: Int,
-    c: HjxlConfig = HjxlConfig()
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
 ) extends Module {
   require(
     (pixelRows == 16 && pixelColumns == 8) ||
@@ -33,8 +34,8 @@ class DctRectangularApprox(
 
   private def transform(values: Seq[SInt]): Seq[SInt] =
     values.length match {
-      case 8  => Dct8Approx.dct8(values, c.traceValueBits)
-      case 16 => Dct16Approx.dct16(values, c.traceValueBits)
+      case 8  => Dct8Approx.dct8(values, c.traceValueBits, coefficientFractionBits)
+      case 16 => Dct16Approx.dct16(values, c.traceValueBits, coefficientFractionBits)
       case length => throw new IllegalArgumentException(s"unsupported DCT dimension: $length")
     }
 
@@ -64,8 +65,12 @@ class DctRectangularApprox(
   }
 }
 
-class Dct16x8Approx(c: HjxlConfig = HjxlConfig())
-    extends DctRectangularApprox(16, 8, c)
+class Dct16x8Approx(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends DctRectangularApprox(16, 8, c, coefficientFractionBits)
 
-class Dct8x16Approx(c: HjxlConfig = HjxlConfig())
-    extends DctRectangularApprox(8, 16, c)
+class Dct8x16Approx(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends DctRectangularApprox(8, 16, c, coefficientFractionBits)

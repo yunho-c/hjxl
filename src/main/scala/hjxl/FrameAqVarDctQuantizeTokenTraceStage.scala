@@ -39,8 +39,12 @@ class AcStrategySelectedCellToVarDctOwnerStage(
   val isHorizontal = strategy === AcStrategyCode.Dct8x16.U
   val supportedStrategy = isDct || isVertical || isHorizontal
 
-  val verticalDct = Seq.fill(3)(Module(new Dct16x8Approx(c)))
-  val horizontalDct = Seq.fill(3)(Module(new Dct8x16Approx(c)))
+  val verticalDct = Seq.fill(3)(
+    Module(new Dct16x8Approx(c, coefficientFractionBits))
+  )
+  val horizontalDct = Seq.fill(3)(
+    Module(new Dct8x16Approx(c, coefficientFractionBits))
+  )
   for (channel <- 0 until 3) {
     verticalDct(channel).io.input.valid := io.input.valid && isFirst && isVertical
     horizontalDct(channel).io.input.valid := io.input.valid && isFirst && isHorizontal
