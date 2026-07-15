@@ -305,7 +305,9 @@ Read these libjxl-tiny files before making architectural changes:
   supplies that path from the shared RGB AQ/DCT source. It retains Q12 for AQ
   and strategy scoring, but its optional Q16 XYB/DCT sideband must feed CFL
   estimation and selected-owner quantization; do not collapse that sideband
-  back to Q12, because low-frequency rounding can change DC tokens. Use
+  back to Q12, because low-frequency rounding can change DC tokens. The focused
+  path must use the shared converter's exact-Q12 tap plus its Q16 primary output
+  and one final-AQ-owned Q16 frame store, not parallel RGB converters. Use
   `tools/hjxl_reference.py --strategy-var-dct-zero-fixture-dir ...` for the
   exact 2x2 zero-coefficient integration oracle. It proves ownership, adjusted
   bytes, continuation suppression, and native token order. Use the

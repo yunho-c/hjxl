@@ -365,13 +365,20 @@ class FramePreparedAqNonlinearMaskTraceStage(c: HjxlConfig = HjxlConfig()) exten
 /** RGB-connected `_compute_mask` path composed after the shared contrast and
   * fuzzy-erosion stages.
   */
-class FrameAqNonlinearMaskTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FrameAqNonlinearMaskTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    xybOutputFractionBits: Int = RgbToXybApprox.OutputFractionBits
+) extends Module {
   import AqNonlinearMaskFixedPoint.InputValueBits
 
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val xybAccepted = Output(Valid(new XybPixel(c)))
+    val quantizationXybAccepted =
+      if (xybOutputFractionBits > RgbToXybApprox.OutputFractionBits)
+        Some(Output(Valid(new XybPixel(c))))
+      else None
     val trace = Decoupled(new StageTrace(c))
     val strategyMaskQ16 = Output(UInt(AqStrategyMaskFixedPoint.ValueBits.W))
     val traceLast = Output(Bool())
@@ -379,7 +386,7 @@ class FrameAqNonlinearMaskTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
     val overflow = Output(Bool())
   })
 
-  val fuzzyErosion = Module(new FrameAqFuzzyErosionTraceStage(c))
+  val fuzzyErosion = Module(new FrameAqFuzzyErosionTraceStage(c, xybOutputFractionBits))
   val nonlinearMask = Module(new FramePreparedAqNonlinearMaskTraceStage(c))
   val latchedConfig = Reg(new FrameConfig(c))
   val frameActive = RegInit(false.B)
@@ -392,6 +399,7 @@ class FrameAqNonlinearMaskTraceStage(c: HjxlConfig = HjxlConfig()) extends Modul
   fuzzyErosion.io.input.valid := io.input.valid && !fuzzyErosionDone
   io.input.ready := fuzzyErosion.io.input.ready && !fuzzyErosionDone
   io.xybAccepted := fuzzyErosion.io.xybAccepted
+  io.quantizationXybAccepted.foreach(_ := fuzzyErosion.io.quantizationXybAccepted.get)
 
   nonlinearMask.io.config := activeConfig
   nonlinearMask.io.input.valid := fuzzyErosion.io.trace.valid

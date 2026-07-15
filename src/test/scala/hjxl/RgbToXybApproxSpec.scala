@@ -160,26 +160,49 @@ class RgbToXybApproxSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
-  "RgbToXybApprox preserves Q16 precision for downstream DC quantization" in {
+  "RgbToXybApprox preserves exact Q12 and Q16 outputs from one conversion" in {
     val fractionBits = 16
-    val expected = RgbToXybApprox.rgbToXyb(64, 128, 192, fractionBits)
-    expected mustBe (-322, 40259, 44461)
+    val random = new Random(1L)
+    val vectors = Seq((64, 128, 192)) ++ Seq.fill(256)(
+      (
+        random.nextInt(1 << 16) - (1 << 15),
+        random.nextInt(1 << 16) - (1 << 15),
+        random.nextInt(1 << 16) - (1 << 15)
+      )
+    )
+    RgbToXybApprox.rgbToXyb(64, 128, 192, fractionBits) mustBe
+      (-322, 40259, 44461)
 
-    simulate(new RgbToXybApprox(outputFractionBits = fractionBits)) { dut =>
-      dut.io.input.valid.poke(true.B)
-      dut.io.input.bits.x.poke(3.U)
-      dut.io.input.bits.y.poke(7.U)
-      dut.io.input.bits.r.poke(64.S)
-      dut.io.input.bits.g.poke(128.S)
-      dut.io.input.bits.b.poke(192.S)
+    simulate(
+      new RgbToXybApprox(
+        outputFractionBits = fractionBits,
+        includeQ12Output = true
+      )
+    ) { dut =>
       dut.io.output.ready.poke(true.B)
-
-      dut.io.output.valid.expect(true.B)
-      dut.io.output.bits.x.expect(3.U)
-      dut.io.output.bits.y.expect(7.U)
-      dut.io.output.bits.xybX.expect(expected._1.S)
-      dut.io.output.bits.xybY.expect(expected._2.S)
-      dut.io.output.bits.xybB.expect(expected._3.S)
+      for (((r, g, b), index) <- vectors.zipWithIndex) {
+        val expectedQ12 = RgbToXybApprox.rgbToXybQ12(r, g, b)
+        val expectedQ16 = RgbToXybApprox.rgbToXyb(r, g, b, fractionBits)
+        dut.io.input.valid.poke(true.B)
+        dut.io.input.bits.x.poke(index.U)
+        dut.io.input.bits.y.poke((index + 1).U)
+        dut.io.input.bits.r.poke(r.S)
+        dut.io.input.bits.g.poke(g.S)
+        dut.io.input.bits.b.poke(b.S)
+        dut.io.output.valid.expect(true.B)
+        dut.io.output.bits.xybX.expect(expectedQ16._1.S)
+        dut.io.output.bits.xybY.expect(expectedQ16._2.S)
+        dut.io.output.bits.xybB.expect(expectedQ16._3.S)
+        dut.io.outputQ12.get.valid.expect(true.B)
+        dut.io.outputQ12.get.bits.x.expect(index.U)
+        dut.io.outputQ12.get.bits.y.expect((index + 1).U)
+        dut.io.outputQ12.get.bits.xybX.expect(expectedQ12._1.S)
+        dut.io.outputQ12.get.bits.xybY.expect(expectedQ12._2.S)
+        dut.io.outputQ12.get.bits.xybB.expect(expectedQ12._3.S)
+        dut.clock.step()
+      }
+      dut.io.output.ready.poke(false.B)
+      dut.io.outputQ12.get.valid.expect(false.B)
     }
   }
 

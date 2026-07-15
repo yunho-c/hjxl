@@ -301,7 +301,10 @@ class AqGammaRatioQ16(inputBits: Int = 16) extends Module {
   * tile-halo duplication out of storage; a later fuzzy-erosion scheduler can
   * address neighboring cells when traversing 64x64 tiles.
   */
-class FrameAqContrastTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FrameAqContrastTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    xybOutputFractionBits: Int = RgbToXybApprox.OutputFractionBits
+) extends Module {
   import AqContrastFixedPoint._
 
   private val cellDim = 4
@@ -313,11 +316,19 @@ class FrameAqContrastTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   private val heightBits = log2Ceil(c.maxFrameHeight + 1)
 
   require(c.traceValueBits == 32, "AQ contrast trace packing currently requires signed 32-bit values")
+  require(
+    xybOutputFractionBits >= RgbToXybApprox.OutputFractionBits,
+    "AQ contrast XYB precision cannot be below Q12"
+  )
 
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val xybAccepted = Output(Valid(new XybPixel(c)))
+    val quantizationXybAccepted =
+      if (xybOutputFractionBits > RgbToXybApprox.OutputFractionBits)
+        Some(Output(Valid(new XybPixel(c))))
+      else None
     val trace = Decoupled(new StageTrace(c))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
@@ -364,13 +375,27 @@ class FrameAqContrastTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
   val canReceive = state === receiving && (!acceptingNewFrame || !configOutOfRange)
   val selectedPixelCount = Mux(acceptingNewFrame, nextPixelCount, activePixelCount)
 
-  val converter = Module(new RgbToXybApprox(c))
+  private val hasHigherPrecisionOutput =
+    xybOutputFractionBits > RgbToXybApprox.OutputFractionBits
+  val converter = Module(
+    new RgbToXybApprox(
+      c,
+      outputFractionBits = xybOutputFractionBits,
+      includeQ12Output = hasHigherPrecisionOutput
+    )
+  )
   converter.io.input.bits := io.input.bits
   converter.io.input.valid := io.input.valid && canReceive
   converter.io.output.ready := canReceive
   io.input.ready := converter.io.input.ready && canReceive
   io.xybAccepted.valid := converter.io.output.fire
-  io.xybAccepted.bits := converter.io.output.bits
+  io.xybAccepted.bits := converter.io.outputQ12
+    .map(_.bits)
+    .getOrElse(converter.io.output.bits)
+  io.quantizationXybAccepted.foreach { accepted =>
+    accepted.valid := converter.io.output.fire
+    accepted.bits := converter.io.output.bits
+  }
 
   val cellBaseX = (currentCellX << log2Ceil(cellDim))(widthBits - 1, 0)
   val cellBaseY = (currentCellY << log2Ceil(cellDim))(heightBits - 1, 0)
@@ -413,8 +438,12 @@ class FrameAqContrastTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
 
   when(converter.io.output.fire) {
     val receiveIndex = received(frameIndexBits - 1, 0)
-    xybX(receiveIndex) := converter.io.output.bits.xybX
-    xybY(receiveIndex) := converter.io.output.bits.xybY
+    xybX(receiveIndex) := converter.io.outputQ12
+      .map(_.bits.xybX)
+      .getOrElse(converter.io.output.bits.xybX)
+    xybY(receiveIndex) := converter.io.outputQ12
+      .map(_.bits.xybY)
+      .getOrElse(converter.io.output.bits.xybY)
     val nextReceived = received + 1.U
 
     when(acceptingNewFrame) {

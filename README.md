@@ -99,11 +99,15 @@ X/Y/B block plus the remaining distance/configuration metadata;
 `fast_pow2f` interpolation, and `AqFinalModulationBlock` applies Q24
 scale/dampen/add arithmetic to emit `AqFinalMap`. `FrameAqFinalMapPipeline`
 shares that completed chain between the final-map trace, pre-strategy raw-quant
-conversion, and downstream DCT quantization without repeating RGB-to-XYB or
-frame storage. `FrameAqDctBlockStage` converts each completed AQ block to one
+conversion, and downstream DCT quantization without a downstream RGB
+reconversion. `FrameAqDctBlockStage` converts each completed AQ block to one
 native-Q12 all-DCT record without elaborating reciprocal hardware. Only the
-focused RGB VarDCT build also captures Q16 XYB/DCT values for its downstream
-selected-owner sideband; older all-DCT routes keep the narrower hierarchy.
+focused RGB VarDCT build asks the shared converter for exact Q12 and Q16 taps,
+stores one additional Q16 frame at the final-AQ owner, and carries Q16 DCT
+values into its selected-owner sideband. The dual-output cube-root datapath
+derives the original Q12 table from the Q16 table plus a one-bit correction ROM,
+so this route contains one RGB converter rather than parallel Q12/Q16
+converters; older all-DCT routes keep the narrower Q12-only hierarchy.
 `FrameAqDctOnlyBlockStage` enriches that record with the matching per-block
 inverse AC scale from the 33-cycle `AdaptiveInvQacQ16` restoring divider. Nonzero
 `fixedRawQuant` retains the explicit byte/`fixedInvQacQ16` experiment contract;
@@ -172,7 +176,7 @@ DC/strategy/metadata/AC logical tokens. This heavy path is selected only by
 the compile-time `HjxlCoreTraceRoute.AqVarDctTokens`; the default shell and the
 existing all-DCT `TraceStage.AcTokens` focused route are unchanged. The
 live route keeps the Q12 XYB/DCT seam for AQ and strategy scoring, but carries
-a separate Q16 XYB/DCT sideband through selected-owner CFL fitting and
+an aligned Q16 XYB/DCT sideband from the same conversion through selected-owner CFL fitting and
 quantization so low-frequency rounding is not prematurely lost. A 16x16
 exact-Q8 impulse fixture selects one horizontal rectangle plus two DCT owners,
 produces nonzero DC and AC values, and matches libjxl-tiny's complete

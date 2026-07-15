@@ -262,18 +262,25 @@ class FramePreparedAqFuzzyErosionTraceStage(
 /** RGB-connected fuzzy-erosion path composed from the contrast and prepared
   * erosion stages.
   */
-class FrameAqFuzzyErosionTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FrameAqFuzzyErosionTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    xybOutputFractionBits: Int = RgbToXybApprox.OutputFractionBits
+) extends Module {
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val xybAccepted = Output(Valid(new XybPixel(c)))
+    val quantizationXybAccepted =
+      if (xybOutputFractionBits > RgbToXybApprox.OutputFractionBits)
+        Some(Output(Valid(new XybPixel(c))))
+      else None
     val trace = Decoupled(new StageTrace(c))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
 
-  val contrast = Module(new FrameAqContrastTraceStage(c))
+  val contrast = Module(new FrameAqContrastTraceStage(c, xybOutputFractionBits))
   val erosion = Module(new FramePreparedAqFuzzyErosionTraceStage(c))
   val latchedConfig = Reg(new FrameConfig(c))
   val frameActive = RegInit(false.B)
@@ -286,6 +293,7 @@ class FrameAqFuzzyErosionTraceStage(c: HjxlConfig = HjxlConfig()) extends Module
   contrast.io.input.valid := io.input.valid && !contrastDone
   io.input.ready := contrast.io.input.ready && !contrastDone
   io.xybAccepted := contrast.io.xybAccepted
+  io.quantizationXybAccepted.foreach(_ := contrast.io.quantizationXybAccepted.get)
 
   erosion.io.config := activeConfig
   erosion.io.input.valid := contrast.io.trace.valid

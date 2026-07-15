@@ -449,9 +449,12 @@ wrappers.
   `Dct8x8Approx` instances, selects adaptive or explicit fixed raw quant, and
   emits distance-derived scalars without a reciprocal. This keeps map and
   metadata-only hierarchies from elaborating unused divider hardware. The
-  focused RGB VarDCT build also captures Q16 XYB and ordinary-DCT values for
-  selected-owner CFL fitting and quantization; this optional sideband is absent
-  from the older all-DCT routes.
+  focused RGB VarDCT build also captures exact Q12 and Q16 results from one
+  cube-root lookup path, stores one optional Q16 frame at the final-AQ owner,
+  and emits Q16 ordinary-DCT values for selected-owner CFL fitting and
+  quantization. A one-bit correction ROM preserves the original Q12 lookup
+  contract without a second full converter; older all-DCT routes do not
+  elaborate the Q16 sideband or frame store.
   `FrameAqDctOnlyBlockStage` enriches the same record for quantization:
   adaptive blocks compute `round(2^32 / (scaleQ16 * rawQuant))` with the
   33-cycle `AdaptiveInvQacQ16` restoring divider; zero divisors saturate and no
@@ -865,8 +868,9 @@ wrappers.
   `FrameAqAdjustedRawQuantTraceStage` exposes the sideband as raw-quant traces.
   The selected-owner composition can optionally buffer a higher-precision
   coefficient sideband for CFL fitting and quantization while the scorer keeps
-  the established Q12 inputs and decisions. The live VarDCT route uses Q16;
-  prepared Q12 strategy users retain their original interface.
+  the established Q12 inputs and decisions. The live VarDCT route obtains both
+  precisions from one converter and uses Q16 downstream; prepared Q12 strategy
+  users retain their original interface.
 - `tools/hjxl_reference.py --scaled-dct-q12-csv ...` writes signed Q12 DCT-16,
   16x8, and 8x16 inputs beside independent libjxl-tiny coefficients and the
   exact integer transform model. The axis ramps guard the two different

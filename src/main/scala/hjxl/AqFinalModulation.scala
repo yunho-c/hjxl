@@ -303,7 +303,7 @@ class FramePreparedAqFinalModulationTraceStage(c: HjxlConfig = HjxlConfig()) ext
   }
 }
 
-class AqFinalMapFrameOutput extends Bundle {
+class AqFinalMapFrameOutput(includeQuantizationPrecision: Boolean = false) extends Bundle {
   import AqFinalModulationFixedPoint._
 
   val aqMapQ24 = UInt(ValueBits.W)
@@ -322,20 +322,43 @@ class AqFinalMapFrameOutput extends Bundle {
   val xybXQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
   val xybYQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
   val xybBQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
+  val quantizationXybQ16 =
+    if (includeQuantizationPrecision)
+      Some(
+        Vec(
+          3,
+          Vec(
+            AqHfModulationFixedPoint.SamplesPerBlock,
+            SInt(AqHfModulationFixedPoint.XybValueBits.W)
+          )
+        )
+      )
+    else None
 }
 
 /** Shared RGB pipeline from raster pixels through the final per-block AQ map.
   *
   * Unsupported distances consistently use the shared distance-1 fallback for
   * every cumulative operation. The AXI-Lite shell reports that fallback through
-  * its existing status bit.
+  * its existing status bit. The focused VarDCT specialization stores the
+  * converter's Q16 accepted-pixel tap here and reads one padded block beside
+  * the completed Q12 AQ context; ordinary routes do not elaborate that store.
   */
-class FrameAqFinalMapPipeline(c: HjxlConfig = HjxlConfig()) extends Module {
+class FrameAqFinalMapPipeline(
+    c: HjxlConfig = HjxlConfig(),
+    includeQuantizationPrecision: Boolean = false
+) extends Module {
+  private val numPixels = c.maxFrameWidth * c.maxFrameHeight
+  private val frameIndexBits = log2Ceil(numPixels)
+  private val frameCountBits = log2Ceil(numPixels + 1)
+  private val widthBits = log2Ceil(c.maxFrameWidth + 1)
+  private val heightBits = log2Ceil(c.maxFrameHeight + 1)
+
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val xybAccepted = Output(Valid(new XybPixel(c)))
-    val output = Decoupled(new AqFinalMapFrameOutput)
+    val output = Decoupled(new AqFinalMapFrameOutput(includeQuantizationPrecision))
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
@@ -350,10 +373,69 @@ class FrameAqFinalMapPipeline(c: HjxlConfig = HjxlConfig()) extends Module {
     DistanceParamsLookup.Distance1Q8.U
   )
 
-  val scheduler = Module(new FrameAqModulationBlockStage(c))
+  val scheduler = Module(
+    new FrameAqModulationBlockStage(
+      c,
+      includeQuantizationPrecision = includeQuantizationPrecision
+    )
+  )
   scheduler.io.config := effectiveConfig
   scheduler.io.input <> io.input
   io.xybAccepted := scheduler.io.xybAccepted
+
+  val quantizationFrame =
+    if (includeQuantizationPrecision)
+      Some(Reg(Vec(numPixels, Vec(3, SInt(AqHfModulationFixedPoint.XybValueBits.W)))))
+    else None
+  val quantizationReceived =
+    if (includeQuantizationPrecision) Some(RegInit(0.U(frameCountBits.W))) else None
+  val quantizationWidth =
+    if (includeQuantizationPrecision) Some(RegInit(0.U(widthBits.W))) else None
+  val quantizationHeight =
+    if (includeQuantizationPrecision) Some(RegInit(0.U(heightBits.W))) else None
+  val quantizationBlocksX =
+    if (includeQuantizationPrecision) Some(RegInit(0.U(widthBits.W))) else None
+
+  scheduler.io.quantizationXybAccepted.foreach { accepted =>
+    when(accepted.valid) {
+      val received = quantizationReceived.get
+      assert(received < numPixels.U, "AQ final-map Q16 frame store overflow")
+      val target = quantizationFrame.get(received(frameIndexBits - 1, 0))
+      target(0) := accepted.bits.xybX
+      target(1) := accepted.bits.xybY
+      target(2) := accepted.bits.xybB
+      when(received === 0.U) {
+        quantizationWidth.get := effectiveConfig.xsize(widthBits - 1, 0)
+        quantizationHeight.get := effectiveConfig.ysize(heightBits - 1, 0)
+        quantizationBlocksX.get :=
+          ((effectiveConfig.xsize(widthBits - 1, 0) +& (HjxlConstants.BlockDim - 1).U) >>
+            log2Ceil(HjxlConstants.BlockDim))
+      }
+      quantizationReceived.get := received + 1.U
+    }
+  }
+
+  private def quantizationFrameSample(blockIndex: UInt, sample: Int, channel: Int): SInt = {
+    val safeBlocksX = Mux(quantizationBlocksX.get === 0.U, 1.U, quantizationBlocksX.get)
+    val blockX = blockIndex - (blockIndex / safeBlocksX) * safeBlocksX
+    val blockY = blockIndex / safeBlocksX
+    val paddedX =
+      (blockX << log2Ceil(HjxlConstants.BlockDim)) + (sample % HjxlConstants.BlockDim).U
+    val paddedY =
+      (blockY << log2Ceil(HjxlConstants.BlockDim)) + (sample / HjxlConstants.BlockDim).U
+    val sourceX = Mux(
+      paddedX >= quantizationWidth.get,
+      quantizationWidth.get - 1.U,
+      paddedX
+    )
+    val sourceY = Mux(
+      paddedY >= quantizationHeight.get,
+      quantizationHeight.get - 1.U,
+      paddedY
+    )
+    val sourceIndex = sourceY * quantizationWidth.get + sourceX
+    quantizationFrame.get(sourceIndex(frameIndexBits - 1, 0))(channel)
+  }
 
   val cumulative = Module(new AqHfColorGammaModulationBlockPipeline)
   cumulative.io.input <> scheduler.io.block
@@ -430,6 +512,20 @@ class FrameAqFinalMapPipeline(c: HjxlConfig = HjxlConfig()) extends Module {
   io.output.bits.xybXQ12 := xybXQ12
   io.output.bits.xybYQ12 := xybYQ12
   io.output.bits.xybBQ12 := xybBQ12
+  io.output.bits.quantizationXybQ16.foreach { quantizationBlock =>
+    assert(
+      !io.output.valid ||
+        quantizationReceived.get === quantizationWidth.get * quantizationHeight.get,
+      "AQ final-map Q16 sideband is incomplete at block output"
+    )
+    for {
+      channel <- 0 until 3
+      sample <- 0 until AqHfModulationFixedPoint.SamplesPerBlock
+    } {
+      quantizationBlock(channel)(sample) :=
+        quantizationFrameSample(blockIndex, sample, channel)
+    }
+  }
   finalModulation.io.output.ready := io.output.ready && contextValid
   scheduler.io.frameDone := io.output.fire && blockLast
   io.busy := scheduler.io.busy || cumulative.io.busy || finalModulation.io.busy || contextValid
@@ -448,6 +544,12 @@ class FrameAqFinalMapPipeline(c: HjxlConfig = HjxlConfig()) extends Module {
     fixedYtox := 0.S
     fixedYtob := 0.S
     blockLast := false.B
+    when(io.output.bits.blockLast) {
+      quantizationReceived.foreach(_ := 0.U)
+      quantizationWidth.foreach(_ := 0.U)
+      quantizationHeight.foreach(_ := 0.U)
+      quantizationBlocksX.foreach(_ := 0.U)
+    }
   }
 }
 

@@ -291,7 +291,8 @@ class FramePreparedAqHfModulationTraceStage(c: HjxlConfig = HjxlConfig()) extend
   */
 class FrameAqModulationBlockStage(
     c: HjxlConfig = HjxlConfig(),
-    includeColorChannels: Boolean = true
+    includeColorChannels: Boolean = true,
+    includeQuantizationPrecision: Boolean = false
 ) extends Module {
   import AqHfModulationFixedPoint._
 
@@ -305,6 +306,8 @@ class FrameAqModulationBlockStage(
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val xybAccepted = Output(Valid(new XybPixel(c)))
+    val quantizationXybAccepted =
+      if (includeQuantizationPrecision) Some(Output(Valid(new XybPixel(c)))) else None
     val block = Decoupled(new AqModulationBlockInput)
     val frameDone = Input(Bool())
     val busy = Output(Bool())
@@ -336,12 +339,15 @@ class FrameAqModulationBlockStage(
   val selectedPixelCount = Mux(frameActive, activePixelCount, nextPixelCount)
   val acceptingPixels = !frameActive || received < activePixelCount
 
-  val nonlinear = Module(new FrameAqNonlinearMaskTraceStage(c))
+  private val xybOutputFractionBits =
+    if (includeQuantizationPrecision) 16 else RgbToXybApprox.OutputFractionBits
+  val nonlinear = Module(new FrameAqNonlinearMaskTraceStage(c, xybOutputFractionBits))
   nonlinear.io.config := activeConfig
   nonlinear.io.input.bits := io.input.bits
   nonlinear.io.input.valid := io.input.valid && acceptingPixels
   io.input.ready := nonlinear.io.input.ready && acceptingPixels
   io.xybAccepted := nonlinear.io.xybAccepted
+  io.quantizationXybAccepted.foreach(_ := nonlinear.io.quantizationXybAccepted.get)
 
   when(io.input.fire && !frameActive) {
     latchedConfig := io.config

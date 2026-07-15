@@ -76,7 +76,7 @@ class HjxlCoreRouteElaborationSpec extends AnyFreeSpec with Matchers {
     text must not include "module FrameAqCflDctOnlyQuantizeTokenTraceStage"
     val converterInstances =
       """RgbToXybApprox(?:_\d+)?\s+\w+\s*\(""".r.findAllMatchIn(text).length
-    converterInstances mustBe 2
+    converterInstances mustBe 1
   }
 
   "HjxlCore default all-route elaboration keeps the full AC-token scheduler out" in {
