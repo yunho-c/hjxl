@@ -1,1083 +1,563 @@
-# HJXL Quality Assessment — 2026-07-12
+# HJXL quality assessment — 2026-07-12
+
+> Consolidated review refreshed through 2026-07-15 at commit `d6915b8`
+> (`feat: improve RGB VarDCT scoring precision`). The filename preserves the
+> original requested assessment date. Seven unrelated, uncommitted RTL/test
+> paths present at review time are excluded from claims about the committed
+> baseline.
 
 ## Executive summary
 
-`hjxl` is a strong verification-led research prototype and a thoughtful
-hardware/software co-design scaffold. It is not yet a complete JPEG XL encoder,
-an FPGA-ready accelerator, or a release-ready codebase.
+`hjxl` is a thoughtfully designed, verification-led RTL research project. Its
+trace-first decomposition, prepared-data boundaries, fixed-point reference
+models, and unusually deep protocol/oracle tests make it substantially better
+engineered than its current product completeness might suggest.
 
-The project’s best decision is its trace-first decomposition around
-`libjxl-tiny`. It does not hide incomplete image stages behind a final-byte
-comparison. Instead, it exposes stable `StageTrace` boundaries, separates
-approximate RGB-input stages from exact prepared-data stages, and verifies
-quantized and tokenized results against a pinned software oracle. The
-prepared-DCT path can already take software-prepared coefficients through RTL
-quantization/tokenization and then through host-side assembly to bytes matching
-the constrained `libjxl-tiny` all-DCT oracle. That is meaningful progress, and
-the test suite is unusually serious for a project this young.
+It is not yet a complete JPEG XL encoder or a demonstrated FPGA accelerator.
+The most reliable path begins with host-prepared DCT coefficients; the most
+complete RGB path reaches adaptive DCT/16x8/8x16 logical tokens, but only two
+small nonzero images have exact end-to-end token and codestream parity. Final
+entropy optimization and bitstream assembly remain in host software. More
+importantly, no Vivado synthesis, utilization, timing, power, place-and-route,
+bitstream, DMA, or KV260 execution result exists.
 
-The main limitation is that the implemented architecture is still optimized
-for observability and simulation, not for a useful KV260 implementation. Most
-frame schedulers buffer complete bounded frames or coefficient planes in
-`Reg(Vec(...))`; several arithmetic paths contain wide combinational products
-or division; the default frame bound is only 32x32; and there are no synthesis,
-utilization, timing, clock-rate, throughput, power, bitstream, or board-run
-results. The RGB path uses approximate XYB; its default quantization/token
-routes remain fixed all-8x8-DCT, while a separate focused route now computes an
-adaptive transform-strategy map. A standalone prepared-AQ boundary exactly converts real libjxl-tiny
-AQ maps from Q24 into raw-quant traces, and the RGB core now implements the
-first image-dependent quarter-resolution contrast grid plus fuzzy erosion into
-one value per padded block and the reciprocal mask used by AC-strategy scoring.
-The separate nonlinear `_compute_mask` branch now also emits the signed
-log-domain seed for final-map modulation, and the first per-block HF term now
-subtracts a 112-edge Y-detail sum from that seed without repeating XYB
-conversion. The next distance-dependent color term now adds capped Q16 red/blue
-coverage through a shared single-converter block scheduler. The gamma term now
-continues through an averaged inverse response and normalized Q20 log. The
-normalized Q24 exponent, distance scale/damping, completed final map, and exact
-raw-quant conversion are now connected behind focused RGB routes. A nonzero
-fixed byte remains an explicit override. The resulting raw-quant field now
-feeds the RGB DCT quantizer and AC-metadata path with a matching per-block
-inverse scale; a standalone wrapper carries the same Q12 all-DCT blocks through
-the exact prepared schedulers to combined logical tokens. That path now also
-estimates per-tile CFL from the same RGB-derived Q12 DCT records, feeds those
-maps through quantization and AC metadata, exposes focused map/AC-token core
-routes, and preserves the prepared-Q16 stream ABI. Deterministic map fixtures
-match the independent fixed model exactly and stay within two signed int8 units
-of libjxl-tiny. The recursive DCT-16 kernel, both canonical rectangular
-transforms, a prepared fixed-point candidate entropy/loss evaluator, and exact
-2x2 orientation/first-block decision boundary are now implemented as reusable
-primitives. The integer scorer matches its independent model exactly, but its
-Q12 coefficient seam remains approximate against float libjxl-tiny: a 30-case
-pattern/distance audit selected the same final map in 27 cases, with three
-symmetric checkerboard orientation disagreements. The prepared frame scheduler
-now fits tile CFL, generates all eight candidate shapes with covered-block
-AQ/mask maxima, preserves incomplete tile/frame edges as DCT, and emits the
-raster strategy map; a focused RGB/core route feeds it from the shared AQ/DCT
-source. The scheduler now also performs libjxl-tiny's post-search raw-quant
-adjustment, and a second focused core route exposes the aligned adjusted byte
-field. Prepared rectangular quantization and logical tokenization are now
-implemented, and a dedicated compile-time route consumes the RGB strategy,
-adjusted byte, tile CFL, and selected coefficients through the same first-block-
-owned boundary to combined DC/strategy/metadata/AC logical tokens. Focused
-tests establish that composition with an exact 32-row zero-coefficient native
-token oracle, live RGB phase coverage, and packed AXI framing. They do not yet
-establish broad mixed-shape RGB parity or physical feasibility. A subsequent
-exact-Q8 16x16 impulse regression now closes one narrow nonzero case: a Q16
-selected-owner sideband preserves CFL/quantization precision, and every
-DC/strategy/metadata/AC token plus the assembled codestream matches native
-libjxl-tiny under stalls. A later precision follow-up now uses that same Q16
-sideband for strategy scoring and parameterizes the DCT constants accordingly.
-A signed-Q8 gradient then matches all logical tokens and its 230-byte native
-codestream as a second nonzero fixture. Checkerboard strategy and DC now agree,
-but a one-unit CFL-map difference remains; a random fixture first differs in DC
-quantization. Those results still prevent a broad parity claim.
-Entropy coding and bitstream assembly also remain software-only, and the most
-parity-ready hardware interface starts after the host has already computed
-prepared DCT blocks.
+The central architectural tension is clear:
 
-At the start of this review, the working tree was an engineering risk in its
-own right. Before this report was added, it
-contained 64 modified and 22 untracked paths, with roughly 10,500 inserted and
-1,500 deleted lines relative to `main`. Much of the most advanced estimated-CFL
-work exists only in that uncommitted state. Local validation is valuable, but a
-reviewer or CI run of `main` cannot reproduce this snapshot.
-
-**Follow-up on 2026-07-12:** this immediate reproducibility risk was remediated
-after the review. The implementation wave was partitioned into independently
-validated commits `bbee6a1` (fixed quantization metadata routes), `fec2527`
-(prepared estimated-CFL pipeline), and `748ee78` (host replay contracts).
+- As a correctness laboratory, the full-frame buffers, many focused wrappers,
+  and common `StageTrace` interface are effective. They make the earliest
+  mismatch observable and allow each downstream stage to mature independently.
+- As an FPGA architecture, the same choices do not yet scale. The default
+  maximum frame is 32x32, whole-frame `Reg(Vec(...))` storage is widespread,
+  several datapaths are large or combinational, and the focused RGB VarDCT top
+  emits more than 135,000 lines of SystemVerilog before synthesis.
 
 ### Overall judgment
 
 | Perspective | Assessment |
 | --- | --- |
-| Research/verification scaffold | **Very good** |
-| Architectural thoughtfulness | **Good, with a clear trace-first strategy** |
-| RTL maintainability | **Good at the primitive level; increasingly strained at frame-wrapper level** |
+| Scope discipline and architectural intent | **Very good** |
 | Verification of implemented logical behavior | **Very good** |
-| Documentation content | **Comprehensive and candid, but overgrown and repetitive** |
+| Primitive-level RTL quality | **Good** |
+| Frame-level maintainability | **Moderate and declining as wrappers multiply** |
+| Host/RTL contract quality | **Good** |
+| Documentation accuracy | **Good and candid; information architecture needs work** |
 | Completeness versus the stated `libjxl-tiny` target | **Partial** |
 | FPGA implementation readiness | **Early** |
-| Release/reproducibility readiness | **Moderate: committed validation and generated contracts, but no releases or physical artifacts** |
+| Release/multi-contributor readiness | **Early to moderate** |
 
-As an indicative score, the project is about **6.5/10 overall today**: closer
-to 8/10 as a correctness-oriented RTL exploration environment, but closer to
-2–3/10 as a demonstrated FPGA JPEG XL encoder. Those numbers deliberately
-separate code quality from product completeness.
+An indicative score is **6.5/10 overall**: about 8/10 as a traceable RTL
+exploration environment, but 2–3/10 as a demonstrated FPGA JPEG XL encoder.
+The gap is evidence and architecture for physical realization, not a lack of
+care in the code already present.
 
 ## Scope and method
 
-The original 2026-07-12 assessment covered the complete working checkout, not
-only the then-current `main`. Dated follow-ups in this document record the
-validated changes committed since that snapshot. The review included:
+This review covered the committed tree at `d6915b8`, including:
 
-- the complete repository inventory, Git history, worktree state, build files,
-  CI workflow, ignore rules, README, architecture document, and agent guide;
-- all RTL and test file inventories, with detailed inspection of the shared
-  bundles/configuration, core routing, frame schedulers, fixed-point primitives,
-  prepared-DCT pipelines, CFL estimation, tokenization, AXI-stream/AXI-Lite
-  wrappers, KV260 top, elaborators, representative unit/oracle/integration
-  tests, and the host-tool architecture;
-- code-size, test-size, duplication, missing-tooling, and incomplete-stage
-  searches across the checkout;
-- local compilation, Python syntax checking, host-metadata smoke testing, and
-  the Scala/Verilator test suite;
-- local toolchain inspection. Java, sbt, Python, and Verilator are available;
-  Vivado, Vitis, and Yosys were not found.
+- repository history, worktree state, build definitions, CI, ignore rules,
+  license, and generated-file policy;
+- all main/test/tool inventories and detailed reading of configuration,
+  bundles, core routing, adaptive quantization, CFL, strategy selection,
+  ordinary and rectangular DCT/quantization, tokenization, frame schedulers,
+  AXI-stream/AXI-Lite shells, discovery, the KV260 wrapper, and elaborators;
+- representative primitive, scheduler, protocol, elaboration, host-tool,
+  oracle, codestream, capacity-edge, and throughput tests;
+- the generated ABI schema and bindings, manifest/bundle/replay tools, Vivado
+  preflight, README, architecture guide, performance notes, and agent guide;
+- static searches for large modules, frame-scaled registers, synchronous
+  memories, assertions, incomplete functionality, and missing quality gates;
+- the checked-out `libjxl-tiny` integration and the CI pin used to reproduce it.
 
-Commit `973c3b5` (`feat: complete RGB adaptive quantization map`) was the final
-baseline for the original assessment refresh. Commit `1f591d7` (`feat:
-integrate adaptive AQ with RGB quantization`) is the baseline immediately
-before the RGB-derived CFL follow-up described below. Commit `725141b` (`feat:
-add rectangular AC strategy primitives`) is the baseline immediately before
-the prepared cost-evaluator follow-up. Commit `a3f3279` (`feat: add prepared AC
-strategy cost scoring`) is the baseline immediately before the frame/RGB
-scheduler follow-up. Commit `f428908` (`feat: add adaptive AC strategy frame
-scheduling`) is the baseline immediately before the strategy-adjusted
-raw-quant follow-up. Commit `a4ebfff` (`feat: add prepared VarDCT quantization`)
-is the baseline immediately before the first-block-aware logical-token
-follow-up. Commit `48c739e` (`feat: add prepared VarDCT tokenization`) is the
-baseline immediately before the RGB variable-shape composition follow-up;
-verification evidence is always stated with the implementation slice it
-covers.
-
-Snapshot size is approximately:
+Snapshot size at the reviewed commit:
 
 | Area | Files | Lines |
 | --- | ---: | ---: |
-| Main HJXL Scala/Chisel | 70 | 17,695 |
-| Scala tests | 72 | 28,544 |
-| Python host/oracle tools | 18 | 14,678 |
-| `README.md` + `docs/architecture.md` + `AGENTS.md` | 3 | 4,366 |
+| Main Scala/Chisel | 70 | 17,810 |
+| Scala tests | 72 | 28,629 |
+| Python host/oracle tools | 18 | 14,708 |
+| `README.md`, `docs/architecture.md`, and `AGENTS.md` | 3 | 4,396 |
 
-The test-to-RTL ratio is a strength, but these counts also reveal where
-complexity has moved: host tooling and test harnesses are now materially larger
-than the RTL implementation.
+The test-to-RTL ratio is a genuine strength. It also shows where complexity has
+moved: the host/oracle layer is nearly as large as the RTL, and the test layer
+is roughly 1.6 times the main Scala source.
 
-## Product and architecture assessment
+## Product and architecture
+
+### Intended split
+
+The project deliberately targets the lossy VarDCT subset represented by
+`libjxl-tiny`, not full JPEG XL. The host decodes images and currently performs
+entropy optimization and final bitstream assembly; RTL accelerates traceable,
+deterministic image, transform, quantization, and logical-token stages.
+
+```mermaid
+flowchart LR
+    A["Host RGB/PFM"] --> B["RGB AXI stream"]
+    B --> C["Approximate XYB"]
+    C --> D["Adaptive quantization"]
+    D --> E["CFL and AC strategy"]
+    E --> F["DCT/16x8/8x16 quantization"]
+    F --> G["Logical token traces"]
+    P["Host-prepared DCT blocks"] --> F
+    G --> H["Host entropy optimization and JXL assembly"]
+```
+
+This is a sensible staging strategy. It creates useful intermediate milestones
+without pretending that approximate RGB stages are exact merely because a
+final file was produced.
 
 ### What the architecture gets right
 
-1. **The project scope is explicit and defensible.** It targets the lossy
-   VarDCT subset represented by `libjxl-tiny`, not the full JPEG XL surface.
-   The repository is candid about lossless mode, alpha, metadata boxes, full
-   strategy coverage, and bit-exact floating-point parity being out of early
-   scope.
+1. **Traceability is a first-class contract.** `StageTrace` supplies one
+   stage/group/index/value vocabulary, and `traceLast` supplies an explicit
+   accepted-frame boundary. The project can compare the earliest divergent
+   stage instead of debugging opaque byte mismatches.
 
-2. **The hardware/software split is pragmatic.** Host software handles file
-   decoding and final entropy/bitstream work while RTL targets deterministic
-   transforms, quantization, maps, and logical tokens. That lets the project
-   demonstrate useful parity before attempting a hardware entropy coder.
+2. **Prepared boundaries isolate uncertainty.** Prepared DC, AC, metadata,
+   DCT, CFL, quantization, and variable-shape token paths let downstream RTL be
+   exact while RGB/XYB/AQ precision evolves. This is the strongest recurring
+   design pattern in the repository.
 
-3. **Traceability is a first-class architectural feature.** `StageTrace`
-   provides one common stage/group/index/value contract, and `traceLast` gives
-   all current frame routes an explicit capture boundary. This makes earliest-
-   mismatch debugging possible and maps well to the reference pipeline.
+3. **The hardware/software boundary is pragmatic.** Keeping entropy coding in
+   software avoids blocking useful transform/quantization experiments. The
+   documentation clearly distinguishes logical-token parity from an all-RTL
+   encoder.
 
-4. **Prepared boundaries isolate uncertainty well.** The prepared-DC,
-   prepared-AC, prepared-token, direct prepared-DCT, and estimated-CFL prepared
-   paths allow exact testing of downstream RTL even while RGB-to-XYB, AQ, and
-   strategy selection remain incomplete. This is the project’s strongest
-   architectural pattern.
+4. **Protocol behavior is designed, not incidental.** Stream packing, the
+   201-word prepared-block ABI, final-only TLAST, full-word TKEEP, sticky
+   protocol errors, busy/overflow, unsupported-distance fallback, byte-strobed
+   AXI-Lite writes, and error clearing are specified and tested.
 
-5. **Protocol boundaries are deliberately specified.** The stream packing,
-   201-word prepared-block ABI, TLAST rules, full-word TKEEP rule, 88-bit trace
-   packing, 128-bit KV260 trace padding, AXI-Lite register map, sticky protocol
-   error, busy/overflow status, and unsupported-distance fallback are all
-   documented and tested.
+5. **Heavy paths are compile-time selectable.** The default core avoids
+   elaborating every expensive route. Focused tops make simulation and
+   generated-RTL inspection tractable.
 
-6. **Compile-time route selection controls elaboration cost.** Keeping the
-   heavy full-AC-token scheduler out of the default all-route core is a sensible
-   response to simulation and generated-RTL growth.
+6. **Cross-language ABI drift has a real control point.**
+   [`abi/hjxl_abi.json`](../abi/hjxl_abi.json) generates checked Scala and
+   Python constants for register geometry, trace packing, stages, discovery,
+   and prepared stream layout. CI rejects stale generated bindings.
 
-### Where the architecture is still provisional
+7. **The first physical target is explicitly frozen.**
+   `HjxlKv260PreparedDctTop`, not the larger RGB/estimated-CFL variants, is the
+   chosen first synthesis target. That is the right risk-reduction decision.
+
+### Architectural risks
 
 1. **The validation architecture is not yet a scalable FPGA architecture.**
-   Many modules buffer complete frames, full coefficient sets, quantized
-   planes, or token inputs in registers. This is excellent for small deterministic
-   fixtures but will scale area approximately with configured image capacity.
-   A useful image-size configuration would elaborate enormous register arrays
-   unless these stores become inferred RAMs, line/tile buffers, or external
-   memory transactions.
+   The reviewed RTL contains 108 frame/block `Reg(Vec(...))` or
+   `RegInit(VecInit(...))` sites and only three `SyncReadMem` sites. Several
+   schedulers retain full RGB frames, XYB planes, DCT blocks, maps, metadata,
+   prediction grids, or token state. Increasing the configured capacity scales
+   state rapidly and may prevent useful-image elaboration or synthesis.
 
-2. **The datapath is largely batch-oriented.** A frame or prepared block set is
-   received, buffered, transformed, and later emitted. There is little overlap
-   between acquisition, compute, and output, and no established steady-state
-   pixels/blocks-per-cycle contract. `Decoupled` interfaces are present, but
-   the macro-architecture is not yet a streaming pipeline.
+2. **Most frame paths are batch schedulers, not steady-state pipelines.** Data
+   is commonly received, stored, processed, and then emitted. `Decoupled`
+   interfaces provide local backpressure safety, but they do not establish a
+   macro-level pixels-per-cycle or blocks-per-cycle pipeline. Acquisition,
+   compute, and output overlap remains limited and content-dependent.
 
-3. **Several arithmetic choices are correctness prototypes.** Dynamic division
-   in CFL estimation, wide chained products in quantization, large combinational
-   DCT networks, and LUTs expressed as `VecInit` are reasonable first models.
-   Their DSP mapping, critical paths, initiation intervals, and resource cost
-   are unknown. They should not be assumed to meet KV260 timing merely because
-   Verilator accepts them.
+3. **Physical arithmetic cost is largely unknown.** The design includes large
+   DCT networks, wide products, square-root logic, lookup tables, restoring
+   dividers, and some dynamic or constant division. The code is thoughtful
+   about Q formats and functional rounding, but Verilator and FIRRTL acceptance
+   say nothing about DSP mapping, critical paths, fanout, or routing.
 
-4. **Control-plane selection remains overloaded.** `HjxlCore` combines compile-
-   time `traceRoute` selection with a priority tree derived from runtime feature
-   flags. Discovery now reports the frame-stable active route, and the new AQ
-   extension uses an explicit previously reserved selector so older flag words
-   retain their behavior. Even so, a single explicit runtime route enum would
-   be clearer than interpreting feature flags as both pipeline controls and
-   route selection.
+4. **Focused routes trade area for verification convenience.** The RGB VarDCT
+   path carries both Q12 and Q16 precision, stores frame data, evaluates eight
+   strategy candidates, recomputes selected rectangular transforms, and feeds
+   variable-shape quantization/tokenization. This is defensible for parity
+   closure but should be treated as an experiment, not the final physical
+   organization.
 
-5. **Configuration lifetime is now transactional but implicit.** Stream shells
-   snapshot the complete configuration on the first accepted frame beat, keep
-   it stable through the final accepted trace, and treat AXI-Lite writes while
-   busy as next-frame shadow values. This closes the former mid-frame drift
-   risk. An explicit start/commit command may still be preferable once a DMA
-   driver needs deterministic coordination across control and stream channels.
+5. **Route selection has two overlapping mechanisms.** Compile-time
+   `traceRoute` controls elaboration while runtime feature flags and
+   `tokenSelect` feed a priority tree in `HjxlCore`. Discovery makes the active
+   route visible and configuration is frame-stable, but an explicit runtime
+   route field would be clearer than treating feature enables as both behavior
+   flags and route selectors.
 
-6. **A versioned discovery contract now exists, but compatibility policy is
-   still informal.** Read-only registers expose ABI version, build ID,
-   capabilities, maximum dimensions, and frame-stable active route, with Scala
-   and Python constants generated from `abi/hjxl_abi.json`. The repository still
-   needs a concise public compatibility policy and generated ABI reference.
+6. **Configuration commit is implicit.** Stream shells snapshot configuration
+   on the first accepted input beat; writes while busy become next-frame shadow
+   values. This is internally consistent and tested, but an eventual DMA
+   driver may benefit from an explicit start/commit sequence.
 
-7. **The adaptive-strategy output is a diagnostic seam, not yet a compositional
-   data boundary.** `FramePreparedAcStrategyTraceStage` emits one encoded
-   decision and one adjusted raw-quant byte per raster cell, but the selected
-   64- or 128-coefficient payload remains inside the scheduler. Conversely, the
-   existing prepared quantization, metadata, and AC-token schedulers accept one
-   ordinary 64-coefficient result per raster cell and assume that every cell
-   owns a transform. Those interfaces fit all-DCT verification well but cannot
-   represent a rectangular transform without either recomputing or duplicating
-   the full-frame XYB/coefficient source.
+7. **The architecture has no end-to-end memory/transport model.** There is no
+   agreed ownership model for input buffers, intermediate tiles, output rings,
+   DMA descriptors, cache coherency, or host/PL overlap. Those decisions will
+   strongly constrain which current frame stores survive.
 
-   This is more than a width mismatch. In the reference implementation one
-   first block owns the rectangle; its two lowest-frequency coefficients form
-   two block-grid DC samples, its raw nonzero count excludes the rectangular
-   low-frequency region, and a shifted count is replicated over both covered
-   cells for later neighbor prediction. Metadata and coefficient-token streams
-   skip continuation cells, while coefficient scanning uses a rectangular
-   order and covered-block-aware zero-density contexts. These four semantics
-   must move together. The clean next boundary is therefore an internal
-   first-block-owned `Decoupled` record carrying strategy, covered geometry, up
-   to 128 selected coefficients, adjusted quant, tile CFL, and distance-derived
-   scalars, plus explicitly separate block-grid DC/nonzero maps. It should be
-   stored in inferred memory or regenerated from one owned image buffer—not
-   exposed as hundreds of public trace ports or added as another parallel
-   full-frame wrapper.
-
-## RTL implementation quality
+## Codebase structure and implementation quality
 
 ### Strengths
 
-- Naming is descriptive and generally maps directly to `libjxl-tiny` concepts.
-  Module comments usually state what is implemented and, importantly, what is
-  not implemented.
-- Shared configuration and bundles are small and easy to inspect. Elaborative
-  `require` checks catch invalid widths and dimensions early.
-- Carry-preserving ceil-division is used in important capacity calculations,
-  including non-aligned 72-pixel cases that previously exposed width bugs.
-- Ready/valid handling is treated seriously. Many emitters hold output stable
-  under backpressure, and the tests explicitly stall trace outputs.
-- Fixed-point intent is documented with Q formats, rounding, clamping, and
-  signedness. Exact comparisons are used after quantization/tokenization, while
-  tolerances are confined to approximate floating/fixed stages.
-- Primitive decomposition is good: DCT, distance lookup, quant-scale selection,
-  Y roundtrip, chroma residual, DC quantization, token packing, coefficient
-  scan, CFL weighting/accumulation/fitting, and tile geometry can be tested
-  independently.
-- AXI-Lite byte strobes, independent address/data arrival, DECERR responses,
-  TLAST mismatches, partial TKEEP, sticky errors, and recovery receive direct
-  test coverage.
+- Names map closely to `libjxl-tiny` concepts, and module comments usually say
+  both what a block implements and what it intentionally omits.
+- Small arithmetic primitives are separated from frame schedulers and receive
+  direct tests. DCT, CFL weighting/fitting, distance lookup, quantization
+  components, strategy scoring, scan orders, token packing, and tile geometry
+  are understandable in isolation.
+- Fixed-point formats, signedness, rounding, clamping, and fallback behavior
+  are normally explicit. Approximate stages use bounded tolerances; claimed
+  integer/token boundaries use exact equality.
+- Important capacity calculations use carry-preserving `+&`, including 72-pixel
+  non-aligned regressions that would expose lost-carry ceil-division bugs.
+- Ready/valid stability is handled seriously. Many tests deliberately stall
+  outputs and verify that trace data and final markers remain stable.
+- The direct prepared-DCT path has begun replacing duplicate register planes
+  with ownership-aware streaming and synchronous coefficient storage. That is
+  the right refactoring direction.
+- Fifty-four in-RTL assertions now protect selected arithmetic, traversal, and
+  variable-shape invariants. This is useful even though coverage is uneven.
 
-### Weaknesses and risks
+### Maintainability concerns
 
-- The package is flat: 59 HJXL source files and 67 test files all live in one
-  namespace/directory. The naming remains navigable today, but the many
-  `FrameDctOnly*`, `FramePrepared*`, `FramePreparedCfl*`, stream, controlled-
-  stream, and KV260 variants are beginning to form a combinatorial wrapper
-  matrix. Subpackages or composition around shared schedulers would reduce the
-  cognitive load.
-- Frame buffering and traversal logic is repeated across many schedulers. The
-  extraction of `CflTileGeometry` is a good example of the refactoring pattern
-  that should continue for frame geometry, capacity checking, config latching,
-  trace emission, and prepared-block storage.
-- `HjxlCore` is more than 300 lines largely because every route repeats wiring
-  and mux participation. `Elaborate.scala` is another near-mechanical 509-line
-  matrix. These are maintainable only while every new route is changed in all
-  required places.
-- In-RTL assertions remain sparse. Recent AQ arithmetic checks nonzero divisors,
-  accepted-pixel counts, traversal order, and accumulator bounds, while most
-  protocol checking still relies on status signals and external tests. Broader
-  assertions for legal states, stable output under stall, final-beat
-  relationships, and index bounds would improve debug and formal-readiness.
-- Some combinational expressions use values that are only meaningful in active
-  states—for example frame traversal arithmetic before nonzero dimensions have
-  been latched. Invalid outputs are normally masked by `valid`, but safe
-  denominators and explicit state guards would generate cleaner hardware and
-  reduce X-propagation risk.
-- There is no style formatter or static-analysis gate for Scala or Python. The
-  code is currently consistent by discipline, not automation.
-- Generated RTL size makes the scaling concern concrete even before synthesis:
-  the default focused RGB estimated-CFL tops emit about 46.9k SystemVerilog
-  lines for maps, 49.3k for metadata, 67.2k for quantization, and 82.4k for
-  combined tokens. These figures are hierarchy/complexity indicators, not
-  utilization or timing evidence.
+- **The package is flat.** All 70 main source files and 72 test files live in
+  `hjxl`. The many `FramePrepared*`, `FrameAq*`, DCT-only, estimated-CFL,
+  stream, controlled-stream, and KV260 variants are increasingly hard to map.
+  Subpackages such as `arithmetic`, `stages`, `prepared`, `interfaces`, and
+  `tops` would make ownership clearer.
+- **Several modules are too large.** At the reviewed commit,
+  `FramePreparedAcStrategyTraceStage.scala` is 795 lines,
+  `FrameAqDctOnlyQuantizeTraceStage.scala` is 675,
+  `QuantizeDct8x8Block.scala` is 666, `QuantizeVarDctBlock.scala` is 645,
+  `Elaborate.scala` is 641, and `HjxlCore.scala` is 529. These files combine
+  storage, traversal, arbitration, arithmetic, and protocol responsibilities.
+- **The wrapper matrix is partly combinatorial.** Each new route can require a
+  scheduler, trace wrapper, core route, stream wrapper, controlled wrapper,
+  elaborator, generated directory, port regression, and documentation update.
+  `Elaborate.scala` and `HjxlCore` expose this mechanical growth directly.
+- **Frame geometry and lifecycle logic repeat.** Ceil division, bounds,
+  frame-active state, raster ordinals, tile ordinals, overflow, and reset logic
+  recur in many schedulers. `CflTileGeometry` and the shared coefficient stores
+  show how more of this could be centralized.
+- **Assertions are not systematic.** There are useful local checks, but no
+  standard invariant set for every `Decoupled` endpoint, frame FSM, final-beat
+  relationship, index bound, or reset/recovery transition.
+- **Style is enforced by convention.** There is no Scala formatter/linter,
+  Python formatter/linter/type checker, or automated documentation lint.
 
-## Verification and correctness
+The primitive layer is generally pleasant to review. The frame-wrapper layer
+is where future defects and development cost are most likely to concentrate.
 
-Verification is the project’s strongest quality dimension.
+## Functional completeness
+
+The stated target is deliberately narrower than JPEG XL, but even that target
+is not complete.
+
+| Pipeline area | Current state | Quality of evidence |
+| --- | --- | --- |
+| Host image/PFM conversion and RGB packing | Implemented in tools | Deterministic fixture and manifest tests |
+| Padding and raster/channel trace order | Implemented | Exact RTL/reference tests, including non-aligned sizes |
+| RGB to XYB | Implemented fixed-point approximation | Bounded stage tolerances; not bit-exact |
+| Adaptive quantization | Full focused RGB chain implemented | Independent fixed models and stage tests; approximation remains |
+| CFL | Fixed, prepared-estimated, and RGB-estimated paths | Exact fixed-model checks; small bounded native differences |
+| AC strategy | DCT, 16x8, and 8x16 selection implemented | Exact integer model; some float-boundary sensitivity |
+| DCT/VarDCT quantization | Ordinary and two rectangular shapes implemented | Exact prepared fixed-model checks; RGB precision gaps remain |
+| DC, strategy, metadata, and AC logical tokens | Implemented for prepared and focused RGB paths | Strong exact prepared oracles; two exact nonzero RGB fixtures |
+| Entropy optimization | Host only | Reuses `libjxl-tiny` |
+| Frame/codestream assembly | Host only | Exact byte checks for constrained fixtures |
+| Full JPEG XL feature surface | Intentionally out of scope | Lossless, alpha, broad boxes/metadata absent |
+| KV260 shell | Generated and simulated | AXI/port/preflight evidence only |
+| Synthesis, timing, implementation, board run | Not demonstrated | No evidence yet |
+
+### Strongest correctness claims
+
+- The prepared all-DCT boundary can accept Q16 DCT blocks, perform RTL
+  quantization and logical tokenization, and use host assembly to reproduce the
+  constrained `libjxl-tiny` frame/codestream bytes exactly.
+- Prepared variable-shape tests cover DCT, 16x8, and 8x16 ownership,
+  continuation suppression, two-cell DC/prediction semantics, rectangular
+  scans, and exact native logical-token arrays.
+- The focused RGB VarDCT route has two exact 16x16 signed-Q8 nonzero cases at
+  distance 1: an impulse with a 197-byte codestream and a gradient with a
+  230-byte codestream. Every DC/strategy/metadata/AC row matches the oracle.
+
+### Current parity frontier
+
+- A checkerboard now agrees on strategy and DC but estimates Y-to-X CFL as
+  `-18` instead of native `-17`.
+- A deterministic random fixture first differs in three DC residuals.
+- These are narrow fixed-point boundary issues, but they prove that broad RGB
+  parity has not been reached.
+- Only tiny deterministic fixtures are exact end to end. There is no corpus of
+  real-image crops, no independent decoder acceptance gate, and no quality or
+  rate-distortion characterization.
+
+The project should continue to describe itself as a research prototype with a
+strong prepared-data accelerator boundary, not as a complete JPEG XL encoder.
+
+## Verification quality
+
+Verification is the best-developed part of the repository.
 
 ### Strong evidence
 
-- The assessed checkout has roughly 25.4k lines of Scala tests for 13.4k lines
-  of RTL, plus extensive validation inside the Python tools.
-- Tests span small arithmetic primitives, frame traversal, exact 72-pixel
-  capacity boundaries, two-dimensional 72x72 CFL tile ordering, route
-  elaboration, generated SystemVerilog port surfaces, AXI-Lite behavior,
-  stream framing, TKEEP/TLAST errors, backpressure stability, and host artifact
-  validation.
-- The pinned `libjxl-tiny` Python port is used as a behavioral oracle. Prepared
-  Q16 coefficients are checked through RTL quantization and tokenization, then
-  converted back through host tooling to frame and bare codestream bytes.
-- Token contexts, values, order, metadata maps, and final bytes are exact where
-  the implementation claims parity. Approximate XYB/DCT comparisons use
-  explicit tolerances rather than silently weakening downstream checks.
-- Host validators reject malformed types, range errors, stale paths,
-  contradictory metadata, incorrect checksums, wrong stream sizes, invalid
-  TLAST/TKEEP, and mismatched target geometry. Generated C and C++ headers are
-  smoke-compiled.
-- Both sbt and Mill builds are represented in CI, and the external oracle is
-  pinned to a commit rather than a moving branch.
+- The reviewed baseline records **85 suites and 345 tests** passing under both
+  sbt and Mill, with zero failures, errors, cancellations, ignored, or pending
+  tests. Running both build systems catches build-definition drift, though it
+  roughly doubles CI cost.
+- CI pins `libjxl-tiny` to commit
+  `07f2dfe11a1a9f621052e75db5feffb0f58f44bd`, installs Verilator, checks Python
+  syntax and generated ABI drift, runs the full sbt and Mill suites, elaborates
+  the frozen top, and runs the non-Vivado Tcl preflight.
+- Tests cover arithmetic primitives, saturation and rounding boundaries,
+  traversal, partial frames, 72x72/two-dimensional tile geometry, unsupported
+  distances, malformed ownership, sticky errors, recovery, packed trace
+  decoding, generated port surfaces, and host artifact validation.
+- Backpressure is exercised throughout. Several end-to-end tests use periodic
+  output stalls and assert stable trace fields plus final-only TLAST.
+- Oracle tests compare at the correct boundary: tolerant comparisons for
+  floating/fixed approximations, exact equality for quantized maps and logical
+  tokens, and byte equality when a codestream claim is made.
+- Host tools reject malformed CSV/JSON fields, inconsistent geometry, stale
+  checksums, wrong variants, wrong trace packing, wrong register maps, and
+  mismatched replay plans with specific diagnostics.
+- Throughput tests lock cycle-level behavior for sparse, small-nonzero, and
+  maximally dense prepared-DCT fixtures.
 
 ### Gaps in the evidence
 
-- There is no formal verification, protocol checker, property-based test suite,
-  or systematic randomized ready/valid and AXI ordering campaign. Directed
-  backpressure coverage is good, but state-space coverage is unknown.
-- There is no line, branch, toggle, FSM-state, assertion, or functional coverage
-  report. Test volume is not the same as measured coverage.
-- Several unit references duplicate formulas in Scala rather than importing an
-  independently generated oracle. The higher-level oracle-backed tests mitigate
-  this, but primitive tests can still share the same conceptual mistake as the
-  implementation.
-- Oracle-backed tests can be skipped through ScalaTest `assume` when NumPy or
-  the reference checkout is absent. CI installs them, which is appropriate, but
-  local “green” results need to state whether skips occurred.
-- The largest test harness, `StreamTraceToolSpec.scala`, is about 4,800 lines.
-  It provides valuable integration coverage but is difficult to review,
-  parallelize intentionally, and diagnose compared with focused Python unit
-  tests plus smaller Scala bridge tests.
-- Running both complete sbt and Mill test suites in one CI job is useful as a
-  build-definition consistency check but expensive. A shared fast gate plus a
-  scheduled second-build/full-oracle job would likely give better feedback
-  latency. On this machine, the original `sbt test` run for the 2026-07-12
-  assessment took 8 minutes 52 seconds, with many separate Verilator models
-  built by the simulator-backed suites. A later unconstrained run after the
-  focused RGB VarDCT hierarchy grew to 161,000 generated lines thrashed swap
-  and took 4 hours 42 minutes. The build now caps heavyweight test concurrency
-  at two; the exact candidate completed in 22 minutes, and Mill CI uses the
-  same two-job limit. This is a practical reproducibility fix, not a reduction
-  in test coverage.
-- No Vivado simulation, synthesis, implementation, timing, or board test exists.
-  Generated-port checks prove interface shape, not AXI protocol certification
-  or FPGA viability.
+- There is no code, branch, toggle, state, assertion, or functional coverage
+  report. The large number of tests cannot show which FSM transitions and
+  protocol interleavings remain unvisited.
+- There is no formal verification. Small ready/valid adapters, counters,
+  ownership maps, and token scan FSMs would be good initial targets.
+- Randomized stalls and malformed streams exist in places but are not a shared,
+  seeded property-based framework. Reset-at-every-state and repeated-frame
+  stress are not systematic.
+- Oracle diversity is narrow. More signed/extreme fixtures, every supported
+  distance, non-block/tile-aligned sizes, multi-tile two-dimensional images,
+  and small real-image crops are needed.
+- Codestreams are compared with the same reference family used for assembly.
+  Acceptance by an independent JPEG XL decoder would reduce common-mode risk.
+- Local oracle tests use `assume` when the reference checkout is absent. CI
+  provides the pinned checkout, but an incomplete local environment can skip
+  meaningful tests unless the cancellation count is noticed.
+- The full suite is expensive: the most recent exact baseline took about 34
+  minutes under each build system. This raises iteration cost and encourages
+  focused runs, so CI remains essential.
 
-## Host tooling quality
+## Host tooling and ABI
 
-The host side is functionally impressive. It can generate reference fixtures,
-pack RGB and prepared-DCT streams, emit and validate AXI-Lite write sequences,
-generate C headers, create portable bundles with checksums, describe replay
-plans, preflight capture expectations, decode packed traces, extract tokens and
-metadata, compare oracles, and assemble codestream bytes. Error messages are
-generally field- and line-specific, and numeric type/range checks avoid common
-Python/NumPy coercion bugs.
+### Strengths
 
-The maintainability picture is less strong:
+- The tools form a genuine host-contract layer rather than a collection of
+  one-off converters. They cover RGB/prepared stream generation, AXI-Lite
+  writes, manifests, C headers, bundles, checksums, replay plans, capture
+  decoding, token extraction/comparison, discovery, and host-side assembly.
+- The ABI schema is checked into the repository and generated bindings are
+  drift-tested. Discovery exposes identity, ABI version, build ID,
+  capabilities, maximum geometry, and active route.
+- Manifest/bundle validation is defensive. Numeric range checks, boolean
+  parsing, geometry consistency, final-only TLAST, keep masks, variants,
+  checksums, and cross-artifact consistency are all validated before replay.
+- The CI reference checkout is pinned, so software-oracle behavior is not
+  implicitly tied to the latest upstream revision.
 
-- Python tooling is about 13.2k lines with no `pyproject.toml`, package layout,
-  dependency lock, formatter, linter configuration, type checker, or Python
-  test runner. Tests are largely driven indirectly from Scala subprocesses.
-- `hjxl_replay_capture.py` and `hjxl_host_metadata_smoke.py` are each roughly
-  1,500 lines. The smoke test imports private underscore-prefixed helpers from
-  the CLI module, coupling tests to implementation details.
-- Register offsets, trace stage IDs, route names, status bits, packing widths,
-  keep masks, target names, and stream-layout constants exist in multiple Scala
-  and Python locations. The project compensates with strong lockstep tests, but
-  generation from one machine-readable contract would prevent drift instead of
-  detecting it after duplication.
-- The host path depends on a separate `libjxl-tiny` Python checkout and several
-  internal functions. CI pins a known fork/commit, which is reproducible, but
-  there is no standalone installable host package or compatibility adapter.
+### Weaknesses
+
+- `tools/hjxl_reference.py` is 5,294 lines and mixes reference access, fixed
+  models, fixture generation, analysis, and a very large CLI. Two other tools
+  exceed 1,500 lines. These are now subsystems and should be a Python package.
+- There is no `pyproject.toml`, dependency lock, native Python test suite,
+  formatter, linter, or type-check gate. Much Python behavior is tested by
+  spawning scripts from Scala, which is valuable for integration but slow and
+  awkward for unit-level maintenance.
+- The default reference path is machine-specific
+  (`/Users/yunhocho/GitHub/libjxl-tiny`). Environment override and CI pinning
+  make it workable, but setup should be discoverable without reading test code.
+- Compatibility policy is implicit. The schema has an ABI version, but the
+  repository does not define which changes require major/minor bumps or how
+  long older manifests, bundles, and host headers are supported.
 
 ## Documentation and developer experience
 
-Documentation is candid, technically rich, and unusually precise about the
-difference between fixed scaffolds, approximate stages, prepared parity, and
-future work. Commands, formats, register meanings, fixture shapes, generated
-directories, and test responsibilities are documented in detail. The pinned
-versions and CI prerequisites are easy to find.
+The documentation is technically rich and admirably candid. The README opens
+with an accurate maturity table, the architecture guide names exact stage
+contracts, the performance document distinguishes simulation cycles from FPGA
+performance, the FPGA guide states timing assumptions and missing proof, and
+`AGENTS.md` gives unusually precise implementation guidance.
 
-The information architecture is poor, however:
+The weakness is information architecture:
 
-- The README is 1,401 lines, the architecture document 1,242 lines, and the
-  agent guide 1,294 lines. All three repeat long inventories of nearly every module,
-  elaborator, tool, format, and regression.
-- The README has only a handful of top-level sections, so it functions as a
-  changelog/reference dump rather than an onboarding document.
-- The architecture document mixes enduring boundaries with generated-target
-  commands, tool manuals, test catalogs, and status notes. Some statements about
-  remaining CFL plumbing are already ambiguous relative to the new prepared
-  estimated-CFL implementation.
-- There is no concise current-status matrix, roadmap, FPGA bring-up document,
-  ABI specification, contribution guide, or release checklist. Those concerns
-  are embedded in prose across three large files.
+- `README.md` is 1,559 lines, `docs/architecture.md` is 1,378, and `AGENTS.md`
+  is 1,459. Much stage status is repeated across all three.
+- The README has only a handful of top-level headings, so hundreds of lines of
+  implementation detail sit under “Project status” or “Build.” It is accurate
+  but difficult to scan as onboarding documentation.
+- `AGENTS.md` is an effective live engineering ledger but too large to be the
+  only map of current RTL state. Generated or tabular stage status would reduce
+  drift and repetition.
+- There is no concise contributor guide, release process, changelog, or public
+  compatibility policy.
 
-Recommended documentation split:
-
-1. Keep `README.md` to purpose, maturity, one architecture picture, quick start,
-   and links.
-2. Keep `docs/architecture.md` to stable responsibilities, dataflow, buffering,
-   fixed-point policy, and hardware/software boundaries.
-3. Add `docs/status.md` with a stage-by-stage implemented/verified/missing table.
-4. Add `docs/host-abi.md` generated or checked from the authoritative contract.
-5. Add `docs/kv260-bringup.md` for synthesis, block design, DMA, clocks,
-   constraints, timing, bitstream, and board evidence.
-6. Keep `AGENTS.md` concise and procedural; move module catalogs to generated
-   reference documentation if they remain useful.
+Recommended split: keep the README focused on status, quick start, selected
+top, and claims; keep stable contracts in architecture/ABI documents; move
+stage-by-stage implementation status into a generated matrix; keep agent-only
+rules and current debugging cautions in `AGENTS.md`.
 
 ## Build, CI, reproducibility, and repository hygiene
 
 ### Positive
 
-- Scala, Chisel, ScalaTest, sbt, Mill, and the oracle commit are pinned.
-- CI runs on pull requests and `main`, installs declared system dependencies,
-  checks the listed Python helpers, and runs both Scala build systems.
-- Generated RTL, simulator output, build products, Python bytecode, and local
-  caches are ignored. Generated SystemVerilog can be recreated through explicit
-  elaboration entry points.
-- The repository is GPLv3-licensed and small enough to clone and inspect easily.
+- Direct Scala, Chisel, ScalaTest, sbt, and Mill versions are fixed.
+- Both build definitions compile the same source tree and CI exercises both.
+- The software oracle is pinned to an exact Git commit in CI.
+- Generated RTL, simulation output, caches, and Vivado output are ignored.
+- Generated ABI bindings are committed and checked for drift.
+- The frozen top has a reproducible file list and Tcl/XDC preflight.
+- The project is GPLv3 and the README names the license clearly.
 
-### Negative or outstanding at review time
+### Outstanding
 
-- At the start of the review, the advanced state was not reproducible from Git:
-  86 paths were dirty or untracked. The follow-up commits named in the executive
-  summary have since resolved this immediate issue.
-- The repository has 53 commits before this latest assessment follow-up, but
-  still has no tags or releases. The formerly uncommitted development wave
-  was recovered into reviewable commits; release-level checkpoints and
-  published artifacts remain absent.
-- CI has no formatter, lint, warnings-as-errors, coverage, synthesis smoke, or
-  artifact publication. Generated ABI drift is checked, which is an important
-  exception.
-- GitHub Actions are version-tag pinned rather than commit-SHA pinned. That is
-  common, but weaker supply-chain reproducibility.
-- The broad template-derived `.gitignore` works but contains substantial
-  unrelated legacy IDE/ISE material; a smaller project-specific file would be
-  easier to audit.
-- There is no documented contributor workflow, review checklist, changelog, or
-  compatibility policy. These are not urgent for a solo prototype but become
-  important before external use.
+- There is no dependency lock/SBOM, automated dependency update policy, or
+  vulnerability scan. GitHub actions use version tags rather than immutable
+  commit SHAs.
+- There is no formatting, linting, type-checking, coverage, or documentation
+  gate.
+- The repository has one contributor, 62 commits over roughly twelve days,
+  no tags, and no releases. Bus factor and release reproducibility are low.
+- There is no `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, or `CODEOWNERS`.
+- The reviewed branch is 39 commits ahead of `origin/main`; external users of
+  the remote default branch cannot reproduce the local state until it is
+  pushed.
+- Seven unrelated modified RTL/test paths were present during this assessment.
+  They were intentionally excluded from this documentation-only commit.
 
-## Completeness against the stated goal
+## Performance and FPGA readiness
 
-| Pipeline/capability | Current state | Quality of evidence | Remaining gap |
-| --- | --- | --- | --- |
-| Linear RGB/PFM host input | Implemented for fixtures and stream generation | Parser/packing/manifest tests | General image decode/integration and production driver |
-| Frame padding | Implemented | Exact small-frame and edge-padding tests | Scalable storage architecture |
-| RGB to XYB | Range-normalized Q8 to Q12 approximation with signed Q26 matrix and Q24 absorbance; the focused VarDCT specialization emits exact legacy Q12 and Q16 from one lookup path | Exact normalization-boundary/model tests, 256 signed dual-output vectors, three libjxl-tiny fixture families within two Q12 units, 100k full signed-range sweep within five, and frame/downstream regressions | Synthesis feasibility, broader real-image evidence, and broad end-to-end parity |
-| DCT transforms | Approximate fixed-point 8x8 plus reusable precision-parameterized DCT-16, 16x8, and 8x16 primitives; prepared paths default to Q12 while the focused RGB VarDCT route uses Q16 constants for scoring and quantization | 8x8 primitive/frame tests; Q16 blocks within four Q16 LSBs on directed families; five signed independent float and exact-fixed fixtures per rectangular transform; axis-layout, candidate-generation, quantization, tokenization, selected-owner composition, backpressure, and elaboration checks | Timing/resource architecture, broader nonzero RGB frame parity, and physical validation |
-| Adaptive quantization | RGB-connected quarter-resolution contrast, block-resolution fuzzy erosion, AC-strategy reciprocal mask, signed-Q24 nonlinear `_compute_mask` seed, cumulative Y HF/color/gamma modulation, normalized exponent, distance scale/damping, completed final map, exact raw-quant conversion, post-strategy rectangle adjustment, estimated tile CFL, variable-shape quantization, and combined logical tokens | Gamma/sqrt/four-minimum, reciprocal, nonlinear, 112-edge/Q32 HF, capped Q16 coverage/Q24 color, clamped inverse-ratio/normalized-Q20-log, and normalized-Q24-`fast_pow2f` model boundaries; exact prepared fixtures and fixed-model raw bytes/maps/strategy decisions/adjusted bytes; five RGB oracle families within two percent for AQ and within two int8 units for CFL; full-frame versus stitched-tile equality; active/zero/early-return/damping distance regimes; explicit unsupported-distance fallback; exact dynamic reciprocal and selected-owner handoff; two exact nonzero-AC RGB codestreams; 65x1 and two-dimensional 65x65-to-72x72 traversal; backpressure/control and packed-AXI/TLAST tests; one RGB converter on both Q12-only and focused exact-Q12/Q16 routes | Broader full-reference RGB variable-shape coverage; synthesis feasibility of the combinational square root, minima network, constant erosion division, CFL fitting divider, ratio/log/power lookup tables, multipliers, register-backed grids, and duplicated full-frame X/Y/B/coefficient buffers is unproven, while the rational transforms and HF/color/gamma/reciprocal traversals are sequential |
-| Chroma from luma | Implemented for prepared-Q16 and approximate RGB-Q12 all-DCT and adaptive DCT/16x8/8x16 paths; the focused RGB route feeds Q16-estimated tile CFL into first-block ownership and tokenization | Primitive and exact fixed-model tests; five RGB/libjxl-tiny map families within two int8 units; horizontal/vertical/2D multi-tile, all-DCT integration, variable-shape quantization, selected-owner composition, two exact nonzero-AC codestreams, stream, wrapper, and focused-core tests | Physical implementation quality, broader real-image fixtures, and the observed checkerboard one-unit CFL mismatch |
-| AC strategy | Default all-route core remains fixed DCT; focused routes generate a full adaptive DCT/16x8/8x16 map from RGB AQ/tile CFL and its post-search adjusted raw-quant field, and a dedicated compile-time route consumes selected first-block owners through variable-shape quantization and logical tokens | Exact fixed-model costs for 40 oracle-backed candidates; scale-aware Q12/Q16 scorer equivalence; exact fixed rectangular-transform and constant/gradient/checkerboard frame decisions; exact DCT/horizontal/vertical raw-quant adjustment; complete 2x2, incomplete 24x24 edge, 72x16 cross-tile, unsupported-distance, backpressure, RGB/core, quantization, 32-row composition, 1,292-row mixed-shape token, two exact nonzero-AC RGB codestreams, AXI, and hierarchy checks; 520 directed/random selector transactions; the prior Q12 audit matched 27/30 float decisions, while the Q16 audit matched 28/30 | Characterize the remaining high-distance symmetric checkerboard choices; prove or redesign wide products, lookup/square-root hardware, and duplicate frame storage; add broad nonzero RGB token/codestream parity |
-| Distance parameters | Six Q8 lookup points plus explicit fallback | Exact RTL/host lockstep tests | General supported range or a clearly frozen discrete API |
-| Quantized AC/DC/nonzero | Strong prepared-DCT all-DCT and first-block-owned DCT/16x8/8x16 implementations; a focused RGB route composes Q12 AQ with Q16 strategy/CFL/selected-owner coefficients, adaptive raw quant, estimated tile CFL, selected shapes, and variable-shape quantization | Exact prepared-block oracles, RGB-to-prepared estimated-CFL equivalence, 12 variable-shape fixtures exact to the frozen Q16 model with native AC within one integer and exact DC/counts, selected-owner/zero-coefficient checks, and two full-reference nonzero-AC RGB comparisons | Broaden nonzero RGB image coverage, resolve the random-fixture DC mismatch, and establish physical feasibility |
-| DC/AC metadata/AC logical tokens | Strong for prepared all-DCT and first-block-owned DCT/16x8/8x16 paths; a dedicated RGB compile-time route now reaches combined DC, full strategy, adaptive metadata, and variable-shape AC tokens | Exact context/value/order tests, prepared codestream reconstruction, RGB/prepared estimated-CFL equivalence, one 1,292-row mixed-shape native oracle, one 32-row strategy-to-token oracle, exact nonzero-AC 197-byte impulse and 230-byte gradient codestreams, live RGB phase coverage, two-tile metadata prediction, and packed AXI/TLAST checks | Broaden nonzero mixed-shape RGB oracle diversity, resolve checkerboard CFL and random DC mismatches, and validate the physical hierarchy |
-| Entropy optimization/coding | Host-only through `libjxl-tiny` | Byte-parity assembly tests | Native host library or RTL implementation, depending final partition |
-| JXL frame/codestream assembly | Host-only | Exact bytes for constrained fixtures | Standalone production integration and broader decoder validation |
-| AXI-stream/AXI-Lite shells | Implemented and simulated with transactional config and discovery registers | Port, handshake, register, framing, error, discovery-readback, and mid-frame shadow-write tests | AXI protocol checker and physical integration |
-| KV260 top-level shape | Generated and simulated as a flat wrapper | SystemVerilog surface, functional wrapper tests, and non-Vivado source/constraint preflight | Vivado synthesis/implementation, PS/DMA integration, and clock/reset proof |
-| Synthesis/timing/utilization | Not demonstrated | None | Synthesis, reports, timing closure, resource budget |
-| Bitstream and board execution | Not demonstrated | None | XSA/bitstream, driver, DMA capture, decoded-image validation |
-| Performance/power | Direct prepared path characterized in simulation for sparse and maximum-density multi-tile frames | Exact phase/stall/stage-count cycle regression and 200 MHz projections | Synthesized clock, DMA overlap, end-to-end fps, and power |
+The direct prepared-DCT simulation baseline is useful and responsibly framed:
 
-The practical conclusion is that the project has demonstrated both a credible
-**logical token accelerator boundary** for host-prepared variable-shape data
-and a traceable focused approximate-RGB/adaptive-quant variable-shape path to
-logical tokens. It has not demonstrated broad RGB non-DCT codestream parity or
-a complete and physically viable RGB-to-JXL FPGA encoder.
+| Case | Blocks | Total cycles | Time at provisional 200 MHz |
+| --- | ---: | ---: | ---: |
+| Zero 8x8 | 1 | 342 | 1.710 us |
+| Three-AC 8x8 | 1 | 347 | 1.735 us |
+| Zero 16x8 | 2 | 611 | 3.055 us |
+| Zero 72x72 | 81 | 22,250 | 111.250 us |
+| Dense-AC 72x72 | 81 | 33,377 | 166.885 us |
 
-## Prioritized findings
+These values expose parser stalls, output bubbles, and content-dependent token
+expansion. They do not include AXI-Lite setup, DMA, memory traffic, clock
+crossings, host assembly, or an achieved clock.
 
-### P0 — Must address before making stronger project claims
+The frozen KV260 top currently elaborates to 19 SystemVerilog files and 14,465
+lines. The focused RGB VarDCT route is far larger: the reviewed evidence records
+64 files/135,394 lines for the standalone hierarchy and 66 files/135,565 lines
+for its AXI-stream shell. Line counts are only complexity indicators, but they
+strongly justify synthesizing the smaller prepared top before expanding the
+physical target.
 
-1. **Checkpoint the current work into reviewable commits.** Separate the
-   estimated-CFL RTL, host-contract expansion, wrapper changes, tests, and docs.
-   Run the full gate on each final slice. Until then, the best work is local-only.
-   **Completed 2026-07-12:** commits `bbee6a1`, `fec2527`, and `748ee78` preserve
-   the implementation as three staged-state-validated slices.
-2. **State the maturity in one short authoritative status table.** The first
-   screen of the README should say that the strongest boundary begins at
-   prepared DCT coefficients and that Vivado/board validation has not happened.
-   **Completed 2026-07-12:** the README now opens with a compact status table
-   covering the strongest boundary, remaining RGB work, host/hardware split,
-   selected top, and missing physical validation.
-3. **Choose and freeze one near-term FPGA top.** The direct prepared-DCT top is
-   the lowest-risk first synthesis target; the estimated-CFL top is more
-   ambitious. Avoid growing both surfaces equally until one has timing and
-   resource evidence.
-   **Completed 2026-07-12:** `HjxlKv260PreparedDctTop` is the frozen first
-   synthesis and bring-up target; the estimated-CFL sibling remains
-   experimental until direct-top physical evidence exists.
-4. **Run first physical feasibility experiments.** Add a reproducible Vivado Tcl
-   flow, KV260 part/board selection, clock constraint, utilization report,
-   post-synthesis timing report, and a documented resource budget. This may
-   force architectural changes before more feature work is worthwhile.
-   **Infrastructure added 2026-07-12:** `fpga/vivado/` now defines the direct
-   top, K26/KV260 identities, 200 MHz timing contract, 70% resource budget, and
-   checkpoint/utilization/timing/methodology report flow. Its non-Vivado
-   preflight passes locally. Vivado execution and physical evidence remain
-   outstanding because the toolchain is unavailable on this machine.
+[`fpga/vivado/synth.tcl`](../fpga/vivado/synth.tcl) and the XDC establish a
+reasonable first gate: K26/KV260 identity, 200 MHz, 0.2 ns uncertainty, 1 ns
+input/output integration budgets, out-of-context synthesis, utilization and
+timing reports, and a provisional 70% per-resource ceiling. The preflight
+validates source lists, top declaration, clock metadata, and constraint syntax.
+
+None of that is physical evidence. Until Vivado runs, the project does not know
+whether memories infer as intended, which arithmetic paths dominate timing,
+whether the top fits, or whether 200 MHz is realistic. Until a block design and
+board test exist, it also does not know whether the AXI/DMA/host contract works
+outside simulation.
+
+## Prioritized recommendations
+
+### P0 — Required before stronger FPGA/product claims
+
+1. **Run the frozen direct top through Vivado.** Record tool version, exact
+   commit, part, utilization by hierarchy, inferred memory/DSP structures,
+   worst slack and path, unconstrained-path count, methodology warnings, and
+   the raw reports. Treat failure as architecture feedback.
+2. **Build one minimal KV260 data path.** Add clock/reset, AXI DMA, buffer and
+   cache-coherency rules, timeout/error recovery, repeat-frame operation, and a
+   host program that captures traces and reconstructs a checked codestream.
+3. **Keep completeness claims tied to exact evidence.** Do not generalize the
+   two exact 16x16 RGB fixtures into broad RGB parity. Close checkerboard CFL
+   and random DC at the earliest mismatching stage, then expand the corpus.
 
 ### P1 — Architecture and maintainability
 
-5. **Replace whole-frame register arrays along the chosen top’s critical path.**
-   Use inferred BRAM/URAM, tile buffers, ping-pong buffers, or external-memory
-   scheduling. Define which stage owns each stored plane and whether stages can
-   overlap.
-   **Partially completed 2026-07-15:** the direct prepared-DCT orchestration
-   stage no longer duplicates full-frame DC, quantized AC/nonzero, or metadata
-   arrays already owned by its downstream schedulers. Atomic streaming removes
-   6,288 register bits per configured block (100,608 bits at the frozen 32x32
-   default). The raster-triplet DC owner also removes the former three-cycle-
-   per-block plane-reorder feed phase. The owning AC scheduler now
-   serializes its frame coefficient plane into a 96-bit-wide `SyncReadMem`; the
-   default generated RTL contains one 1024x96 memory instead of another 98,304
-   frame-scaled coefficient register bits, and read prefetch overlaps dense
-   token emission. One DC triplet plane plus small nonzero/metadata register
-   planes and other frame schedulers still need conversion, and Vivado must
-   confirm BRAM inference, utilization, timing, and the sparse-content latency
-   tradeoff.
-6. **Create an explicit throughput model.** Record cycles per input word, block,
-   tile, token, and frame; initiation interval; worst-case token expansion;
-   input/output bandwidth; and target clock. Add counters or a simulation
-   profiler so regressions are visible.
-   **Partially completed 2026-07-12:** `HjxlPreparedDctThroughputSpec` now
-   profiles and locks input span/stalls, first-output latency, trace span/bubbles,
-   token expansion, and total cycles for tiny, 81-block/four-tile, and maximum-
-   density direct prepared-DCT frames; `docs/performance.md` records the 200 MHz
-   conversion and limits. Simulation characterization is now representative of
-   sparse and worst-case ordinary-DCT token expansion, but synthesis timing,
-   DMA overlap, and end-to-end throughput remain open.
-7. **Make control transactional.** Snapshot all configuration on frame start and
-   reject writes while busy, or introduce shadow registers plus an explicit
-   start/commit command. Add ABI version, build ID, capabilities, maximum frame
-   dimensions, and active route registers.
-   **Substantially completed 2026-07-12:** both RGB and prepared stream shells
-   snapshot the complete configuration from the first accepted input through
-   the accepted final trace. AXI-Lite writes during `busy` are documented and
-   tested as readable next-frame shadow updates. Read-only identity, ABI
-   version, contract build, capabilities, maximum geometry, and frame-stable
-   active-route registers now propagate into host artifacts. An explicit
-   start/commit command remains open if implicit first-beat commit proves
-   insufficient for the eventual DMA driver.
-8. **Generate cross-language contracts from one source.** Register offsets,
-   status bits, trace stages, packing, target variants, and the prepared stream
-   layout should originate in one checked schema and emit Scala/Python/C
-   definitions and documentation.
-   **Substantially completed 2026-07-12:** `abi/hjxl_abi.json` now generates
-   checked Scala and Python bindings for registers, status/control, trace
-   packing/stages, token selection, and the prepared layout; existing APIs are
-   compatibility aliases and CI rejects drift. Target-variant descriptions,
-   manifest-specific C output, and generated reference documentation remain to
-   be folded into the schema.
-9. **Refactor the wrapper matrix.** Extract reusable frame geometry, config
-   latching, storage, trace packing, and AXI-Lite register-bank components.
-   Organize sources into `core`, `stages`, `prepared`, `interfaces`, and
-   `elaboration` packages.
+4. **Replace remaining frame-scaled register planes on the chosen path.** Use
+   inferred BRAM/URAM, bounded tile/line buffers, or external-memory schedules.
+   Document one owner for every stored plane and when producer/consumer phases
+   may overlap.
+5. **Define a scalable throughput architecture.** Specify the intended input
+   rate, block initiation interval, overlap between receive/compute/emit,
+   worst-case token expansion, memory bandwidth, and target frame sizes before
+   optimizing more focused wrappers.
+6. **Refactor route and wrapper construction.** Extract shared frame geometry,
+   lifecycle, config snapshot, storage, trace packing, register-bank, and
+   elaboration helpers. Organize sources by layer and replace the core's
+   route-wiring repetition with a declarative route table where Chisel permits.
+7. **Split large schedulers at owned boundaries.** Storage/traversal,
+   arithmetic, and trace emission should not share one 600–800-line module.
+   Preserve the prepared first-block-owned record as the stable composition
+   boundary for variable-shape work.
+8. **Consolidate documentation.** Replace repeated status prose with one
+   current stage/evidence matrix and a short changelog. Keep historical commit
+   narratives in Git history, not in the primary assessment.
 
-### P2 — Verification and pipeline completeness
+### P2 — Verification, tooling, and release quality
 
-10. **Add measured verification.** Introduce randomized ready/valid stalls,
-    malformed-frame sequences, mid-frame control writes, reset-at-each-state,
-    capacity-edge generation, and coverage reporting. Add Chisel assertions and
-    formal checks to small protocol/state modules first.
-11. **Split Python tooling into a package with native tests.** Add
-    `pyproject.toml`, pinned dependencies, formatter/linter/type checks, and
-    focused unit tests. Keep Scala tests for RTL-to-host integration rather than
-    as the primary Python test runner.
-12. **Close the RGB path in earliest-mismatch order.** Improve and lock XYB,
-    implement AQ, integrate prepared-CFL logic with the RGB DCT path, then add
-    rectangular AC strategy. Do not use final codestream differences as the
-    first diagnostic.
-    **Started 2026-07-12:** the Q24 prepared-AQ conversion seam now matches
-    libjxl-tiny raw-quant bytes exactly across deterministic patterns and
-    distances. The upstream image heuristics and pipeline integration remain
-    open.
-    **XYB follow-up 2026-07-13:** signed mixing now clamps after bias like the
-    reference, Q24 absorbance plus normalized cube-root interpolation removes
-    the former range saturation, and independent fixtures lock the Q12 error
-    bound.
-    **AQ contrast follow-up 2026-07-13:** the RGB core now computes the global
-    quarter-resolution Q16 pre-erosion contrast grid with a shared fixed-point
-    datapath, and five libjxl-tiny fixture families bound the cell error to two
-    percent. An explicit selector preserves the prior default-selector route,
-    and a 65x1 regression crosses the 64-pixel tile boundary at a carry-safe
-    72-pixel padded width.
-    **Fuzzy-erosion follow-up 2026-07-13:** a prepared Q16 scheduler now matches
-    the full reference intermediate within one LSB across five patterns and a
-    two-dimensional 65x65-to-72x72 traversal. The RGB-composed focused route
-    reuses the contrast stage, stays within two percent, and preserves the
-    default all-route ABI behavior. The strategy-mask/nonlinear-mask transforms
-    were the next earliest mismatch.
-    **Strategy-mask follow-up 2026-07-13:** a 42-cycle restoring reciprocal now
-    emits the Q16 mask used by AC-strategy scoring, with exact prepared fixture
-    values and full-frame equality against encoder-style stitched tile calls.
-    The composed RGB route remains within two percent and crosses both 65x1 and
-    65x65 boundaries. The separate nonlinear `_compute_mask` that begins final
-    AQ-map modulation is now the next earliest mismatch; real rectangular
-    strategy scoring also remains downstream.
-    **Nonlinear-mask follow-up 2026-07-13:** the parallel final-map branch now
-    evaluates `_compute_mask` from positive Q16 erosion to a signed-Q24 log-
-    domain seed. One 56-cycle divider is shared across three rational terms for
-    a 174-cycle evaluator. The independent exporter matches the real private
-    function, proves full-frame equality with stitched 64x64 calls, and covers
-    negative trace packing plus 65x1/65x65 traversal. HF, color, gamma,
-    power/scale, and final-map assembly are now the next earliest mismatch.
-    **HF-modulation follow-up 2026-07-13:** the RGB path now continues through
-    `_hf_modulation`, accumulating all 112 internal edges of each signed-Q12 Y
-    block over exactly 64 cycles and applying a Q32 coefficient to the signed-
-    Q24 seed. A passive accepted-XYB tap keeps the composed top to one converter.
-    The independent exporter matches the private float32 function, proves
-    stitched 64x64 equality, and covers Q8-input/Q12 prepared fixtures,
-    saturation, backpressure, 65x1, and 65x65 order. Color modulation is now the
-    next earliest mismatch, followed by gamma and power/scale assembly.
-    **Color-modulation follow-up 2026-07-13:** the RGB path now continues through
-    `_color_modulation`. One shared scheduler captures padded XYB blocks for the
-    cumulative pipeline; the focused HF route specializes it to Y-only storage,
-    while the color route retains X/Y/B and pipelines the 64-cycle HF and color
-    walkers. The color block uses capped Q16 ramp coverage and distance-folded
-    Q24 coefficients with no runtime divider, including the exact reference
-    bypass above distance 4. The independent exporter matches the private
-    float32 call, proves stitched 64x64 equality, and covers five patterns,
-    signed saturation, backpressure, 65x1, and 65x65 order. Gamma modulation is
-    now the next earliest mismatch, followed by power/scale and final-map
-    assembly.
-    **Gamma-modulation follow-up 2026-07-13:** the RGB path now continues through
-    `_gamma_modulation`. A reusable HF/color block pipeline retains X/Y for the
-    128-cycle gamma walker without repeating conversion or frame storage. Fine,
-    coarse, and HDR Q20 tables approximate each inverse response over the
-    explicit `[0, 8]` prepared range; a normalized Q20 table follows the
-    reference `fast_log2f`, and the stage contains no runtime divider. The
-    independent exporter matches the private float32 call exactly, proves
-    stitched 64x64 equality, and covers ratio/log seams, signed saturation,
-    backpressure, five patterns, 65x1, and 65x65 order. Power/scale and final-
-    map assembly are now the next earliest mismatch.
-    **Final-map follow-up 2026-07-13:** the focused RGB path now completes
-    `_per_block_modulations` through a normalized 257-entry Q24 `fast_pow2f`
-    table, distance-derived scale/damping/base addition, and the existing exact
-    raw-quant converter. Unsupported distances consistently fall back to the
-    shared distance-1 parameters before color/final arithmetic. The final-map
-    oracle matches libjxl-tiny exactly before fixed quantization; deterministic
-    focused tests cover exponent seams, distance-7/14 damping, prepared exact
-    maps, five RGB families, exact fixed-model raw bytes at distances 0.5/1/8, fixed
-    override, backpressure, 65x1, and 65x65 order. The next earliest integration
-    mismatch is feeding these adaptive bytes into the RGB DCT quantizer and AC
-    metadata/token schedulers; real rectangular strategy scoring remains open.
-    **Quantization/token integration follow-up 2026-07-13:** one retained Q12
-    X/Y/B block now feeds three shared DCTs and the exact prepared quantizer,
-    with a 33-cycle restoring divider recomputing the inverse AC scale for each
-    adaptive byte. The core quantized and AC-metadata routes consume adaptive
-    raw quant; a standalone wrapper emits the combined DC/strategy/metadata/AC
-    token stream. Exhaustive supported/custom-scale reciprocal tests, fixed-
-    override and live-control retention, RGB-versus-prepared trace equality,
-    65x1 traversal, final-only AXI TLAST, and structural elaboration are covered.
-    Metadata intentionally bypasses DCT/reciprocal hardware. RGB-derived CFL,
-    rectangular strategy scoring, and RGB-token codestream proof are now the
-    next earliest mismatches.
-    **RGB-derived CFL follow-up 2026-07-13:** the completed AQ block stream is
-    now split at a reusable native-Q12 DCT boundary so map/metadata routes avoid
-    unused reciprocal hardware. Q12 coefficients widen to Q16 only at the
-    prepared CFL estimator; the prepared stream ABI remains Q16. The core
-    quantized, AC-metadata, focused CFL-map, and focused AC-token routes now use
-    estimated tile maps, while the earlier scalar-CFL wrappers remain explicit
-    diagnostics. Five deterministic 8x8 families at varied distances match an
-    independent integer model exactly and remain within two signed int8 units
-    of libjxl-tiny; a 65x1 case proves two-tile ordering, and RGB quantized,
-    metadata, and combined-token streams exactly match the same Q12 prepared
-    handoff. Horizontal, vertical, 2D, AXI, KV260-wrapper, backpressure, TLAST,
-    and structural regressions preserve the prepared-Q16 path. Rectangular
-    strategy scoring is now the next earliest image-stage mismatch; the RGB
-    combined token stream still lacks a direct codestream/decoder proof.
-    **Rectangular-strategy prerequisite follow-up 2026-07-13:** reusable Q12
-    DCT-16, 16x8, and 8x16 primitives now reproduce libjxl-tiny's two distinct
-    canonical rectangular layouts within two Q12 units across constant, axis
-    ramp, impulse, and signed fixtures. The exact 2x2 selector separately
-    covers aggregate orientation, horizontal tie behavior, strict subregion
-    replacement, and first/continuation encoding over caller-supplied costs.
-    At that checkpoint, the public strategy route was still fixed DCT and the
-    entropy-cost arithmetic, tile/frame scheduler, adjusted-quant interaction,
-    and downstream rectangular quantization/tokenization remained open.
-    **Prepared strategy-cost follow-up 2026-07-13:**
-    `AcStrategyCandidateCostEvaluator` now walks canonical Q12 coefficients for
-    DCT/16x8/8x16 candidates, reproduces the integer entropy/loss model exactly,
-    applies six distance-specific outer multipliers, and reports fallback or
-    overflow. `PreparedAcStrategy2x2Selector` enforces the eight-candidate
-    order and holds 64-bit costs plus the exact decision under backpressure.
-    Automated fixtures cover 40 candidates across five patterns and varied
-    distances; a broader 30-region audit matches the float reference decision
-    in 27 cases. The three misses are checkerboard orientation changes at
-    distances 0.5, 4, and 8, and the worst audited candidate-cost delta is
-    14.62 percent, so the prepared Q12 seam is not claimed as float parity.
-    **Adaptive strategy-frame follow-up 2026-07-13:**
-    `FramePreparedAcStrategyTraceStage` now stores Q12 XYB/DCT, AQ, and mask
-    blocks; estimates CFL independently for each 64x64 tile; forms the exact
-    four DCT/two 16x8/two 8x16 candidate order; applies covered-block maxima;
-    and emits the complete raster map after tile-local 2x2 traversal. Exact
-    integer transform/CFL oracle logic distinguishes the scheduler-fixed result
-    from the earlier rounded-float candidate fixture. Constant and gradient
-    decisions match that model; 24x24 and 72x16 regressions prove incomplete
-    edges remain DCT and rectangles never cross tiles; backpressure and
-    unsupported-distance diagnostics are covered. The shared RGB AQ/DCT source
-    carries the original strategy mask and effective distance into a focused
-    core route with one converter and three ordinary DCTs. The default all-route
-    shell intentionally stays fixed DCT. Adjusting raw quant and driving
-    rectangular quantization, metadata, and tokens remain the next earliest
-    mismatch.
-    **Strategy-adjusted raw-quant follow-up 2026-07-13:** the prepared strategy
-    scheduler now stores each pre-strategy byte and, after the search, follows
-    the raster first-block map exactly: DCT leaves one byte unchanged, 8x16
-    raises the current/right pair to their maximum, and 16x8 does the same for
-    the current/below pair. Continuation cells never act. The adjusted byte is
-    emitted beside its strategy record and remains stable with that record
-    under output stalls. Prepared tests independently cover DCT, horizontal,
-    and vertical decisions; arbitrary bytes `[2, 9, 7, 4]` prove both
-    orientations, while the RGB checkerboard oracle converts the real
-    pre-strategy field `[4, 5, 5, 4]` to `[5, 5, 5, 5]`. The existing 24x24
-    incomplete-edge and 72x16 cross-tile cases also verify byte adjustment and
-    bounds. `FrameAqAdjustedRawQuantTraceStage` exposes the aligned sideband,
-    and the focused public `RawQuantField` core route uses it at zero override;
-    a uniform fixed override keeps the inexpensive path. The remaining earliest
-    mismatch is consuming the selected rectangles and adjusted bytes in
-    quantization, metadata, and token scheduling.
-    **Non-DCT integration audit 2026-07-13:** the reference and current RTL
-    interfaces were traced through quantization, DC layout, nonzero prediction,
-    metadata, and coefficient tokenization. A rectangular block cannot be
-    safely bolted onto `DctOnlyQuantizeBlock`: the frame schedulers currently
-    require one 64-coefficient X/Y/B record per raster cell, emit a strategy and
-    quant-field token for every cell, and use ordinary-DCT coefficient order and
-    contexts. The reference instead gives one first block a 128-coefficient
-    payload, derives two DC cells, replicates a shifted nonzero count for
-    prediction while tokenizing the raw count, and suppresses continuation-cell
-    metadata and AC ownership. Implement the first-block-owned prepared record
-    described in the architecture assessment before composing the RGB search
-    with quantization; validate the primitive and frame maps independently,
-    then extend metadata and AC scanning, and only then add a combined token
-    route. This sequencing preserves the project's earliest-mismatch discipline
-    and avoids a second adaptive full-frame source.
-    **Prepared variable-shape quantization follow-up 2026-07-14:** that first-
-    block-owned seam is now implemented. `VarDctQuantizeBlock` accepts one
-    canonical Q16 X/Y/B payload with 64 DCT or 128 rectangular coefficients,
-    performs Y reconstruction and CFL residual quantization, derives one or two
-    raster-ordered DC cells, and exposes both the raw token-prefix count and the
-    shifted prediction-map count. `FramePreparedVarDctQuantizeStage` consumes
-    owners only, maps a 16x8 continuation below and an 8x16 continuation right,
-    rejects gaps, overlaps, bounds errors, and bad final markers, and recovers
-    after dropping a malformed frame. Twelve DCT/16x8/8x16 fixtures across four
-    image/distance/quant/CFL combinations match the frozen Q16 model exactly;
-    against native-float libjxl-tiny, AC differs by at most one integer while DC
-    and both count forms match exactly. A review-driven refactor serializes Y
-    reconstruction over 64 or 128 cycles, reducing emitted dynamic quant-bias
-    division from 128 operators to one. The generated five-file hierarchy is
-    13,363 lines, but still contains three combinational 128-lane AC quantizers,
-    so timing and resource feasibility remain unproven. The next earliest
-    mismatch is composing the RGB search with this seam, followed by first-
-    block-aware metadata and rectangular AC scanning.
-    **Prepared variable-shape token follow-up 2026-07-14:** the downstream
-    first-block-aware logical token boundary is now implemented.
-    `FramePreparedVarDctAcMetadataTokenTraceStage` emits CFL maps, owner-only
-    strategy/quant tokens, and per-raster-cell fixed literals;
-    `FramePreparedVarDctAcTokenTraceStage` replicates shifted counts into the
-    covered-cell prediction map while scanning each owner's raw count and 64 or
-    128 coefficients exactly once. The coefficient payload is serialized into
-    a narrow synchronous store instead of retained as a frame-sized register
-    matrix. `FramePreparedVarDctTokenTraceStage` reconstructs full DC and
-    encoded-strategy grids, and `FramePreparedVarDctQuantizeTokenTraceStage`
-    directly composes the prepared quantizer with that token scheduler. A
-    six-owner 32x16 checkerboard fixture covers DCT, 16x8, and 8x16 in one
-    frame; all 1,292 DC, strategy, metadata, and AC rows match the native
-    libjxl-tiny token oracle under output stalls. Separate checks cover a
-    two-tile CFL predictor, malformed raster ownership, and a zero-valued
-    horizontal direct quantize-to-token transaction. The generated direct
-    hierarchy is 16 SystemVerilog files and 29,921 lines. This closes the
-    prepared non-DCT tokenization gap, but not RGB composition, synthesis/timing
-    feasibility, or a non-DCT RGB-to-codestream proof. The earliest functional
-    mismatch is now the RGB strategy/AQ/CFL source-to-owner composition.
-    **RGB variable-shape composition follow-up 2026-07-14:** that source-to-
-    owner seam is now implemented. `PreparedAcStrategySelectedCell` extends the
-    prepared strategy scheduler's aligned output with adjusted raw quant, tile
-    CFL, scalar quant parameters, the current ordinary DCT, and the covered
-    neighbor block. `AcStrategySelectedCellToVarDctOwnerStage` consumes
-    continuation cells, recomputes the selected 16x8 or 8x16 coefficients,
-    regenerates the reciprocal from an adaptive adjusted byte when required,
-    and emits the established first-block-owned 64/128-coefficient record.
-    `FramePreparedAcStrategyVarDctQuantizeTokenTraceStage` and
-    `FrameAqVarDctQuantizeTokenTraceStage` compose that adapter with the
-    prepared variable-shape quantizer/token scheduler and the shared RGB AQ/DCT
-    source. The heavy path is available only through
-    `HjxlCoreTraceRoute.AqVarDctTokens`; the default all-route core and older
-    all-DCT `TraceStage.AcTokens` focused route remain unchanged. An independent
-    2x2 zero-coefficient fixture makes libjxl-tiny choose two horizontal owners,
-    adjusts `[3, 7, 11, 13]` to `[7, 7, 13, 13]`, and matches all 32 native
-    DC/strategy/metadata/AC token rows under stalls. Live 16x16 RGB coverage
-    reaches every token phase and reports unsupported distance, while a focused
-    8x8 AXI test checks packed mixed-stage output and final-only TLAST. A
-    malformed unsupported owner strategy asserts immediately. Compile-time
-    block indexing also removes the size-one dynamic-Vec warnings previously
-    emitted by the prepared variable-shape hierarchy. This closes the RGB
-    composition wiring gap at the logical-token boundary, not the overall
-    encoder: the exact integration fixture has zero coefficients, the RGB
-    XYB/DCT/AQ/scorer path remains approximate, entropy and assembly are still
-    host-only, and synthesis/timing/resource/KV260 evidence remains absent. The
-    earliest functional parity gap is now nonzero RGB non-DCT token-to-
-    codestream comparison against the full reference.
-    **Nonzero RGB codestream follow-up 2026-07-14:** one such full-reference
-    case now passes. The first audit found an otherwise exact constant-frame
-    trace with one X-channel DC residual off by one: Q12 XYB/DCT rounding moved
-    the inverse-DC product across libjxl-tiny's away-from-zero threshold. The
-    fix keeps the established Q12 AQ/scoring path but optionally captures Q16
-    XYB and ordinary DCT values, carries them through strategy buffering, and
-    uses them for selected-owner rectangular transforms, CFL fitting, and
-    variable-shape quantization. Prepared Q12 users and older all-DCT builds do
-    not expose or elaborate this sideband. The reference helper now exports
-    native searched-strategy token arrays plus frame/codestream bytes for one
-    AC group. A 16x16 exact-Q8 impulse selects encoded strategy
-    `[5, 4, 1, 1]`, produces nonzero DC and AC values, and matches every native
-    DC/strategy/metadata/AC row and the 197-byte codestream under periodic
-    stalls. This is meaningful end-to-end correctness evidence, but only for
-    one small image at distance 1. The known Q12 checkerboard orientation
-    disagreement remains. A later hierarchy cleanup now derives exact Q12 and
-    Q16 from one converter, replacing the Q12 cube-root table with a one-bit
-    correction ROM and moving the sole additional Q16 frame store under the
-    final-AQ owner. Host software still performs entropy/assembly, and physical
-    feasibility remains untested.
-    **Q16 strategy and second-codestream follow-up 2026-07-15:** a deterministic
-    five-pattern/six-distance audit identified strategy scoring as the earliest
-    gradient/checkerboard mismatch in the live token route. The prepared scorer
-    and DCT kernels now accept an explicit coefficient precision; prepared Q12
-    behavior is unchanged, while the focused RGB VarDCT hierarchy uses its
-    already-buffered Q16 XYB/DCT values for CFL, all eight candidate costs,
-    rectangular owner transforms, and quantization. Directed Q16 8x8 tests stay
-    within four Q16 LSBs, and shifted Q12 fixtures prove the scale-aware scorer
-    preserves every prior integer cost. The ideal Q16 30-region audit matches
-    28 float decisions instead of 27; only checkerboard distance 4 and 8 remain.
-    The host oracle also gained `--quantize-input-q8`, preventing generated
-    gradient/random float samples from being compared against different Q8 RTL
-    inputs. With that boundary aligned, a 16x16 gradient selects
-    `[1, 1, 5, 4]` and matches all native token arrays plus the 230-byte
-    codestream; the original 197-byte impulse remains exact. The checkerboard
-    now matches strategy and DC but estimates Y-to-X CFL as -18 rather than the
-    native -17, and the random audit first differs in three DC residuals. These
-    are the next trace-first parity targets; no broad RGB or physical claim is
-    made.
-13. **Expand oracle diversity.** Add several deterministic patterns, signed and
-    near-saturation values, supported distances, non-block/tile-aligned sizes,
-    multi-tile 2D images, and at least a few small real-image crops. Validate
-    emitted codestreams with an independent JPEG XL decoder in addition to
-    byte parity with the assembly oracle.
-
-### P3 — Board and release readiness
-
-14. Add Vivado block-design/DMA integration, host driver code, cache coherency
-    rules, timeout/error recovery, repeat-frame operation, and board-captured
-    trace tests.
-15. Define release artifacts and compatibility: generated RTL, schema/header,
-    host package, example bundle, known-good bitstream/XSA, board instructions,
-    changelog, and signed or checksummed outputs.
-16. Only after timing and correctness are stable, decide whether entropy coding
-    stays in host software or moves into RTL. The present split is reasonable;
-    hardware entropy coding should not block a useful accelerator milestone.
+9. **Add measured verification.** Introduce seeded randomized ready/valid and
+   malformed-frame generators, reset-at-state tests, repeated-frame stress,
+   functional/assertion coverage, and formal checks for small protocol/FSM
+   blocks.
+10. **Expand parity oracles.** Cover all supported distances, signed/extreme
+    inputs, non-aligned multi-tile images, and real-image crops. Decode emitted
+    codestreams with an independent JPEG XL implementation.
+11. **Turn `tools/` into a tested Python package.** Split the 5,294-line oracle
+    helper by responsibility; add `pyproject.toml`, pinned dependencies, native
+    unit tests, formatting, linting, and type checks. Keep Scala process tests
+    for cross-language integration only.
+12. **Define compatibility and release artifacts.** Document ABI bump rules and
+    publish a known-good set of generated RTL, schema/bindings, host package,
+    example bundle, reports, bitstream/XSA when available, checksums, and board
+    instructions.
+13. **Harden project governance.** Add contribution, security, changelog, and
+    code-ownership guidance; pin CI actions immutably; add dependency review.
 
 ## Verification performed for this assessment
 
-The following local checks were run immediately before committing the complete
-implementation and documentation tree described by this assessment. The
-2026-07-14 prepared variable-shape quantization, token, RGB composition, and
-shared-precision conversion follow-ups plus the 2026-07-15 direct DC-owner,
-Q16 strategy-scoring, transform-precision, and second-codestream follow-ups
-were validated from the complete working tree rather than inferred from
-component tests:
+The exact functional baseline at `d6915b8` had already completed the full gate
+immediately before this review:
 
-- `git diff --check` — passed.
-- `python3 -m py_compile tools/*.py` — passed.
-- `python3 tools/hjxl_generate_abi.py --check` — passed.
-- `python3 tools/hjxl_host_metadata_smoke.py` — passed.
-- `hjxl_reference.py --strategy-var-dct-zero-fixture-dir ...` at 16x16 — passed
-  and emitted four prepared
-  raster rows plus 32 native token rows.
-- `hjxl_reference.py --pattern {impulse,gradient} --quantize-input-q8
-  --var-dct-*-tokens-npy ... --var-dct-ac-strategy-npy ...
-  --var-dct-codestream-bin ...` at 16x16 — passed through the Scala integration
-  tests; every native logical-token array matched and token-built codestreams
-  were identical to direct native 197-byte and 230-byte encodings.
-- `sbt test` — passed all 85 suites and 345 tests on the exact candidate in
-  2,020 seconds, with zero failures, aborts, cancellations, ignored tests, or
-  pending tests. The previously compiler-heavy `HjxlCoreSpec` passed all 20
-  cases in the full run without an isolated retry.
-- `HJXL_REPO_ROOT=$PWD ./mill --no-server -j 2 hjxl.test` — independently
-  passed the same complete 85-suite/345-test candidate in 2,039 seconds. Its
-  two forked workers reported 205 and 140 successful tests respectively, with
-  zero failures, aborts, cancellations, ignored tests, or pending tests.
-- Focused sbt execution of the prepared variable-shape quantizer/token suites,
-  the strategy scheduler, the new RGB composition/AXI suite, core and stream
-  elaboration gates, and discovery — passed: 11 suites and 51 tests in 2
-  minutes 59 seconds.
-- The adaptive strategy-frame coverage included exact constant, gradient, and
-  checkerboard decisions against the independent integer scheduler model;
-  exact DCT/horizontal/vertical post-search raw-quant adjustment; aligned
-  sideband stability under backpressure; complete 2x2 selection; 24x24
-  incomplete-edge behavior; 72x16 tile-boundary behavior; unsupported-distance
-  diagnostics; focused RGB/core routing; and packed AXI-stream TLAST. The
-  checkerboard RGB case verifies `[4, 5, 5, 4]` becomes `[5, 5, 5, 5]`. The
-  nonlinear AQ regression also checks the
-  exact reciprocal sideband against the value actually emitted by the
-  intentionally approximate RGB erosion path, avoiding a false exact claim at
-  that seam.
-- The RGB variable-shape coverage checks both selected-cell reciprocal modes,
-  exact horizontal and vertical constant-transform layout, owner/continuation
-  semantics, all 32 native token rows under periodic stalls, a live 16x16 RGB
-  frame through every logical-token phase, unsupported-distance status, packed
-  mixed-stage AXI output, final-only TLAST, malformed unsupported strategy
-  assertion, focused-route discovery, and exclusion from the default core.
-- Focused sbt execution of the new variable-shape primitive/frame/elaboration
-  suites plus the existing ordinary/rectangular transform and prepared-DCT
-  quantization/elaboration suites — passed: 6 suites and 20 tests. The new 12
-  DCT/16x8/8x16 prepared fixtures cover four pattern/distance/quant/CFL
-  combinations, both orientation maps, raw versus shifted nonzero counts,
-  stalls, malformed ownership, sticky overflow, and recovery.
-- Focused sbt execution of the ordinary-DCT token helpers, prepared token
-  schedulers, variable-shape quantizer, mixed-shape token boundary, and both
-  elaboration gates — passed: 8 suites and 27 tests. The mixed 32x16 oracle has
-  six first-block owners and 1,292 exact trace rows spanning DC, full raster
-  strategy, owner-only metadata, and DCT/rectangular AC scans. The same spec
-  stalls periodic trace beats, rejects a raster gap independently in metadata
-  and AC stores, covers two horizontal CFL tiles, and drives a prepared 8x16
-  owner through direct quantization and all token phases.
-- A final review found that a seven-bit rectangular scan index could wrap from
-  127 to zero before expressing the 128 termination value. The index now
-  carries an explicit eighth bit, and a targeted regression places the only
-  nonzero coefficient at physical offset 127, observes all 126 post-LLF scan
-  tokens, and proves final-beat termination without wrap. The exact commit
-  candidate is covered by both the complete sbt run and the focused Mill rerun.
-- `sbt 'runMain hjxl.ElaboratePreparedVarDctQuantize'` — passed and emitted 5
-  SystemVerilog files totaling 13,363 lines. Inspection and an automated
-  elaboration assertion find exactly one dynamic quant-bias division; the
-  constant CFL `/ 84` expression remains separate. This is structural evidence
-  only: three combinational 128-lane AC quantizers remain, and no synthesis,
-  timing, or resource report exists for this top.
-- `sbt 'runMain hjxl.ElaboratePreparedVarDctQuantizeTokens'` — passed and
-  emitted 16 SystemVerilog files totaling 29,921 lines. The hierarchy contains
-  the quantizer, DC/strategy reconstruction, first-block metadata and AC
-  schedulers, and a narrow synchronous coefficient store. This is structural
-  evidence only; it does not establish timing, resource fit, or RGB integration.
-- `sbt 'runMain hjxl.ElaborateAqVarDctQuantizeTokens'` and
-  `sbt 'runMain hjxl.ElaborateAxiStreamCoreAqVarDctTokens'` — passed and emitted
-  64 files/135,394 lines and 66 files/135,565 lines of SystemVerilog on the
-  2026-07-15 candidate. Each hierarchy contains one RGB converter and three
-  cube-root instances that emit exact Q12 plus Q16, separate Q12/Q16 ordinary
-  DCT specializations, Q16 strategy scoring, one optional full-frame Q16 store,
-  one owner adapter, both rectangular transforms, variable-shape quantization,
-  and combined token schedulers. The lower line totals also include intervening
-  frame-store ownership cleanups and cannot be attributed solely to this
-  precision change. The physical-design warning remains strong: there is no
-  synthesis, timing, utilization, power, or KV260 evidence, and the precision
-  path should not be assumed to be the final FPGA architecture.
-- Focused sbt execution of the prepared AC-strategy candidate evaluator,
-  distance lookup/fallback, extreme-range saturation, eight-candidate
-  sequencer, backpressure, and elaboration suites — passed: 2 suites and 6
-  tests. Five pattern/distance fixtures cover 40 candidates with exact integer
-  oracle results; the separate 30-region float audit records 27 matching
-  decisions and the documented 14.62-percent worst cost delta.
-- Focused sbt execution of the DCT-8/DCT-16/rectangular transform, exact 2x2
-  strategy selector, and rectangular elaboration suites — passed: 5 suites and
-  8 tests. The generated signed Q12 oracle covers five cases per transform;
-  both rectangular orientations remain within two Q12 units of libjxl-tiny.
-- `sbt 'runMain hjxl.ElaboratePreparedAcStrategy'`,
-  `sbt 'runMain hjxl.ElaborateAqAcStrategy'`, and
-  `sbt 'runMain hjxl.ElaborateCoreAcStrategy'` — passed. They emitted,
-  respectively, 14 files/38,581 lines, 44 files/77,614 lines, and 44
-  files/77,186 lines of SystemVerilog. The prepared hierarchy contains the
-  selector, scorer, tile CFL estimator, and both rectangular transforms; the
-  RGB and core hierarchies add one RGB-to-XYB module and one ordinary-DCT
-  module instantiated for all three channels. These large structural counts
-  reinforce the need for synthesis/resource work; elaboration is not evidence
-  of timing closure or fit.
-- `sbt 'runMain hjxl.ElaborateAqAdjustedRawQuant'` and
-  `sbt 'runMain hjxl.ElaborateCoreRawQuant'` — passed and emitted 47
-  files/77,857 lines and 48 files/77,919 lines of SystemVerilog. Both
-  hierarchies contain the adaptive strategy scheduler, CFL estimator, ordinary
-  and rectangular transforms, and one RGB-to-XYB converter; the focused core
-  also contains the cheap fixed override. These large trace-oriented artifacts
-  are structural evidence only, not proof that the route will fit or time on
-  the KV260.
-- Focused sbt execution of the RGB/prepared estimated-CFL map, quantization,
-  metadata, token, core, AXI/AXI-Lite elaboration, prepared stream, and KV260
-  wrapper suites — passed: 15 suites and 93 tests. The complete sbt and Mill
-  runs cover the same changes in the full repository tree.
-- `sbt 'runMain hjxl.ElaborateAqFinalMap'` — passed and emitted 26 SystemVerilog
-  files totaling 32,804 lines. `sbt 'runMain hjxl.ElaborateAqRawQuant'` also
-  passed and emitted 27 files totaling 32,777 lines. Each composed hierarchy
-  contains one RGB-to-XYB converter; the new exponent/final-map modules have no
-  division operator. These checks prove elaboration and structural intent only;
-  they do not establish timing or resource feasibility for the upstream fixed
-  erosion divide, minima network, square root, lookup tables, multipliers, or
-  register-backed full-frame grids.
-- `sbt 'runMain hjxl.ElaborateAqDctOnlyQuantize'`,
-  `sbt 'runMain hjxl.ElaborateAqDctOnlyAcMetadataTokens'`, and
-  `sbt 'runMain hjxl.ElaborateAqDctOnlyQuantizeTokens'` — passed. They emitted,
-  respectively, 37 files/46,043 lines, 28 files/33,198 lines, and 45
-  files/51,960 lines of SystemVerilog. The quantization and combined-token
-  hierarchies each contain one RGB-to-XYB converter and three DCT instances;
-  the metadata-only hierarchy contains one converter and no DCT or reciprocal
-  divider. The adaptive reciprocal is a restoring divider and the emitted
-  hierarchy contains no division operator. These are elaboration and
-  structural checks, not timing or resource results.
-- `sbt 'runMain hjxl.ElaborateAqCflMaps'`,
-  `sbt 'runMain hjxl.ElaborateAqCflDctOnlyQuantize'`,
-  `sbt 'runMain hjxl.ElaborateAqCflDctOnlyAcMetadataTokens'`, and
-  `sbt 'runMain hjxl.ElaborateAqCflDctOnlyQuantizeTokens'` — passed. They
-  emitted, respectively, 34 files/46,918 lines, 45 files/67,202 lines, 38
-  files/49,346 lines, and 53 files/82,380 lines of SystemVerilog. Each contains
-  one RGB-to-XYB instance, three DCT instances, and the CFL tile estimator;
-  only the quantization and combined-token hierarchies contain
-  `AdaptiveInvQacQ16`.
-  These counts prove elaboration and intended module selection, not synthesis
-  resource use, timing, or physical feasibility.
-- `sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'` followed by
-  `tclsh fpga/vivado/synth.tcl --preflight-only` — passed with the expected 19
-  generated RTL files. This is a source/constraint preflight, not synthesis.
-- `sbt 'runMain hjxl.ElaboratePreparedDctOnlyQuantizeTokens'` and the frozen
-  KV260 elaboration now list 15 files/13,051 lines and 19 files/14,465 lines in
-  their authoritative `filelist.f` inputs. The frozen top contains one
-  `FramePreparedDcBlockTokenTraceStage` triplet plane and no orchestration-level
-  quantized-DC register array, removing 292 emitted lines from the immediately
-  preceding top. Eight focused suites passed 31 behavioral, codestream,
-  throughput, AXI/AXI-Lite, flat-wrapper, and structural tests. The 81-block
-  sparse and dense totals both fell by the expected 243 cycles. These are
-  structural and simulation results; only Vivado can establish their resource
-  and timing effect.
-- Tool availability — Java, sbt, and Verilator 5.048 were found; Vivado, Vitis,
-  and Yosys were not found.
+- `sbt test`: 85 suites, 345 tests, all passed in 2,020 seconds;
+- `HJXL_REPO_ROOT=$PWD ./mill --no-server -j 2 hjxl.test`: the same 85 suites
+  and 345 tests, all passed in 2,039 seconds;
+- exact 197-byte impulse and 230-byte gradient RGB VarDCT codestream checks;
+- focused primitive, prepared-DCT, variable-shape, core, AXI, discovery,
+  elaboration, host-tool, and throughput checks described above.
 
-No claim is made here about synthesis, timing closure, resource use, bitstream
-generation, DMA operation, or KV260 hardware execution.
+For this consolidated assessment, the following checks were rerun on
+2026-07-15:
+
+- `git diff --check` — passed before the documentation edit;
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/*.py` — passed;
+- `python3 tools/hjxl_generate_abi.py --check` — generated bindings current;
+- `PYTHONDONTWRITEBYTECODE=1 python3 tools/hjxl_host_metadata_smoke.py` — passed;
+- `sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'` — passed;
+- `tclsh fpga/vivado/synth.tcl --preflight-only` — passed with 19 RTL files.
+
+Java 21 and Verilator 5.048 were available. Vivado, Vitis, and Yosys were not
+found. The full Scala suites were not repeated solely for a documentation-only
+change; the recorded dual-build results apply to the exact reviewed commit.
+
+No claim is made about synthesis, timing closure, resource use, power,
+place-and-route, bitstream generation, DMA operation, or KV260 execution.
 
 ## Final assessment
 
-The project is better engineered than its completeness level might suggest.
-Its scope discipline, prepared-data seams, trace vocabulary, oracle integration,
-error-path validation, and refusal to overclaim approximate stages are all
-excellent foundations. The team should preserve those qualities.
+`hjxl` has the foundations of a credible hardware codec project: disciplined
+scope, traceable boundaries, explicit fixed-point semantics, exact prepared
+oracles, robust stream/control validation, and documentation that does not hide
+known gaps. Those qualities should be preserved.
 
-The next quality milestone should not be another broad layer of wrappers or
-host metadata. It should be a narrow, reproducible proof that one chosen
-prepared-DCT top synthesizes, fits, meets a stated clock, transfers a frame
-through a real KV260 DMA path, and reconstructs the expected codestream from a
-captured trace. That experiment will turn the current verification architecture
-into evidence about the intended hardware product—and will reveal which of the
-current simulation-friendly structures must be redesigned before the remaining
-JPEG XL stages are added.
+The next major quality gain will not come from another broad set of trace
+wrappers. It will come from using the frozen prepared-DCT top to obtain the
+first real synthesis and board evidence, then redesigning the frame-scaled
+structures that the reports identify. In parallel, parity work should remain
+trace-first and grow from the two exact RGB fixtures into a varied corpus.
+
+Until those milestones are reached, the most accurate description is:
+**a high-quality verification scaffold and partial JPEG XL RTL implementation,
+with promising logical correctness and unproven physical viability.**
