@@ -160,6 +160,29 @@ class RgbToXybApproxSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
+  "RgbToXybApprox preserves Q16 precision for downstream DC quantization" in {
+    val fractionBits = 16
+    val expected = RgbToXybApprox.rgbToXyb(64, 128, 192, fractionBits)
+    expected mustBe (-322, 40259, 44461)
+
+    simulate(new RgbToXybApprox(outputFractionBits = fractionBits)) { dut =>
+      dut.io.input.valid.poke(true.B)
+      dut.io.input.bits.x.poke(3.U)
+      dut.io.input.bits.y.poke(7.U)
+      dut.io.input.bits.r.poke(64.S)
+      dut.io.input.bits.g.poke(128.S)
+      dut.io.input.bits.b.poke(192.S)
+      dut.io.output.ready.poke(true.B)
+
+      dut.io.output.valid.expect(true.B)
+      dut.io.output.bits.x.expect(3.U)
+      dut.io.output.bits.y.expect(7.U)
+      dut.io.output.bits.xybX.expect(expected._1.S)
+      dut.io.output.bits.xybY.expect(expected._2.S)
+      dut.io.output.bits.xybB.expect(expected._3.S)
+    }
+  }
+
   "the fixed-point model stays within five Q12 units across signed-16 Q8 RGB" in {
     val random = new Random(0L)
     var maximumError = 0

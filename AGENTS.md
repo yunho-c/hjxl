@@ -302,11 +302,17 @@ Read these libjxl-tiny files before making architectural changes:
   first-block-owned prepared ABI. `FramePreparedAcStrategyVarDctQuantizeTokenTraceStage`
   composes prepared strategy search, ownership conversion, variable-shape
   quantization, and logical tokens. `FrameAqVarDctQuantizeTokenTraceStage`
-  supplies that path from the single shared RGB AQ/DCT source. Use
+  supplies that path from the shared RGB AQ/DCT source. It retains Q12 for AQ
+  and strategy scoring, but its optional Q16 XYB/DCT sideband must feed CFL
+  estimation and selected-owner quantization; do not collapse that sideband
+  back to Q12, because low-frequency rounding can change DC tokens. Use
   `tools/hjxl_reference.py --strategy-var-dct-zero-fixture-dir ...` for the
   exact 2x2 zero-coefficient integration oracle. It proves ownership, adjusted
-  bytes, continuation suppression, and native token order; it is not a broad
-  nonzero RGB parity oracle.
+  bytes, continuation suppression, and native token order. Use the
+  `--var-dct-*-tokens-npy`, `--var-dct-ac-strategy-npy`, and
+  `--var-dct-codestream-bin` outputs for one-group searched-strategy end-to-end
+  comparisons. The exact-Q8 16x16 impulse is the current nonzero DC/AC and
+  codestream regression; it is not broad RGB parity evidence.
 - `AcStrategyDecisionSelector` is the exact decision-only tail for one complete
   2x2 block region. It consumes common-scale nonnegative candidate costs,
   chooses horizontal on aggregate ties, replaces a rectangle only on a strict

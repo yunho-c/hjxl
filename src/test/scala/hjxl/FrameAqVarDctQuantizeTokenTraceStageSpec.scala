@@ -67,6 +67,22 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     dut.io.config.tokenSelect.poke(TokenTraceSelect.AcTokens.U)
   }
 
+  private def pokeAdaptiveRgbConfig(dut: FrameAqVarDctQuantizeTokenTraceStage): Unit = {
+    dut.io.config.xsize.poke(16.U)
+    dut.io.config.ysize.poke(16.U)
+    dut.io.config.distanceQ8.poke(256.U)
+    dut.io.config.fixedPointScale.poke(0.U)
+    dut.io.config.fixedInvQacQ16.poke(0.U)
+    dut.io.config.fixedRawQuant.poke(0.U)
+    dut.io.config.fixedYtox.poke(0.S)
+    dut.io.config.fixedYtob.poke(0.S)
+    dut.io.config.enableXyb.poke(true.B)
+    dut.io.config.enableDct.poke(true.B)
+    dut.io.config.enableQuant.poke(true.B)
+    dut.io.config.enableTokenize.poke(true.B)
+    dut.io.config.tokenSelect.poke(TokenTraceSelect.AcTokens.U)
+  }
+
   private def pokeAxiConfig(dut: HjxlAxiStreamCore): Unit = {
     dut.io.config.xsize.poke(8.U)
     dut.io.config.ysize.poke(8.U)
@@ -140,6 +156,33 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
       )
     }
     (rawQuants, traces)
+  }
+
+  private def runTool(command: Seq[String]): String = {
+    val output = scala.collection.mutable.ArrayBuffer.empty[String]
+    val logger = ProcessLogger(line => output += line, line => output += line)
+    val exitCode = Process(
+      command,
+      TestPaths.repoRoot.toFile,
+      "LIBJXL_TINY" -> libjxlTinyRoot.toString,
+      "PYTHONDONTWRITEBYTECODE" -> "1"
+    ).!(logger)
+    val text = output.mkString("\n")
+    withClue(text) {
+      exitCode mustBe 0
+    }
+    text
+  }
+
+  private def writeTraceCsv(path: Path, traces: Seq[ExpectedTrace]): Unit = {
+    val rows = traces.map { trace =>
+      s"${trace.stage},${trace.group},${trace.index},${trace.value}"
+    }
+    Files.writeString(
+      path,
+      ("stage,group,index,value" +: rows).mkString("", "\n", "\n"),
+      StandardCharsets.UTF_8
+    )
   }
 
   "the selected-cell adapter maps a horizontal owner and waits for its adjusted reciprocal" in {
@@ -322,6 +365,162 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
       dut.io.overflow.expect(false.B)
       dut.io.unsupportedDistance.expect(false.B)
     }
+  }
+
+  "a nonzero-AC RGB impulse assembles to the native VarDCT codestream" in {
+    assume(
+      Files.isDirectory(libjxlTinyRoot.resolve("python")),
+      s"libjxl-tiny Python checkout not found at $libjxlTinyRoot"
+    )
+    val temp = Files.createTempDirectory("hjxl-rgb-var-dct-codestream-")
+    val expectedDc = temp.resolve("expected-dc.npy")
+    val expectedMetadata = temp.resolve("expected-metadata.npy")
+    val expectedAc = temp.resolve("expected-ac.npy")
+    val expectedStrategy = temp.resolve("expected-strategy.npy")
+    val expectedCodestream = temp.resolve("expected.jxl")
+    val nativeCodestream = temp.resolve("native.jxl")
+    val traceCsv = temp.resolve("rtl-trace.csv")
+    val actualDc = temp.resolve("actual-dc.npy")
+    val actualMetadata = temp.resolve("actual-metadata.npy")
+    val actualAc = temp.resolve("actual-ac.npy")
+    val actualStrategy = temp.resolve("actual-strategy.npy")
+    val actualCodestream = temp.resolve("actual.jxl")
+
+    runTool(
+      Seq(
+        "python3",
+        "tools/hjxl_reference.py",
+        "--width",
+        "16",
+        "--height",
+        "16",
+        "--pattern",
+        "impulse",
+        "--jxl",
+        nativeCodestream.toString,
+        "--var-dct-dc-tokens-npy",
+        expectedDc.toString,
+        "--var-dct-ac-metadata-tokens-npy",
+        expectedMetadata.toString,
+        "--var-dct-ac-tokens-npy",
+        expectedAc.toString,
+        "--var-dct-ac-strategy-npy",
+        expectedStrategy.toString,
+        "--var-dct-codestream-bin",
+        expectedCodestream.toString
+      )
+    )
+    Files.readAllBytes(expectedCodestream).toSeq mustBe
+      Files.readAllBytes(nativeCodestream).toSeq
+
+    val observed = scala.collection.mutable.ArrayBuffer.empty[ExpectedTrace]
+    val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 16)
+    simulate(new FrameAqVarDctQuantizeTokenTraceStage(config)) { dut =>
+      pokeAdaptiveRgbConfig(dut)
+      dut.io.input.valid.poke(false.B)
+      dut.io.trace.ready.poke(true.B)
+      dut.clock.step()
+
+      dut.io.input.valid.poke(true.B)
+      for (y <- 0 until 16; x <- 0 until 16) {
+        dut.io.input.bits.x.poke(x.U)
+        dut.io.input.bits.y.poke(y.U)
+        val impulse = x == 8 && y == 8
+        dut.io.input.bits.r.poke((if (impulse) 256 else 0).S)
+        dut.io.input.bits.g.poke((if (impulse) 128 else 0).S)
+        dut.io.input.bits.b.poke((if (impulse) 64 else 0).S)
+        var waitCycles = 0
+        while (!dut.io.input.ready.peek().litToBoolean && waitCycles < 16) {
+          dut.clock.step()
+          waitCycles += 1
+        }
+        waitCycles must be < 16
+        dut.clock.step()
+      }
+      dut.io.input.valid.poke(false.B)
+
+      var cycles = 0
+      var finished = false
+      while (!finished && cycles < 200000) {
+        val ready = cycles % 5 != 2
+        dut.io.trace.ready.poke(ready.B)
+        if (dut.io.trace.valid.peek().litToBoolean && ready) {
+          observed += ExpectedTrace(
+            dut.io.trace.bits.stage.peekValue().asBigInt.toInt,
+            dut.io.trace.bits.group.peekValue().asBigInt,
+            dut.io.trace.bits.index.peekValue().asBigInt,
+            dut.io.trace.bits.value.peekValue().asBigInt,
+            dut.io.traceLast.peek().litToBoolean
+          )
+          finished = dut.io.traceLast.peek().litToBoolean
+        }
+        dut.clock.step()
+        cycles += 1
+      }
+      withClue("nonzero-AC impulse RGB VarDCT completion wait: ") {
+        finished mustBe true
+      }
+      dut.io.overflow.expect(false.B)
+      dut.io.unsupportedDistance.expect(false.B)
+    }
+
+    observed.filter(_.stage == TraceStage.AcStrategy).map(_.value) mustBe
+      Seq(5, 4, 1, 1).map(BigInt(_))
+    observed.filter(_.stage == TraceStage.DcTokens).exists(_.value != 0) mustBe true
+    observed.filter(_.stage == TraceStage.AcTokens).exists(_.value != 0) mustBe true
+    writeTraceCsv(traceCsv, observed.toSeq)
+
+    val assemblyOutput = runTool(
+      Seq(
+        "python3",
+        "tools/hjxl_trace_to_codestream.py",
+        "--trace-csv",
+        traceCsv.toString,
+        "--width",
+        "16",
+        "--height",
+        "16",
+        "--distance",
+        "1.0",
+        "--dc-tokens-npy",
+        actualDc.toString,
+        "--ac-metadata-tokens-npy",
+        actualMetadata.toString,
+        "--ac-tokens-npy",
+        actualAc.toString,
+        "--ac-strategy-npy",
+        actualStrategy.toString,
+        "--codestream-bin",
+        actualCodestream.toString,
+        "--expect-codestream-bin",
+        expectedCodestream.toString
+      )
+    )
+    assemblyOutput must include("assembled trace:")
+    runTool(
+      Seq(
+        "python3",
+        "tools/hjxl_compare_tokens.py",
+        "--expected-dc-tokens-npy",
+        expectedDc.toString,
+        "--actual-dc-tokens-npy",
+        actualDc.toString,
+        "--expected-ac-metadata-tokens-npy",
+        expectedMetadata.toString,
+        "--actual-ac-metadata-tokens-npy",
+        actualMetadata.toString,
+        "--expected-ac-tokens-npy",
+        expectedAc.toString,
+        "--actual-ac-tokens-npy",
+        actualAc.toString,
+        "--expected-ac-strategy-npy",
+        expectedStrategy.toString,
+        "--actual-ac-strategy-npy",
+        actualStrategy.toString
+      )
+    )
+    Files.readAllBytes(actualCodestream).toSeq mustBe
+      Files.readAllBytes(expectedCodestream).toSeq
   }
 
   "the RGB route reaches every logical-token phase and drains before another frame" in {

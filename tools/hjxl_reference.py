@@ -3405,6 +3405,60 @@ def dct_only_token_outputs_from_python_port(image, distance: float):
     )
 
 
+def var_dct_token_outputs_from_python_port(image, distance: float):
+    """Return native searched-VarDCT tokens for one small AC/DC group.
+
+    HJXL's current frame-sized RGB route is bounded well below libjxl-tiny's
+    256x256 AC-group size. Keeping this oracle to one AC group makes its flat AC
+    token array directly comparable with one RTL StageTrace stream and avoids
+    silently erasing group boundaries that the eventual scalable design must
+    preserve.
+    """
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.encoder import (  # pylint: disable=import-outside-toplevel
+        GROUP_DIM,
+        _effective_distance,
+        _encode_dc_group,
+    )
+
+    _, ysize, xsize = image.shape
+    if xsize > GROUP_DIM or ysize > GROUP_DIM:
+        raise ValueError(
+            f"VarDCT token oracle requires one {GROUP_DIM}x{GROUP_DIM} AC group"
+        )
+    encoded = _encode_dc_group(image, _effective_distance(distance))
+    if len(encoded.ac_token_groups) != 1:
+        raise ValueError(
+            f"VarDCT token oracle expected one AC group, got {len(encoded.ac_token_groups)}"
+        )
+    return (
+        encoded.dc_tokens,
+        encoded.ac_metadata_tokens,
+        encoded.ac_token_groups[0],
+        encoded.ac_strategy,
+    )
+
+
+def var_dct_bitstream_outputs_from_python_port(image, distance: float):
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.bitstream import (  # pylint: disable=import-outside-toplevel
+        codestream_bytes,
+        frame_bytes,
+    )
+
+    dc, ac_metadata, ac, ac_strategy = var_dct_token_outputs_from_python_port(
+        image, distance
+    )
+    _, ysize, xsize = image.shape
+    frame = frame_bytes(dc, ac_metadata, ac, ac_strategy, distance)
+    codestream = codestream_bytes(
+        xsize, ysize, dc, ac_metadata, ac, ac_strategy, distance
+    )
+    return frame, codestream
+
+
 def dct_only_bitstream_outputs_from_python_port(image, distance: float):
     root = _libjxl_tiny_root()
     _add_libjxl_tiny(root)
@@ -4546,6 +4600,36 @@ def main() -> int:
         help="optional exact 2x2 strategy-to-VarDCT zero-token CSV directory",
     )
     parser.add_argument(
+        "--var-dct-dc-tokens-npy",
+        type=Path,
+        help="optional native searched-VarDCT DC token rows",
+    )
+    parser.add_argument(
+        "--var-dct-ac-metadata-tokens-npy",
+        type=Path,
+        help="optional native searched-VarDCT AC metadata token rows",
+    )
+    parser.add_argument(
+        "--var-dct-ac-tokens-npy",
+        type=Path,
+        help="optional native searched-VarDCT AC token rows",
+    )
+    parser.add_argument(
+        "--var-dct-ac-strategy-npy",
+        type=Path,
+        help="optional native searched-VarDCT encoded strategy grid",
+    )
+    parser.add_argument(
+        "--var-dct-frame-bin",
+        type=Path,
+        help="optional native searched-VarDCT serialized frame bytes",
+    )
+    parser.add_argument(
+        "--var-dct-codestream-bin",
+        type=Path,
+        help="optional native searched-VarDCT bare codestream bytes",
+    )
+    parser.add_argument(
         "--default-ac-strategy-npy",
         type=Path,
         help="optional default DCT-first AC strategy map NumPy output path",
@@ -4727,6 +4811,8 @@ def main() -> int:
     dct_only_quant_outputs = None
     dct_only_token_outputs = None
     dct_only_bitstream_outputs = None
+    var_dct_token_outputs = None
+    var_dct_bitstream_outputs = None
     fixed_dct_only_token_outputs = None
     fixed_dct_only_prepared_token_inputs = None
     fixed_dct_only_bitstream_outputs = None
@@ -4759,6 +4845,28 @@ def main() -> int:
                 image, args.distance
             )
         return dct_only_bitstream_outputs
+
+    def get_var_dct_token_outputs():
+        nonlocal var_dct_token_outputs
+        if var_dct_token_outputs is None:
+            try:
+                var_dct_token_outputs = var_dct_token_outputs_from_python_port(
+                    image, args.distance
+                )
+            except ValueError as exc:
+                raise SystemExit(str(exc))
+        return var_dct_token_outputs
+
+    def get_var_dct_bitstream_outputs():
+        nonlocal var_dct_bitstream_outputs
+        if var_dct_bitstream_outputs is None:
+            try:
+                var_dct_bitstream_outputs = var_dct_bitstream_outputs_from_python_port(
+                    image, args.distance
+                )
+            except ValueError as exc:
+                raise SystemExit(str(exc))
+        return var_dct_bitstream_outputs
 
     def get_fixed_dct_only_token_outputs():
         nonlocal fixed_dct_only_token_outputs
@@ -4902,6 +5010,34 @@ def main() -> int:
             args.strategy_var_dct_zero_fixture_dir,
             image,
         )
+    if args.var_dct_dc_tokens_npy is not None:
+        np = _load_numpy()
+        args.var_dct_dc_tokens_npy.parent.mkdir(parents=True, exist_ok=True)
+        dc, _, _, _ = get_var_dct_token_outputs()
+        np.save(args.var_dct_dc_tokens_npy, dc)
+    if args.var_dct_ac_metadata_tokens_npy is not None:
+        np = _load_numpy()
+        args.var_dct_ac_metadata_tokens_npy.parent.mkdir(parents=True, exist_ok=True)
+        _, ac_metadata, _, _ = get_var_dct_token_outputs()
+        np.save(args.var_dct_ac_metadata_tokens_npy, ac_metadata)
+    if args.var_dct_ac_tokens_npy is not None:
+        np = _load_numpy()
+        args.var_dct_ac_tokens_npy.parent.mkdir(parents=True, exist_ok=True)
+        _, _, ac, _ = get_var_dct_token_outputs()
+        np.save(args.var_dct_ac_tokens_npy, ac)
+    if args.var_dct_ac_strategy_npy is not None:
+        np = _load_numpy()
+        args.var_dct_ac_strategy_npy.parent.mkdir(parents=True, exist_ok=True)
+        _, _, _, ac_strategy = get_var_dct_token_outputs()
+        np.save(args.var_dct_ac_strategy_npy, ac_strategy)
+    if args.var_dct_frame_bin is not None:
+        args.var_dct_frame_bin.parent.mkdir(parents=True, exist_ok=True)
+        frame, _ = get_var_dct_bitstream_outputs()
+        args.var_dct_frame_bin.write_bytes(frame)
+    if args.var_dct_codestream_bin is not None:
+        args.var_dct_codestream_bin.parent.mkdir(parents=True, exist_ok=True)
+        _, codestream = get_var_dct_bitstream_outputs()
+        args.var_dct_codestream_bin.write_bytes(codestream)
     if args.default_ac_strategy_npy is not None:
         np = _load_numpy()
         args.default_ac_strategy_npy.parent.mkdir(parents=True, exist_ok=True)
@@ -5082,6 +5218,12 @@ def main() -> int:
         and args.var_dct_quantize_q16_csv is None
         and args.var_dct_token_fixture_dir is None
         and args.strategy_var_dct_zero_fixture_dir is None
+        and args.var_dct_dc_tokens_npy is None
+        and args.var_dct_ac_metadata_tokens_npy is None
+        and args.var_dct_ac_tokens_npy is None
+        and args.var_dct_ac_strategy_npy is None
+        and args.var_dct_frame_bin is None
+        and args.var_dct_codestream_bin is None
         and args.default_ac_strategy_npy is None
         and args.raw_quant_field_npy is None
         and args.libjxl_ac_strategy_npy is None

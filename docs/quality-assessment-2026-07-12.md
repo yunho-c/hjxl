@@ -62,7 +62,12 @@ adjusted byte, tile CFL, and selected coefficients through the same first-block-
 owned boundary to combined DC/strategy/metadata/AC logical tokens. Focused
 tests establish that composition with an exact 32-row zero-coefficient native
 token oracle, live RGB phase coverage, and packed AXI framing. They do not yet
-establish nonzero mixed-shape RGB-to-codestream parity or physical feasibility.
+establish broad mixed-shape RGB parity or physical feasibility. A subsequent
+exact-Q8 16x16 impulse regression now closes one narrow nonzero case: a Q16
+selected-owner sideband preserves CFL/quantization precision while Q12 scoring
+remains stable, and every DC/strategy/metadata/AC token plus the assembled
+codestream matches native libjxl-tiny under stalls. Known Q12 strategy-choice
+disagreements on near-symmetric patterns still prevent a broad parity claim.
 Entropy coding and bitstream assembly also remain software-only, and the most
 parity-ready hardware interface starts after the host has already computed
 prepared DCT blocks.
@@ -137,10 +142,10 @@ Snapshot size is approximately:
 
 | Area | Files | Lines |
 | --- | ---: | ---: |
-| Main HJXL Scala/Chisel | 70 | 17,126 |
-| Scala tests | 72 | 28,233 |
-| Python host/oracle tools | 18 | 14,536 |
-| `README.md` + `docs/architecture.md` + `AGENTS.md` | 3 | 4,301 |
+| Main HJXL Scala/Chisel | 70 | 17,418 |
+| Scala tests | 72 | 28,456 |
+| Python host/oracle tools | 18 | 14,678 |
+| `README.md` + `docs/architecture.md` + `AGENTS.md` | 3 | 4,336 |
 
 The test-to-RTL ratio is a strength, but these counts also reveal where
 complexity has moved: host tooling and test harnesses are now materially larger
@@ -358,7 +363,12 @@ Verification is the project’s strongest quality dimension.
   scheduled second-build/full-oracle job would likely give better feedback
   latency. On this machine, the original `sbt test` run for the 2026-07-12
   assessment took 8 minutes 52 seconds, with many separate Verilator models
-  built by the simulator-backed suites.
+  built by the simulator-backed suites. A later unconstrained run after the
+  focused RGB VarDCT hierarchy grew to 161,000 generated lines thrashed swap
+  and took 4 hours 42 minutes. The build now caps heavyweight test concurrency
+  at two; the exact candidate completed in 22 minutes, and Mill CI uses the
+  same two-job limit. This is a practical reproducibility fix, not a reduction
+  in test coverage.
 - No Vivado simulation, synthesis, implementation, timing, or board test exists.
   Generated-port checks prove interface shape, not AXI protocol certification
   or FPGA viability.
@@ -467,12 +477,12 @@ Recommended documentation split:
 | Frame padding | Implemented | Exact small-frame and edge-padding tests | Scalable storage architecture |
 | RGB to XYB | Range-normalized Q8 to Q12 approximation with signed Q26 matrix and Q24 absorbance | Exact normalization-boundary/model tests, three libjxl-tiny fixture families within two Q12 units, 100k full signed-range sweep within five, and frame/downstream regressions | Synthesis feasibility, broader real-image evidence, and end-to-end parity |
 | DCT transforms | Approximate fixed-point 8x8 plus reusable Q12 DCT-16, 16x8, and 8x16 primitives; all three shapes feed focused strategy scoring and the RGB-connected first-block-owned variable-shape quantize-to-token route | 8x8 primitive/frame tests; five signed independent float and exact-fixed fixtures per new transform; axis-layout, candidate-generation, quantization, tokenization, selected-owner composition, backpressure, and elaboration checks | Timing/resource architecture, broader nonzero RGB frame parity, and physical validation |
-| Adaptive quantization | RGB-connected quarter-resolution contrast, block-resolution fuzzy erosion, AC-strategy reciprocal mask, signed-Q24 nonlinear `_compute_mask` seed, cumulative Y HF/color/gamma modulation, normalized exponent, distance scale/damping, completed final map, exact raw-quant conversion, post-strategy rectangle adjustment, estimated tile CFL, variable-shape quantization, and combined logical tokens | Gamma/sqrt/four-minimum, reciprocal, nonlinear, 112-edge/Q32 HF, capped Q16 coverage/Q24 color, clamped inverse-ratio/normalized-Q20-log, and normalized-Q24-`fast_pow2f` model boundaries; exact prepared fixtures and fixed-model raw bytes/maps/strategy decisions/adjusted bytes; five RGB oracle families within two percent for AQ and within two int8 units for CFL; full-frame versus stitched-tile equality; active/zero/early-return/damping distance regimes; explicit unsupported-distance fallback; exact dynamic reciprocal and selected-owner handoff; 65x1 and two-dimensional 65x65-to-72x72 traversal; backpressure/control and packed-AXI/TLAST tests; one-converter elaboration | Full-reference nonzero RGB variable-shape token/codestream proof; synthesis feasibility of the combinational square root, minima network, constant erosion division, CFL fitting divider, ratio/log/power lookup tables, multipliers, register-backed grids, and duplicated full-frame X/Y/B/coefficient buffers is unproven, while the rational transforms and HF/color/gamma/reciprocal traversals are sequential |
-| Chroma from luma | Implemented for prepared-Q16 and approximate RGB-Q12 all-DCT and adaptive DCT/16x8/8x16 paths; the focused RGB route feeds estimated tile CFL into first-block ownership and tokenization | Primitive and exact fixed-model tests; five RGB/libjxl-tiny map families within two int8 units; horizontal/vertical/2D multi-tile, all-DCT integration, variable-shape quantization, selected-owner composition, stream, wrapper, and focused-core tests | Physical implementation quality, broader real-image fixtures, and nonzero RGB non-DCT codestream parity |
-| AC strategy | Default all-route core remains fixed DCT; focused routes generate a full adaptive DCT/16x8/8x16 map from RGB AQ/tile CFL and its post-search adjusted raw-quant field, and a dedicated compile-time route consumes selected first-block owners through variable-shape quantization and logical tokens | Exact fixed-model costs for 40 oracle-backed candidates; exact fixed rectangular-transform and constant/gradient/checkerboard frame decisions; exact DCT/horizontal/vertical raw-quant adjustment; complete 2x2, incomplete 24x24 edge, 72x16 cross-tile, unsupported-distance, backpressure, RGB/core, quantization, 32-row composition, 1,292-row mixed-shape token, AXI, and hierarchy checks; 520 directed/random selector transactions; 27/30 decisions match the broader float audit | Reduce/characterize the Q12 scorer discrepancy; prove or redesign wide products, lookup/square-root hardware, and duplicate frame storage; add broad nonzero RGB token/codestream parity |
+| Adaptive quantization | RGB-connected quarter-resolution contrast, block-resolution fuzzy erosion, AC-strategy reciprocal mask, signed-Q24 nonlinear `_compute_mask` seed, cumulative Y HF/color/gamma modulation, normalized exponent, distance scale/damping, completed final map, exact raw-quant conversion, post-strategy rectangle adjustment, estimated tile CFL, variable-shape quantization, and combined logical tokens | Gamma/sqrt/four-minimum, reciprocal, nonlinear, 112-edge/Q32 HF, capped Q16 coverage/Q24 color, clamped inverse-ratio/normalized-Q20-log, and normalized-Q24-`fast_pow2f` model boundaries; exact prepared fixtures and fixed-model raw bytes/maps/strategy decisions/adjusted bytes; five RGB oracle families within two percent for AQ and within two int8 units for CFL; full-frame versus stitched-tile equality; active/zero/early-return/damping distance regimes; explicit unsupported-distance fallback; exact dynamic reciprocal and selected-owner handoff; one exact nonzero-AC RGB codestream; 65x1 and two-dimensional 65x65-to-72x72 traversal; backpressure/control and packed-AXI/TLAST tests; one converter on shared Q12 routes and two on the focused Q12/Q16 route | Broader full-reference RGB variable-shape coverage; synthesis feasibility of the combinational square root, minima network, constant erosion division, CFL fitting divider, ratio/log/power lookup tables, multipliers, register-backed grids, and duplicated full-frame X/Y/B/coefficient buffers is unproven, while the rational transforms and HF/color/gamma/reciprocal traversals are sequential |
+| Chroma from luma | Implemented for prepared-Q16 and approximate RGB-Q12 all-DCT and adaptive DCT/16x8/8x16 paths; the focused RGB route feeds Q16-estimated tile CFL into first-block ownership and tokenization | Primitive and exact fixed-model tests; five RGB/libjxl-tiny map families within two int8 units; horizontal/vertical/2D multi-tile, all-DCT integration, variable-shape quantization, selected-owner composition, one exact nonzero-AC codestream, stream, wrapper, and focused-core tests | Physical implementation quality, broader real-image fixtures, and more nonzero RGB non-DCT codestream cases |
+| AC strategy | Default all-route core remains fixed DCT; focused routes generate a full adaptive DCT/16x8/8x16 map from RGB AQ/tile CFL and its post-search adjusted raw-quant field, and a dedicated compile-time route consumes selected first-block owners through variable-shape quantization and logical tokens | Exact fixed-model costs for 40 oracle-backed candidates; exact fixed rectangular-transform and constant/gradient/checkerboard frame decisions; exact DCT/horizontal/vertical raw-quant adjustment; complete 2x2, incomplete 24x24 edge, 72x16 cross-tile, unsupported-distance, backpressure, RGB/core, quantization, 32-row composition, 1,292-row mixed-shape token, one exact nonzero-AC RGB codestream, AXI, and hierarchy checks; 520 directed/random selector transactions; 27/30 decisions match the broader float audit | Reduce/characterize the Q12 scorer discrepancy; prove or redesign wide products, lookup/square-root hardware, and duplicate frame storage; add broad nonzero RGB token/codestream parity |
 | Distance parameters | Six Q8 lookup points plus explicit fallback | Exact RTL/host lockstep tests | General supported range or a clearly frozen discrete API |
-| Quantized AC/DC/nonzero | Strong prepared-DCT all-DCT and first-block-owned DCT/16x8/8x16 implementations; a focused RGB route now composes approximate Q12 XYB/DCT, adaptive raw quant, estimated tile CFL, selected shapes, and variable-shape quantization | Exact prepared-block oracles, RGB-to-prepared estimated-CFL equivalence, 12 variable-shape fixtures exact to the frozen Q16 model with native AC within one integer and exact DC/counts, plus selected-owner adapter and zero-coefficient frame composition checks | Broaden nonzero RGB image coverage, perform full-reference frame comparison, and establish physical feasibility |
-| DC/AC metadata/AC logical tokens | Strong for prepared all-DCT and first-block-owned DCT/16x8/8x16 paths; a dedicated RGB compile-time route now reaches combined DC, full strategy, adaptive metadata, and variable-shape AC tokens | Exact context/value/order tests, prepared codestream reconstruction, RGB/prepared estimated-CFL equivalence, one 1,292-row mixed-shape native oracle, one 32-row exact strategy-to-token composition oracle, live RGB phase coverage, two-tile metadata prediction, and packed AXI/TLAST checks | Add RGB non-DCT token-to-codestream proof, broaden nonzero mixed-shape oracle diversity, and validate the physical hierarchy |
+| Quantized AC/DC/nonzero | Strong prepared-DCT all-DCT and first-block-owned DCT/16x8/8x16 implementations; a focused RGB route composes Q12 AQ/scoring, a Q16 selected-owner coefficient seam, adaptive raw quant, estimated tile CFL, selected shapes, and variable-shape quantization | Exact prepared-block oracles, RGB-to-prepared estimated-CFL equivalence, 12 variable-shape fixtures exact to the frozen Q16 model with native AC within one integer and exact DC/counts, selected-owner/zero-coefficient checks, and one full-reference nonzero-AC RGB comparison | Broaden nonzero RGB image coverage and establish physical feasibility |
+| DC/AC metadata/AC logical tokens | Strong for prepared all-DCT and first-block-owned DCT/16x8/8x16 paths; a dedicated RGB compile-time route now reaches combined DC, full strategy, adaptive metadata, and variable-shape AC tokens | Exact context/value/order tests, prepared codestream reconstruction, RGB/prepared estimated-CFL equivalence, one 1,292-row mixed-shape native oracle, one 32-row strategy-to-token oracle, one exact nonzero-AC RGB impulse codestream, live RGB phase coverage, two-tile metadata prediction, and packed AXI/TLAST checks | Broaden nonzero mixed-shape RGB oracle diversity, resolve Q12 scorer-choice disagreements, and validate the physical hierarchy |
 | Entropy optimization/coding | Host-only through `libjxl-tiny` | Byte-parity assembly tests | Native host library or RTL implementation, depending final partition |
 | JXL frame/codestream assembly | Host-only | Exact bytes for constrained fixtures | Standalone production integration and broader decoder validation |
 | AXI-stream/AXI-Lite shells | Implemented and simulated with transactional config and discovery registers | Port, handshake, register, framing, error, discovery-readback, and mid-frame shadow-write tests | AXI protocol checker and physical integration |
@@ -819,6 +829,24 @@ a complete and physically viable RGB-to-JXL FPGA encoder.
     host-only, and synthesis/timing/resource/KV260 evidence remains absent. The
     earliest functional parity gap is now nonzero RGB non-DCT token-to-
     codestream comparison against the full reference.
+    **Nonzero RGB codestream follow-up 2026-07-14:** one such full-reference
+    case now passes. The first audit found an otherwise exact constant-frame
+    trace with one X-channel DC residual off by one: Q12 XYB/DCT rounding moved
+    the inverse-DC product across libjxl-tiny's away-from-zero threshold. The
+    fix keeps the established Q12 AQ/scoring path but optionally captures Q16
+    XYB and ordinary DCT values, carries them through strategy buffering, and
+    uses them for selected-owner rectangular transforms, CFL fitting, and
+    variable-shape quantization. Prepared Q12 users and older all-DCT builds do
+    not expose or elaborate this sideband. The reference helper now exports
+    native searched-strategy token arrays plus frame/codestream bytes for one
+    AC group. A 16x16 exact-Q8 impulse selects encoded strategy
+    `[5, 4, 1, 1]`, produces nonzero DC and AC values, and matches every native
+    DC/strategy/metadata/AC row and the 197-byte codestream under periodic
+    stalls. This is meaningful end-to-end correctness evidence, but only for
+    one small image at distance 1. The known Q12 checkerboard orientation
+    disagreement remains, the Q16 sideband duplicates RGB conversion and frame
+    storage in this focused trace hierarchy, host software still performs
+    entropy/assembly, and physical feasibility remains untested.
 13. **Expand oracle diversity.** Add several deterministic patterns, signed and
     near-saturation values, supported distances, non-block/tile-aligned sizes,
     multi-tile 2D images, and at least a few small real-image crops. Validate
@@ -852,13 +880,17 @@ from component tests:
 - `hjxl_reference.py --strategy-var-dct-zero-fixture-dir ...` at 16x16 — passed
   and emitted four prepared
   raster rows plus 32 native token rows.
-- `sbt test` — passed on the exact commit candidate: 85 suites completed, 339
-  tests succeeded, 0 failed/canceled/ignored/pending, in 14 minutes 10 seconds.
-- `HJXL_REPO_ROOT=$PWD ./mill --no-server hjxl.test` — passed the complete same
-  85-suite/339-test candidate in 832 seconds, confirming the changed production
-  and test sources through the second build definition. Its forked workers
-  reported zero failures, aborts, cancellations, ignored tests, or pending
-  tests.
+- `hjxl_reference.py --pattern impulse --var-dct-*-tokens-npy ...
+  --var-dct-ac-strategy-npy ... --var-dct-codestream-bin ...` at 16x16 — passed;
+  the token-built reference codestream was identical to direct native encoding.
+- `sbt test` — passed on the exact commit candidate with test concurrency
+  capped at two: 85 suites completed, 341 tests succeeded, 0
+  failed/canceled/ignored/pending, in 22 minutes.
+- `HJXL_REPO_ROOT=$PWD ./mill --no-server -j 2 hjxl.test` — passed the complete
+  same 85-suite/341-test candidate in 1,398 seconds, confirming the changed
+  production and test sources through the second build definition. Its two
+  forked workers reported 182 and 159 successful tests respectively, with zero
+  failures, aborts, cancellations, ignored tests, or pending tests.
 - Focused sbt execution of the prepared variable-shape quantizer/token suites,
   the strategy scheduler, the new RGB composition/AXI suite, core and stream
   elaboration gates, and discovery — passed: 11 suites and 51 tests in 2
@@ -913,12 +945,14 @@ from component tests:
   evidence only; it does not establish timing, resource fit, or RGB integration.
 - `sbt 'runMain hjxl.ElaborateAqVarDctQuantizeTokens'` and
   `sbt 'runMain hjxl.ElaborateAxiStreamCoreAqVarDctTokens'` — passed and emitted
-  63 files/119,433 lines and 65 files/119,604 lines of SystemVerilog. Each
-  hierarchy contains one RGB converter, the shared AQ/DCT and strategy search,
-  one selected-cell owner adapter, both rectangular transforms, variable-shape
-  quantization, and combined token schedulers. The scale of these artifacts is
-  a warning, not a readiness result: there is still no synthesis, timing,
-  utilization, power, or KV260 evidence.
+  65 files/161,663 lines and 67 files/161,834 lines of SystemVerilog. Each
+  hierarchy contains separate Q12 and Q16 RGB converters, the shared AQ/DCT and
+  strategy search, optional full-frame Q16 selected-owner storage, one owner
+  adapter, both rectangular transforms, variable-shape quantization, and
+  combined token schedulers. The 42,000-line increase bought one exact nonzero
+  RGB proof but makes the physical-design warning stronger: there is still no
+  synthesis, timing, utilization, power, or KV260 evidence, and this duplicated
+  precision path should not be assumed to be the final FPGA architecture.
 - Focused sbt execution of the prepared AC-strategy candidate evaluator,
   distance lookup/fallback, extreme-range saturation, eight-candidate
   sequencer, backpressure, and elaboration suites — passed: 2 suites and 6

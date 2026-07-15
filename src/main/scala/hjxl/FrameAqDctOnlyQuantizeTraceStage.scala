@@ -104,9 +104,20 @@ class AdaptiveInvQacQ16 extends Module {
   }
 }
 
-class AqDctBlockOutput(c: HjxlConfig) extends Bundle {
+class AqDctBlockOutput(
+    c: HjxlConfig,
+    includeQuantizationPrecision: Boolean = false
+) extends Bundle {
   val coefficients = Vec(3, Vec(HjxlConstants.BlockDim * HjxlConstants.BlockDim, SInt(c.traceValueBits.W)))
   val xyb = Vec(3, Vec(HjxlConstants.BlockDim * HjxlConstants.BlockDim, SInt(c.traceValueBits.W)))
+  val quantizationCoefficientsQ16 =
+    if (includeQuantizationPrecision)
+      Some(Vec(3, Vec(HjxlConstants.BlockDim * HjxlConstants.BlockDim, SInt(c.traceValueBits.W))))
+    else None
+  val quantizationXybQ16 =
+    if (includeQuantizationPrecision)
+      Some(Vec(3, Vec(HjxlConstants.BlockDim * HjxlConstants.BlockDim, SInt(c.traceValueBits.W))))
+    else None
   val aqMapQ24 = UInt(AqFinalModulationFixedPoint.ValueBits.W)
   val strategyMaskQ16 = UInt(AqStrategyMaskFixedPoint.ValueBits.W)
   val distanceQ8 = UInt(16.W)
@@ -149,25 +160,97 @@ private object AqDctBlockWiring {
 
 /** Converts the completed RGB AQ stream into native-Q12 all-DCT blocks.
   *
-  * The source reuses the X/Y/B block retained by `FrameAqFinalMapPipeline`, so
-  * RGB-to-XYB conversion and frame storage occur only once. Reciprocal AC-scale
-  * generation is deliberately downstream so CFL-map and metadata-only routes
+  * The default source reuses the X/Y/B block retained by
+  * `FrameAqFinalMapPipeline`, so RGB-to-XYB conversion and frame storage occur
+  * only once. The focused VarDCT build may request a separate Q16 conversion
+  * and frame store for selected-owner CFL fitting and quantization. Reciprocal
+  * AC-scale generation remains downstream so CFL-map and metadata-only routes
   * do not elaborate arithmetic they never consume.
   */
-class FrameAqDctBlockStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FrameAqDctBlockStage(
+    c: HjxlConfig = HjxlConfig(),
+    includeQuantizationPrecision: Boolean = false
+) extends Module {
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
+  private val quantizationFractionBits = 16
+  private val numPixels = c.maxFrameWidth * c.maxFrameHeight
+  private val frameIndexBits = log2Ceil(numPixels)
+  private val frameCountBits = log2Ceil(numPixels + 1)
+  private val widthBits = log2Ceil(c.maxFrameWidth + 1)
+  private val heightBits = log2Ceil(c.maxFrameHeight + 1)
+
+  require(
+    quantizationFractionBits > RgbToXybApprox.OutputFractionBits,
+    "quantization sideband must retain more precision than Q12"
+  )
 
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
-    val output = Decoupled(new AqDctBlockOutput(c))
+    val output = Decoupled(new AqDctBlockOutput(c, includeQuantizationPrecision))
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
 
   val aq = Module(new FrameAqFinalMapPipeline(c))
   aq.io.config := io.config
-  aq.io.input <> io.input
+
+  val precisionXyb = if (includeQuantizationPrecision) {
+    Some(Module(new RgbToXybApprox(c, quantizationFractionBits)))
+  } else {
+    None
+  }
+  precisionXyb match {
+    case Some(converter) =>
+      aq.io.input.bits := io.input.bits
+      aq.io.input.valid := io.input.valid
+      converter.io.input.bits := io.input.bits
+      converter.io.input.valid := io.input.valid
+      converter.io.output.ready := aq.io.input.ready
+      io.input.ready := aq.io.input.ready && converter.io.input.ready
+    case None =>
+      aq.io.input <> io.input
+  }
+
+  val precisionFrame =
+    if (includeQuantizationPrecision) Some(Reg(Vec(numPixels, Vec(3, SInt(c.traceValueBits.W)))))
+    else None
+  val precisionReceived = RegInit(0.U(frameCountBits.W))
+  val precisionWidth = RegInit(0.U(widthBits.W))
+  val precisionHeight = RegInit(0.U(heightBits.W))
+  val precisionBlocksX = RegInit(0.U(widthBits.W))
+
+  precisionXyb.foreach { converter =>
+    when(converter.io.output.fire) {
+      assert(precisionReceived < numPixels.U, "Q16 XYB frame store overflow")
+      val target = precisionFrame.get(precisionReceived(frameIndexBits - 1, 0))
+      target(0) := converter.io.output.bits.xybX
+      target(1) := converter.io.output.bits.xybY
+      target(2) := converter.io.output.bits.xybB
+      when(precisionReceived === 0.U) {
+        precisionWidth := io.config.xsize(widthBits - 1, 0)
+        precisionHeight := io.config.ysize(heightBits - 1, 0)
+        precisionBlocksX :=
+          ((io.config.xsize(widthBits - 1, 0) +& (HjxlConstants.BlockDim - 1).U) >>
+            log2Ceil(HjxlConstants.BlockDim))
+      }
+      precisionReceived := precisionReceived + 1.U
+    }
+  }
+
+  private def precisionFrameSample(blockIndex: UInt, sample: Int, channel: Int): SInt = {
+    val safeBlocksX = Mux(precisionBlocksX === 0.U, 1.U, precisionBlocksX)
+    val blockX = blockIndex - (blockIndex / safeBlocksX) * safeBlocksX
+    val blockY = blockIndex / safeBlocksX
+    val paddedX =
+      (blockX << log2Ceil(HjxlConstants.BlockDim)) + (sample % HjxlConstants.BlockDim).U
+    val paddedY =
+      (blockY << log2Ceil(HjxlConstants.BlockDim)) + (sample / HjxlConstants.BlockDim).U
+    val sourceX = Mux(paddedX >= precisionWidth, precisionWidth - 1.U, paddedX)
+    val sourceY = Mux(paddedY >= precisionHeight, precisionHeight - 1.U, paddedY)
+    val sourceIndex = sourceY * precisionWidth + sourceX
+    precisionFrame.get(sourceIndex(frameIndexBits - 1, 0))(channel)
+  }
 
   val rawQuant = Module(new AqMapToRawQuant)
   rawQuant.io.aqMapQ := aq.io.output.bits.aqMapQ24
@@ -192,7 +275,27 @@ class FrameAqDctBlockStage(c: HjxlConfig = HjxlConfig()) extends Module {
     dctB.io.input.bits(coefficient) := aq.io.output.bits.xybBQ12(coefficient)
   }
 
-  val allDctValid = dcts.map(_.io.output.valid).reduce(_ && _)
+  val precisionDcts = if (includeQuantizationPrecision) {
+    Some(Seq.fill(3)(Module(new Dct8x8Approx(c))))
+  } else {
+    None
+  }
+  precisionDcts.foreach { dctsQ16 =>
+    val blockIndex = aq.io.output.bits.blockIndex
+    for (dct <- dctsQ16) {
+      dct.io.input.valid := aq.io.output.valid
+    }
+    for (sample <- 0 until blockSize) {
+      for (channel <- 0 until 3) {
+        dctsQ16(channel).io.input.bits(sample) :=
+          precisionFrameSample(blockIndex, sample, channel)
+      }
+    }
+  }
+
+  val allDctValid =
+    dcts.map(_.io.output.valid).reduce(_ && _) &&
+      precisionDcts.map(_.map(_.io.output.valid).reduce(_ && _)).getOrElse(true.B)
   io.output.valid := aq.io.output.valid && allDctValid
   io.output.bits.aqMapQ24 := aq.io.output.bits.aqMapQ24
   io.output.bits.strategyMaskQ16 := aq.io.output.bits.strategyMaskQ16
@@ -214,12 +317,31 @@ class FrameAqDctBlockStage(c: HjxlConfig = HjxlConfig()) extends Module {
     io.output.bits.xyb(0)(coefficient) := aq.io.output.bits.xybXQ12(coefficient)
     io.output.bits.xyb(1)(coefficient) := aq.io.output.bits.xybYQ12(coefficient)
     io.output.bits.xyb(2)(coefficient) := aq.io.output.bits.xybBQ12(coefficient)
+    for (channel <- 0 until 3) {
+      io.output.bits.quantizationCoefficientsQ16.foreach(
+        _(channel)(coefficient) := precisionDcts.get(channel).io.output.bits(coefficient)
+      )
+      io.output.bits.quantizationXybQ16.foreach(
+        _(channel)(coefficient) :=
+          precisionFrameSample(aq.io.output.bits.blockIndex, coefficient, channel)
+      )
+    }
   }
 
   val consumeBlock = io.output.ready && allDctValid
   aq.io.output.ready := consumeBlock
   for (dct <- dcts) {
     dct.io.output.ready := io.output.ready && aq.io.output.valid
+  }
+  precisionDcts.foreach(_.foreach { dct =>
+    dct.io.output.ready := io.output.ready && aq.io.output.valid
+  })
+
+  when(io.output.fire && io.output.bits.blockLast) {
+    precisionReceived := 0.U
+    precisionWidth := 0.U
+    precisionHeight := 0.U
+    precisionBlocksX := 0.U
   }
 
   io.busy := aq.io.busy

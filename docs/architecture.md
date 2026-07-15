@@ -448,7 +448,10 @@ wrappers.
   completed AQ pipeline's X/Y/B Q12 block, applies three shared
   `Dct8x8Approx` instances, selects adaptive or explicit fixed raw quant, and
   emits distance-derived scalars without a reciprocal. This keeps map and
-  metadata-only hierarchies from elaborating unused divider hardware.
+  metadata-only hierarchies from elaborating unused divider hardware. The
+  focused RGB VarDCT build also captures Q16 XYB and ordinary-DCT values for
+  selected-owner CFL fitting and quantization; this optional sideband is absent
+  from the older all-DCT routes.
   `FrameAqDctOnlyBlockStage` enriches the same record for quantization:
   adaptive blocks compute `round(2^32 / (scaleQ16 * rawQuant))` with the
   33-cycle `AdaptiveInvQacQ16` restoring divider; zero divisors saturate and no
@@ -860,8 +863,10 @@ wrappers.
   that boundary from the shared RGB final-AQ/DCT block source; the focused core
   route therefore uses one RGB-to-XYB conversion and three ordinary DCTs.
   `FrameAqAdjustedRawQuantTraceStage` exposes the sideband as raw-quant traces.
-  This remains a focused trace integration: the current quantization, metadata,
-  and token schedulers still consume and emit the separate all-DCT path.
+  The selected-owner composition can optionally buffer a higher-precision
+  coefficient sideband for CFL fitting and quantization while the scorer keeps
+  the established Q12 inputs and decisions. The live VarDCT route uses Q16;
+  prepared Q12 strategy users retain their original interface.
 - `tools/hjxl_reference.py --scaled-dct-q12-csv ...` writes signed Q12 DCT-16,
   16x8, and 8x16 inputs beside independent libjxl-tiny coefficients and the
   exact integer transform model. The axis ramps guard the two different
@@ -876,6 +881,12 @@ wrappers.
   frozen-Q16 AC/DC/raw/shifted-count model, and the native-float libjxl-tiny
   result. The current 12-case audit is exact against the fixed model; native AC
   differs by at most one integer, while DC and both count forms are exact.
+- `tools/hjxl_reference.py --var-dct-dc-tokens-npy ...`,
+  `--var-dct-ac-metadata-tokens-npy ...`, `--var-dct-ac-tokens-npy ...`, and
+  `--var-dct-ac-strategy-npy ...` export native searched-VarDCT arrays for one
+  AC group. `--var-dct-frame-bin ...` and `--var-dct-codestream-bin ...`
+  serialize those same arrays. The exact-Q8 16x16 impulse regression uses this
+  seam to prove nonzero DC/AC RTL traces and final codestream parity.
 - `tools/hjxl_reference.py --default-ac-strategy-npy ...` writes the matching
   default DCT-first strategy map.
 - `tools/hjxl_reference.py --raw-quant-field-npy ...`,

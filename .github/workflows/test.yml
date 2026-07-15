@@ -51,4 +51,4 @@ jobs:
           sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'
           tclsh fpga/vivado/synth.tcl --preflight-only
       - name: mill Test
-        run: ./mill _.test
+        run: ./mill -j 2 _.test

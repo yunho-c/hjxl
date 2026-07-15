@@ -9,17 +9,24 @@ import chisel3.util._
   *
   * Continuation cells are consumed without producing an owner. First cells
   * reuse the stored ordinary DCT coefficients or recompute the selected
-  * rectangular transform from the two covered Q12 XYB blocks. Adaptive raw
+  * rectangular transform from the two covered XYB blocks. The live RGB route
+  * supplies Q16 quantization sidebands while keeping Q12 strategy scoring;
+  * prepared Q12 users retain the original compact interface. Adaptive raw
   * quantization uses a reciprocal matched to the post-strategy maximum.
   */
-class AcStrategySelectedCellToVarDctOwnerStage(c: HjxlConfig = HjxlConfig())
+class AcStrategySelectedCellToVarDctOwnerStage(
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
+)
     extends Module {
   private val blockDim = HjxlConstants.BlockDim
   private val blockSize = blockDim * blockDim
   private val maxCoefficients = QuantizeVarDctBlock.MaxCoefficients
 
   val io = IO(new Bundle {
-    val input = Flipped(Decoupled(new PreparedAcStrategySelectedCell(c)))
+    val input = Flipped(
+      Decoupled(new PreparedAcStrategySelectedCell(c, coefficientFractionBits))
+    )
     val output = Decoupled(new PreparedVarDctFrameBlock(c))
     val busy = Output(Bool())
   })
@@ -41,14 +48,18 @@ class AcStrategySelectedCellToVarDctOwnerStage(c: HjxlConfig = HjxlConfig())
       val verticalBlock = if (sample / blockDim < blockDim) 0 else 1
       val verticalSample = (sample % blockSize)
       verticalDct(channel).io.input.bits(sample) :=
-        io.input.bits.coveredXyb(verticalBlock)(channel)(verticalSample)
+        io.input.bits.quantizationCoveredXyb
+          .map(_(verticalBlock)(channel)(verticalSample))
+          .getOrElse(io.input.bits.coveredXyb(verticalBlock)(channel)(verticalSample))
 
       val horizontalX = sample % (2 * blockDim)
       val horizontalY = sample / (2 * blockDim)
       val horizontalBlock = if (horizontalX < blockDim) 0 else 1
       val horizontalSample = horizontalY * blockDim + (horizontalX % blockDim)
       horizontalDct(channel).io.input.bits(sample) :=
-        io.input.bits.coveredXyb(horizontalBlock)(channel)(horizontalSample)
+        io.input.bits.quantizationCoveredXyb
+          .map(_(horizontalBlock)(channel)(horizontalSample))
+          .getOrElse(io.input.bits.coveredXyb(horizontalBlock)(channel)(horizontalSample))
     }
   }
 
@@ -91,7 +102,10 @@ class AcStrategySelectedCellToVarDctOwnerStage(c: HjxlConfig = HjxlConfig())
   io.output.bits.quantize.ytob := io.input.bits.ytob
   for (channel <- 0 until 3; coefficient <- 0 until maxCoefficients) {
     val dctValue =
-      if (coefficient < blockSize) io.input.bits.dct8x8(channel)(coefficient)
+      if (coefficient < blockSize)
+        io.input.bits.quantizationDct8x8
+          .map(_(channel)(coefficient))
+          .getOrElse(io.input.bits.dct8x8(channel)(coefficient))
       else 0.S(c.traceValueBits.W)
     io.output.bits.quantize.coefficients(channel)(coefficient) := Mux(
       isDct,
@@ -139,11 +153,14 @@ class AcStrategySelectedCellToVarDctOwnerStage(c: HjxlConfig = HjxlConfig())
 
 /** Prepared AQ/strategy search directly composed with VarDCT logical tokens. */
 class FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
-    c: HjxlConfig = HjxlConfig()
+    c: HjxlConfig = HjxlConfig(),
+    coefficientFractionBits: Int = Dct8Approx.FractionBits
 ) extends Module {
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
-    val input = Flipped(Decoupled(new PreparedAcStrategyFrameBlock(c)))
+    val input = Flipped(
+      Decoupled(new PreparedAcStrategyFrameBlock(c, coefficientFractionBits))
+    )
     val trace = Decoupled(new StageTrace(c))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
@@ -151,12 +168,12 @@ class FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
     val unsupportedDistance = Output(Bool())
   })
 
-  val strategy = Module(new FramePreparedAcStrategyTraceStage(c))
-  val owners = Module(new AcStrategySelectedCellToVarDctOwnerStage(c))
+  val strategy = Module(new FramePreparedAcStrategyTraceStage(c, coefficientFractionBits))
+  val owners = Module(new AcStrategySelectedCellToVarDctOwnerStage(c, coefficientFractionBits))
   val tokens = Module(
     new FramePreparedVarDctQuantizeTokenTraceStage(
       c,
-      coefficientFractionBits = Dct8Approx.FractionBits
+      coefficientFractionBits = coefficientFractionBits
     )
   )
 
@@ -209,8 +226,15 @@ class FrameAqVarDctQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig())
     val unsupportedDistance = Output(Bool())
   })
 
-  val blocks = Module(new FrameAqDctBlockStage(c))
-  val composed = Module(new FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(c))
+  private val quantizationCoefficientFractionBits = 16
+
+  val blocks = Module(new FrameAqDctBlockStage(c, includeQuantizationPrecision = true))
+  val composed = Module(
+    new FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
+      c,
+      coefficientFractionBits = quantizationCoefficientFractionBits
+    )
+  )
   val distanceStatus = Module(new DistanceParamsLookup)
   val draining = RegInit(false.B)
 
@@ -225,6 +249,10 @@ class FrameAqVarDctQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig())
   composed.io.input.valid := blocks.io.output.valid
   composed.io.input.bits.xyb := blocks.io.output.bits.xyb
   composed.io.input.bits.dct8x8 := blocks.io.output.bits.coefficients
+  composed.io.input.bits.quantizationXyb.get :=
+    blocks.io.output.bits.quantizationXybQ16.get
+  composed.io.input.bits.quantizationDct8x8.get :=
+    blocks.io.output.bits.quantizationCoefficientsQ16.get
   composed.io.input.bits.aqMapQ24 := blocks.io.output.bits.aqMapQ24
   composed.io.input.bits.strategyMaskQ16 := blocks.io.output.bits.strategyMaskQ16
   composed.io.input.bits.rawQuant := blocks.io.output.bits.quant

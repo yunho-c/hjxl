@@ -7,17 +7,34 @@ import chisel3.util._
 
 /** One raster 8x8 block at the prepared frame-strategy boundary.
   *
-  * Q12 XYB samples are retained for rectangular transforms, while the matching
-  * Q12 ordinary-DCT coefficients are reused for DCT candidate scoring and tile
-  * CFL estimation. AQ and mask values remain per-block inputs whose covered
-  * maxima feed candidate scoring. `rawQuant` is the pre-strategy byte; after
-  * searching the frame, the scheduler applies `adjust_quant_field` to it.
+  * Q12 XYB samples are retained for candidate scoring. By default their
+  * matching Q12 ordinary-DCT coefficients are reused for CFL estimation and
+  * selected-owner quantization; an optional higher-precision sideband can
+  * replace only those downstream values. AQ and mask values remain per-block
+  * inputs whose covered maxima feed candidate scoring. `rawQuant` is the
+  * pre-strategy byte; after searching the frame, the scheduler applies
+  * `adjust_quant_field` to it.
   */
-class PreparedAcStrategyFrameBlock(c: HjxlConfig) extends Bundle {
+class PreparedAcStrategyFrameBlock(
+    c: HjxlConfig,
+    quantizationCoefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Bundle {
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
+  require(
+    quantizationCoefficientFractionBits >= Dct8Approx.FractionBits,
+    "prepared AC-strategy quantization precision cannot be below Q12"
+  )
 
   val xyb = Vec(3, Vec(blockSize, SInt(c.traceValueBits.W)))
   val dct8x8 = Vec(3, Vec(blockSize, SInt(c.traceValueBits.W)))
+  val quantizationXyb =
+    if (quantizationCoefficientFractionBits > Dct8Approx.FractionBits)
+      Some(Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))
+    else None
+  val quantizationDct8x8 =
+    if (quantizationCoefficientFractionBits > Dct8Approx.FractionBits)
+      Some(Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))
+    else None
   val aqMapQ24 = UInt(AqFinalModulationFixedPoint.ValueBits.W)
   val strategyMaskQ16 = UInt(AqStrategyMaskFixedPoint.ValueBits.W)
   val rawQuant = UInt(8.W)
@@ -39,8 +56,15 @@ class PreparedAcStrategyFrameBlock(c: HjxlConfig) extends Bundle {
   * block in transform order; ordinary DCT uses only `coveredXyb(0)` and
   * `dct8x8`.
   */
-class PreparedAcStrategySelectedCell(c: HjxlConfig) extends Bundle {
+class PreparedAcStrategySelectedCell(
+    c: HjxlConfig,
+    quantizationCoefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Bundle {
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
+  require(
+    quantizationCoefficientFractionBits >= Dct8Approx.FractionBits,
+    "selected AC-strategy quantization precision cannot be below Q12"
+  )
 
   val blockX = UInt(c.coordBits.W)
   val blockY = UInt(c.coordBits.W)
@@ -58,6 +82,14 @@ class PreparedAcStrategySelectedCell(c: HjxlConfig) extends Bundle {
   val ytob = SInt(8.W)
   val dct8x8 = Vec(3, Vec(blockSize, SInt(c.traceValueBits.W)))
   val coveredXyb = Vec(2, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))
+  val quantizationDct8x8 =
+    if (quantizationCoefficientFractionBits > Dct8Approx.FractionBits)
+      Some(Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))
+    else None
+  val quantizationCoveredXyb =
+    if (quantizationCoefficientFractionBits > Dct8Approx.FractionBits)
+      Some(Vec(2, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W)))))
+    else None
 }
 
 /** Searches AC strategy for a complete prepared frame and emits a raster map.
@@ -70,7 +102,10 @@ class PreparedAcStrategySelectedCell(c: HjxlConfig) extends Bundle {
   * final raster pass raises both raw-quant bytes in each selected rectangle to
   * their maximum and emits that byte beside the strategy trace.
   */
-class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Module {
+class FramePreparedAcStrategyTraceStage(
+    c: HjxlConfig = HjxlConfig(),
+    quantizationCoefficientFractionBits: Int = Dct8Approx.FractionBits
+) extends Module {
   private val blockDim = HjxlConstants.BlockDim
   private val blockSize = blockDim * blockDim
   private val blocksPerTile = HjxlConstants.TileDim / blockDim
@@ -93,9 +128,12 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
 
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
-    val input = Flipped(Decoupled(new PreparedAcStrategyFrameBlock(c)))
+    val input = Flipped(
+      Decoupled(new PreparedAcStrategyFrameBlock(c, quantizationCoefficientFractionBits))
+    )
     val trace = Decoupled(new StageTrace(c))
-    val selected = Output(new PreparedAcStrategySelectedCell(c))
+    val selected =
+      Output(new PreparedAcStrategySelectedCell(c, quantizationCoefficientFractionBits))
     val adjustedRawQuant = Output(UInt(8.W))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
@@ -114,6 +152,14 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
 
   val xyb = Reg(Vec(maxBlocks, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W)))))
   val dct8x8 = Reg(Vec(maxBlocks, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W)))))
+  val quantizationXyb =
+    if (quantizationCoefficientFractionBits > Dct8Approx.FractionBits)
+      Some(Reg(Vec(maxBlocks, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))))
+    else None
+  val quantizationDct8x8 =
+    if (quantizationCoefficientFractionBits > Dct8Approx.FractionBits)
+      Some(Reg(Vec(maxBlocks, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))))
+    else None
   val aqMapQ24 = Reg(Vec(maxBlocks, UInt(AqFinalModulationFixedPoint.ValueBits.W)))
   val strategyMaskQ16 = Reg(Vec(maxBlocks, UInt(AqStrategyMaskFixedPoint.ValueBits.W)))
   val adjustedRawQuant = Reg(Vec(maxBlocks, UInt(8.W)))
@@ -132,6 +178,16 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
 
   private def storedDct(block: UInt, channel: Int, coefficient: UInt): SInt =
     dct8x8(blockAddress(block))(channel)(coefficient)
+
+  private def storedQuantizationXyb(block: UInt, channel: Int, sample: Int): SInt =
+    quantizationXyb
+      .map(_(blockAddress(block))(channel)(sample))
+      .getOrElse(storedXyb(block, channel, sample))
+
+  private def storedQuantizationDct(block: UInt, channel: Int, coefficient: UInt): SInt =
+    quantizationDct8x8
+      .map(_(blockAddress(block))(channel)(coefficient))
+      .getOrElse(storedDct(block, channel, coefficient))
 
   private def storedAq(block: UInt): UInt = aqMapQ24(blockAddress(block))
   private def storedMask(block: UInt): UInt = strategyMaskQ16(blockAddress(block))
@@ -201,6 +257,12 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
     for (channel <- 0 until 3; sample <- 0 until blockSize) {
       xyb(store)(channel)(sample) := io.input.bits.xyb(channel)(sample)
       dct8x8(store)(channel)(sample) := io.input.bits.dct8x8(channel)(sample)
+      quantizationXyb.foreach(
+        _(store)(channel)(sample) := io.input.bits.quantizationXyb.get(channel)(sample)
+      )
+      quantizationDct8x8.foreach(
+        _(store)(channel)(sample) := io.input.bits.quantizationDct8x8.get(channel)(sample)
+      )
     }
     aqMapQ24(store) := io.input.bits.aqMapQ24
     strategyMaskQ16(store) := io.input.bits.strategyMaskQ16
@@ -271,8 +333,14 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
   val cflBlockIndex = cflBlockY * xBlocks + cflBlockX
   val cflCoefficientIndexSafe = cflCoefficientIndex(log2Ceil(blockSize) - 1, 0)
 
+  private val quantizationToQ16Shift = 16 - quantizationCoefficientFractionBits
+
   private def coefficientQ16(value: SInt): SInt =
-    (value << 4).asSInt.pad(estimatorCoefficientBits)
+    if (quantizationToQ16Shift > 0)
+      (value << quantizationToQ16Shift).asSInt.pad(estimatorCoefficientBits)
+    else if (quantizationToQ16Shift < 0)
+      (value >> -quantizationToQ16Shift).asSInt.pad(estimatorCoefficientBits)
+    else value.pad(estimatorCoefficientBits)
 
   val cflEstimator = Module(
     new CflTileCoefficientEstimator(
@@ -284,11 +352,11 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
   cflEstimator.io.input.valid := state === cflStreaming && tileSampleCount =/= 0.U
   cflEstimator.io.input.bits.coefficientIndex := cflCoefficientIndexSafe
   cflEstimator.io.input.bits.yCoeffQ16 :=
-    coefficientQ16(storedDct(cflBlockIndex, 1, cflCoefficientIndexSafe))
+    coefficientQ16(storedQuantizationDct(cflBlockIndex, 1, cflCoefficientIndexSafe))
   cflEstimator.io.input.bits.xCoeffQ16 :=
-    coefficientQ16(storedDct(cflBlockIndex, 0, cflCoefficientIndexSafe))
+    coefficientQ16(storedQuantizationDct(cflBlockIndex, 0, cflCoefficientIndexSafe))
   cflEstimator.io.input.bits.bCoeffQ16 :=
-    coefficientQ16(storedDct(cflBlockIndex, 2, cflCoefficientIndexSafe))
+    coefficientQ16(storedQuantizationDct(cflBlockIndex, 2, cflCoefficientIndexSafe))
   cflEstimator.io.input.bits.last := tileSampleOrdinal === tileSampleCount - 1.U
   cflEstimator.io.output.ready := state === cflWaiting
 
@@ -581,6 +649,15 @@ class FramePreparedAcStrategyTraceStage(c: HjxlConfig = HjxlConfig()) extends Mo
     io.selected.coveredXyb(0)(channel)(sample) := storedXyb(emitIndex, channel, sample)
     io.selected.coveredXyb(1)(channel)(sample) :=
       storedXyb(emitSecondIndex, channel, sample)
+    io.selected.quantizationDct8x8.foreach(
+      _(channel)(sample) := storedQuantizationDct(emitIndex, channel, sample.U)
+    )
+    io.selected.quantizationCoveredXyb.foreach { selectedXyb =>
+      selectedXyb(0)(channel)(sample) :=
+        storedQuantizationXyb(emitIndex, channel, sample)
+      selectedXyb(1)(channel)(sample) :=
+        storedQuantizationXyb(emitSecondIndex, channel, sample)
+    }
   }
   io.traceLast := io.trace.valid && emitIndex === totalBlocks - 1.U
   io.busy := state =/= receiving || receivedBlock =/= 0.U || selector.io.busy

@@ -4,6 +4,7 @@ package hjxl
 
 import chisel3._
 import chisel3.util._
+import scala.collection.concurrent.TrieMap
 
 object RgbToXybApprox {
   val InputFractionBits = 8
@@ -40,10 +41,25 @@ object RgbToXybApprox {
   val BiasQAbsorbance: Int = math.round(0.0037930732552754493 * absorbanceScale).toInt
   val NegBiasQ12: Int = math.round(-0.15595420054 * outputScale).toInt
 
-  val NormalizedCbrtTable: Seq[Int] =
-    (CbrtTableMin to CbrtTableMax).map { index =>
-      math.round(math.cbrt(index.toDouble / (1 << CbrtLutFractionBits)) * outputScale).toInt
-    }
+  def negBias(outputFractionBits: Int): Int =
+    math.round(-0.15595420054 * (1 << outputFractionBits)).toInt
+
+  private val normalizedCbrtTableCache = TrieMap.empty[Int, Seq[Int]]
+
+  def normalizedCbrtTable(outputFractionBits: Int): Seq[Int] =
+    normalizedCbrtTableCache.getOrElseUpdate(
+      outputFractionBits,
+      (CbrtTableMin to CbrtTableMax).map { index =>
+        math
+          .round(
+            math.cbrt(index.toDouble / (1 << CbrtLutFractionBits)) *
+              (1 << outputFractionBits)
+          )
+          .toInt
+      }
+    )
+
+  val NormalizedCbrtTable: Seq[Int] = normalizedCbrtTable(OutputFractionBits)
 
   private def roundShift(value: BigInt, shift: Int): BigInt =
     (value + (BigInt(1) << (shift - 1))) >> shift
@@ -62,9 +78,12 @@ object RgbToXybApprox {
   }
 
   /** Pure-Scala model of the normalized cube-root datapath. */
-  def cbrtPlusBiasQ12(absorbanceQ24: BigInt): Int = {
+  def cbrtPlusBias(absorbanceQ24: BigInt, outputFractionBits: Int): Int = {
+    require(outputFractionBits >= OutputFractionBits, "XYB output precision cannot be below Q12")
+    val table = normalizedCbrtTable(outputFractionBits)
+    val negativeBias = negBias(outputFractionBits)
     if (absorbanceQ24 <= 0) {
-      NegBiasQ12
+      negativeBias
     } else {
       val scaleCode = CbrtScaleThresholds.indexWhere(absorbanceQ24 < _)
       val exponent =
@@ -77,31 +96,65 @@ object RgbToXybApprox {
       val base = math.max(CbrtTableMin, math.min(CbrtTableMax - 1, index)) - CbrtTableMin
       val denominator = BigInt(1) << CbrtInterpolationBits
       val interpolated =
-        ((BigInt(NormalizedCbrtTable(base)) * (denominator - fraction) +
-          BigInt(NormalizedCbrtTable(base + 1)) * fraction + denominator / 2) >>
+        ((BigInt(table(base)) * (denominator - fraction) +
+          BigInt(table(base + 1)) * fraction + denominator / 2) >>
           CbrtInterpolationBits).toInt
       val scaled =
         if (exponent < 0) (interpolated + (1 << (-exponent - 1))) >> -exponent
         else interpolated << exponent
-      scaled + NegBiasQ12
+      scaled + negativeBias
     }
   }
 
+
+  def cbrtPlusBiasQ12(absorbanceQ24: BigInt): Int =
+    cbrtPlusBias(absorbanceQ24, OutputFractionBits)
+
   /** Pure-Scala bit-accurate model used by downstream fixed-path tests. */
-  def rgbToXybQ12(rQ8: Int, gQ8: Int, bQ8: Int): (Int, Int, Int) = {
-    val tm0 = cbrtPlusBiasQ12(mixedAbsorbanceQ24(rQ8, gQ8, bQ8, M00, M01, M02))
-    val tm1 = cbrtPlusBiasQ12(mixedAbsorbanceQ24(rQ8, gQ8, bQ8, M10, M11, M12))
-    val tm2 = cbrtPlusBiasQ12(mixedAbsorbanceQ24(rQ8, gQ8, bQ8, M20, M21, M22))
+  def rgbToXyb(
+      rQ8: Int,
+      gQ8: Int,
+      bQ8: Int,
+      outputFractionBits: Int
+  ): (Int, Int, Int) = {
+    val tm0 = cbrtPlusBias(
+      mixedAbsorbanceQ24(rQ8, gQ8, bQ8, M00, M01, M02),
+      outputFractionBits
+    )
+    val tm1 = cbrtPlusBias(
+      mixedAbsorbanceQ24(rQ8, gQ8, bQ8, M10, M11, M12),
+      outputFractionBits
+    )
+    val tm2 = cbrtPlusBias(
+      mixedAbsorbanceQ24(rQ8, gQ8, bQ8, M20, M21, M22),
+      outputFractionBits
+    )
     ((tm0 - tm1) >> 1, (tm0 + tm1) >> 1, tm2)
   }
+
+  def rgbToXybQ12(rQ8: Int, gQ8: Int, bQ8: Int): (Int, Int, Int) =
+    rgbToXyb(rQ8, gQ8, bQ8, OutputFractionBits)
 }
 
-/** Range-normalized unsigned Q24 cube root with signed Q12 output. */
-class CbrtApproxQ12(inputBits: Int, outputBits: Int) extends Module {
+/** Range-normalized unsigned Q24 cube root with configurable signed output precision. */
+class CbrtApprox(
+    inputBits: Int,
+    outputBits: Int,
+    outputFractionBits: Int = RgbToXybApprox.OutputFractionBits
+) extends Module {
   import RgbToXybApprox._
 
   require(inputBits >= NormalizedBits, "cube-root input must contain the normalized Q24 range")
-  require(outputBits >= 18, "cube-root output must contain the signed Q12 range")
+  require(outputFractionBits >= OutputFractionBits, "cube-root output precision cannot be below Q12")
+  require(
+    outputBits >= outputFractionBits + 6,
+    "cube-root output must contain the scaled signed range"
+  )
+
+  private val tableBits = outputFractionBits + 2
+  private val scaledRootBits = outputFractionBits + 5
+  private val tableValues = normalizedCbrtTable(outputFractionBits)
+  private val negativeBias = negBias(outputFractionBits)
 
   val io = IO(new Bundle {
     val input = Input(UInt(inputBits.W))
@@ -127,16 +180,16 @@ class CbrtApproxQ12(inputBits: Int, outputBits: Int) extends Module {
   val tableIndex = normalized >> CbrtInterpolationBits
   val tableOffset = tableIndex - CbrtTableMin.U
   val fraction = normalized(CbrtInterpolationBits - 1, 0)
-  val table = VecInit(NormalizedCbrtTable.map(_.U(CbrtTableBits.W)))
+  val table = VecInit(tableValues.map(_.U(tableBits.W)))
   val low = table(tableOffset)
   val high = table(tableOffset + 1.U)
   val interpolationScale = BigInt(1) << CbrtInterpolationBits
   val interpolatedWide =
     low * (interpolationScale.U - fraction) +&
       high * fraction + (interpolationScale / 2).U
-  val normalizedRoot = (interpolatedWide >> CbrtInterpolationBits)(CbrtTableBits - 1, 0)
+  val normalizedRoot = (interpolatedWide >> CbrtInterpolationBits)(tableBits - 1, 0)
 
-  val scaledRoot = Wire(UInt(16.W))
+  val scaledRoot = Wire(UInt(scaledRootBits.W))
   scaledRoot := MuxLookup(scaleCode, normalizedRoot << CbrtMaxExponent)(
     CbrtExponents.zipWithIndex.map { case (exponent, code) =>
       code.U -> {
@@ -148,18 +201,25 @@ class CbrtApproxQ12(inputBits: Int, outputBits: Int) extends Module {
       }
     }
   )
-  val withBias = scaledRoot.zext +& NegBiasQ12.S
-  io.output := Mux(io.input === 0.U, NegBiasQ12.S(outputBits.W), withBias.pad(outputBits))
+  val withBias = scaledRoot.zext +& negativeBias.S
+  io.output := Mux(io.input === 0.U, negativeBias.S(outputBits.W), withBias.pad(outputBits))
 }
+
+class CbrtApproxQ12(inputBits: Int, outputBits: Int)
+    extends CbrtApprox(inputBits, outputBits, RgbToXybApprox.OutputFractionBits)
 
 /** Approximate libjxl-tiny RGB-to-XYB for signed Q8 linear RGB samples.
   *
   * The signed matrix multiply retains Q24 absorbance precision and clamps only
   * after adding the opsin bias, matching the reference ordering. A normalized
   * cube-root table covers the full positive signed-16/Q8 input range without
-  * the former high-value saturation. Outputs are signed Q12 XYB samples.
+  * the former high-value saturation. Outputs default to signed Q12; the live
+  * VarDCT quantization sideband requests Q16 from the same implementation.
   */
-class RgbToXybApprox(c: HjxlConfig = HjxlConfig()) extends Module {
+class RgbToXybApprox(
+    c: HjxlConfig = HjxlConfig(),
+    outputFractionBits: Int = RgbToXybApprox.OutputFractionBits
+) extends Module {
   import RgbToXybApprox._
 
   private val coefficientBits = CoefficientFractionBits + 1
@@ -168,6 +228,11 @@ class RgbToXybApprox(c: HjxlConfig = HjxlConfig()) extends Module {
 
   require(c.pixelBits > InputFractionBits, "RGB input must contain an integer bit")
   require(mixedShift > 0, "mixed absorbance must be right-shifted into Q24")
+  require(outputFractionBits >= OutputFractionBits, "XYB output precision cannot be below Q12")
+  require(
+    c.traceValueBits >= outputFractionBits + 6,
+    "XYB output precision must fit the configured value width"
+  )
 
   val io = IO(new Bundle {
     val input = Flipped(Decoupled(new RgbPixel(c)))
@@ -189,9 +254,9 @@ class RgbToXybApprox(c: HjxlConfig = HjxlConfig()) extends Module {
     )
   }
 
-  val cbrt0 = Module(new CbrtApproxQ12(absorbanceBits, c.traceValueBits))
-  val cbrt1 = Module(new CbrtApproxQ12(absorbanceBits, c.traceValueBits))
-  val cbrt2 = Module(new CbrtApproxQ12(absorbanceBits, c.traceValueBits))
+  val cbrt0 = Module(new CbrtApprox(absorbanceBits, c.traceValueBits, outputFractionBits))
+  val cbrt1 = Module(new CbrtApprox(absorbanceBits, c.traceValueBits, outputFractionBits))
+  val cbrt2 = Module(new CbrtApprox(absorbanceBits, c.traceValueBits, outputFractionBits))
   cbrt0.io.input := mixedAbsorbance(M00, M01, M02)
   cbrt1.io.input := mixedAbsorbance(M10, M11, M12)
   cbrt2.io.input := mixedAbsorbance(M20, M21, M22)
