@@ -10,25 +10,44 @@ import chisel3.util._
   * Continuation cells are consumed without producing an owner. First cells
   * reuse the stored ordinary DCT coefficients or recompute the selected
   * rectangular transform from the two covered XYB blocks. The live RGB route
-  * supplies Q16 quantization sidebands while the strategy scheduler owns its
-  * independent analysis precision; prepared Q12 users retain the original
-  * compact interface. Adaptive raw quantization uses a reciprocal matched to
-  * the post-strategy maximum.
+  * supplies Q18 sidebands for strategy search and AC quantization plus Q19
+  * luma for the precision-sensitive DC pair; prepared Q12 users retain the
+  * original compact interface. Adaptive raw quantization uses a reciprocal
+  * matched to the post-strategy maximum.
   */
 class AcStrategySelectedCellToVarDctOwnerStage(
     c: HjxlConfig = HjxlConfig(),
-    coefficientFractionBits: Int = Dct8Approx.FractionBits
+    coefficientFractionBits: Int = Dct8Approx.FractionBits,
+    dctGuardBits: Int = 0,
+    lumaDcCoefficientFractionBits: Int = 0
 )
     extends Module {
   private val blockDim = HjxlConstants.BlockDim
   private val blockSize = blockDim * blockDim
   private val maxCoefficients = QuantizeVarDctBlock.MaxCoefficients
+  private val activeLumaDcFractionBits =
+    if (lumaDcCoefficientFractionBits == 0)
+      coefficientFractionBits
+    else lumaDcCoefficientFractionBits
+  private val includeLumaDcPrecision =
+    activeLumaDcFractionBits > coefficientFractionBits
+
+  require(
+    activeLumaDcFractionBits >= coefficientFractionBits,
+    "selected-owner luma DC precision cannot be below AC precision"
+  )
 
   val io = IO(new Bundle {
     val input = Flipped(
-      Decoupled(new PreparedAcStrategySelectedCell(c, coefficientFractionBits))
+      Decoupled(
+        new PreparedAcStrategySelectedCell(
+          c,
+          coefficientFractionBits,
+          activeLumaDcFractionBits
+        )
+      )
     )
-    val output = Decoupled(new PreparedVarDctFrameBlock(c))
+    val output = Decoupled(new PreparedVarDctFrameBlock(c, includeLumaDcPrecision))
     val busy = Output(Bool())
   })
 
@@ -41,11 +60,35 @@ class AcStrategySelectedCellToVarDctOwnerStage(
   val supportedStrategy = isDct || isVertical || isHorizontal
 
   val verticalDct = Seq.fill(3)(
-    Module(new Dct16x8Approx(c, coefficientFractionBits))
+    Module(new Dct16x8Approx(c, coefficientFractionBits, internalGuardBits = dctGuardBits))
   )
   val horizontalDct = Seq.fill(3)(
-    Module(new Dct8x16Approx(c, coefficientFractionBits))
+    Module(new Dct8x16Approx(c, coefficientFractionBits, internalGuardBits = dctGuardBits))
   )
+  val lumaDcVerticalDct =
+    if (includeLumaDcPrecision)
+      Some(
+        Module(
+          new Dct16x8Approx(
+            c,
+            activeLumaDcFractionBits,
+            internalGuardBits = dctGuardBits
+          )
+        )
+      )
+    else None
+  val lumaDcHorizontalDct =
+    if (includeLumaDcPrecision)
+      Some(
+        Module(
+          new Dct8x16Approx(
+            c,
+            activeLumaDcFractionBits,
+            internalGuardBits = dctGuardBits
+          )
+        )
+      )
+    else None
   for (channel <- 0 until 3) {
     verticalDct(channel).io.input.valid := io.input.valid && isFirst && isVertical
     horizontalDct(channel).io.input.valid := io.input.valid && isFirst && isHorizontal
@@ -67,6 +110,24 @@ class AcStrategySelectedCellToVarDctOwnerStage(
           .getOrElse(io.input.bits.coveredXyb(horizontalBlock)(channel)(horizontalSample))
     }
   }
+  lumaDcVerticalDct.foreach { dct =>
+    dct.io.input.valid := io.input.valid && isFirst && isVertical
+    for (sample <- 0 until maxCoefficients) {
+      val block = if (sample / blockDim < blockDim) 0 else 1
+      dct.io.input.bits(sample) :=
+        io.input.bits.lumaDcCoveredY.get(block)(sample % blockSize)
+    }
+  }
+  lumaDcHorizontalDct.foreach { dct =>
+    dct.io.input.valid := io.input.valid && isFirst && isHorizontal
+    for (sample <- 0 until maxCoefficients) {
+      val x = sample % (2 * blockDim)
+      val y = sample / (2 * blockDim)
+      val block = if (x < blockDim) 0 else 1
+      dct.io.input.bits(sample) :=
+        io.input.bits.lumaDcCoveredY.get(block)(y * blockDim + (x % blockDim))
+    }
+  }
 
   val reciprocal = Module(new AdaptiveInvQacQ16)
   val reciprocalStarted = RegInit(false.B)
@@ -85,11 +146,20 @@ class AcStrategySelectedCellToVarDctOwnerStage(
     horizontalDct.map(_.io.output.valid).reduce(_ && _)
   )
   val coefficientsValid = supportedStrategy && (isDct || rectangularValid)
+  val lumaDcCoefficientsValid =
+    if (includeLumaDcPrecision)
+      isDct || Mux(
+        isVertical,
+        lumaDcVerticalDct.get.io.output.valid,
+        lumaDcHorizontalDct.get.io.output.valid
+      )
+    else true.B
   val reciprocalAvailable =
     !io.input.bits.adaptiveRawQuant || (reciprocalStarted && reciprocal.io.output.valid)
 
   io.output.valid :=
-    io.input.valid && isFirst && supportedStrategy && coefficientsValid && reciprocalAvailable
+    io.input.valid && isFirst && supportedStrategy && coefficientsValid &&
+      lumaDcCoefficientsValid && reciprocalAvailable
   io.output.bits.blockX := io.input.bits.blockX
   io.output.bits.blockY := io.input.bits.blockY
   io.output.bits.last := io.input.bits.ownerLast
@@ -122,10 +192,23 @@ class AcStrategySelectedCellToVarDctOwnerStage(
       )
     )
   }
+  io.output.bits.quantize.lumaDcCoefficients.foreach { coefficients =>
+    for (coefficient <- 0 until 2) {
+      coefficients(coefficient) := Mux(
+        isDct,
+        io.input.bits.lumaDcDct8x8.get(coefficient),
+        Mux(
+          isVertical,
+          lumaDcVerticalDct.get.io.output.bits(coefficient),
+          lumaDcHorizontalDct.get.io.output.bits(coefficient)
+        )
+      )
+    }
+  }
 
   io.input.ready := Mux(
     isFirst && supportedStrategy,
-    io.output.ready && coefficientsValid && reciprocalAvailable,
+    io.output.ready && coefficientsValid && lumaDcCoefficientsValid && reciprocalAvailable,
     true.B
   )
   for (dct <- verticalDct) {
@@ -134,6 +217,12 @@ class AcStrategySelectedCellToVarDctOwnerStage(
   for (dct <- horizontalDct) {
     dct.io.output.ready := io.output.ready && reciprocalAvailable && isHorizontal
   }
+  lumaDcVerticalDct.foreach(
+    _.io.output.ready := io.output.ready && reciprocalAvailable && isVertical
+  )
+  lumaDcHorizontalDct.foreach(
+    _.io.output.ready := io.output.ready && reciprocalAvailable && isHorizontal
+  )
   reciprocal.io.output.ready :=
     io.output.fire && io.input.bits.adaptiveRawQuant && reciprocalStarted
 
@@ -160,12 +249,25 @@ class AcStrategySelectedCellToVarDctOwnerStage(
 class FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
     c: HjxlConfig = HjxlConfig(),
     coefficientFractionBits: Int = Dct8Approx.FractionBits,
-    analysisDctGuardBits: Int = 0
+    analysisDctGuardBits: Int = 0,
+    quantizationDctGuardBits: Int = 0,
+    lumaDcCoefficientFractionBits: Int = 0
 ) extends Module {
+  private val activeLumaDcFractionBits =
+    if (lumaDcCoefficientFractionBits == 0)
+      coefficientFractionBits
+    else lumaDcCoefficientFractionBits
+
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
     val input = Flipped(
-      Decoupled(new PreparedAcStrategyFrameBlock(c, coefficientFractionBits))
+      Decoupled(
+        new PreparedAcStrategyFrameBlock(
+          c,
+          coefficientFractionBits,
+          activeLumaDcFractionBits
+        )
+      )
     )
     val trace = Decoupled(new StageTrace(c))
     val traceLast = Output(Bool())
@@ -178,14 +280,23 @@ class FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
     new FramePreparedAcStrategyTraceStage(
       c,
       coefficientFractionBits,
-      analysisDctGuardBits = analysisDctGuardBits
+      analysisDctGuardBits = analysisDctGuardBits,
+      lumaDcCoefficientFractionBits = activeLumaDcFractionBits
     )
   )
-  val owners = Module(new AcStrategySelectedCellToVarDctOwnerStage(c, coefficientFractionBits))
+  val owners = Module(
+    new AcStrategySelectedCellToVarDctOwnerStage(
+      c,
+      coefficientFractionBits,
+      dctGuardBits = quantizationDctGuardBits,
+      lumaDcCoefficientFractionBits = activeLumaDcFractionBits
+    )
+  )
   val tokens = Module(
     new FramePreparedVarDctQuantizeTokenTraceStage(
       c,
-      coefficientFractionBits = coefficientFractionBits
+      coefficientFractionBits = coefficientFractionBits,
+      lumaDcCoefficientFractionBits = activeLumaDcFractionBits
     )
   )
 
@@ -238,14 +349,19 @@ class FrameAqVarDctQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig())
     val unsupportedDistance = Output(Bool())
   })
 
-  private val quantizationCoefficientFractionBits = 16
+  private val quantizationCoefficientFractionBits =
+    RgbVarDctFixedPoint.QuantizationXybFractionBits
+  private val lumaDcCoefficientFractionBits =
+    RgbVarDctFixedPoint.LumaDcXybFractionBits
 
   val blocks = Module(new FrameAqDctBlockStage(c, includeQuantizationPrecision = true))
   val composed = Module(
     new FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
       c,
       coefficientFractionBits = quantizationCoefficientFractionBits,
-      analysisDctGuardBits = 8
+      analysisDctGuardBits = RgbVarDctFixedPoint.DctGuardBits,
+      quantizationDctGuardBits = RgbVarDctFixedPoint.DctGuardBits,
+      lumaDcCoefficientFractionBits = lumaDcCoefficientFractionBits
     )
   )
   val distanceStatus = Module(new DistanceParamsLookup)
@@ -263,9 +379,13 @@ class FrameAqVarDctQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig())
   composed.io.input.bits.xyb := blocks.io.output.bits.xyb
   composed.io.input.bits.dct8x8 := blocks.io.output.bits.coefficients
   composed.io.input.bits.quantizationXyb.get :=
-    blocks.io.output.bits.quantizationXybQ16.get
+    blocks.io.output.bits.precisionXyb.get
   composed.io.input.bits.quantizationDct8x8.get :=
-    blocks.io.output.bits.quantizationCoefficientsQ16.get
+    blocks.io.output.bits.precisionCoefficients.get
+  composed.io.input.bits.lumaDcY.get :=
+    blocks.io.output.bits.lumaDcY.get
+  composed.io.input.bits.lumaDcDct8x8.get :=
+    blocks.io.output.bits.lumaDcCoefficients.get
   composed.io.input.bits.aqMapQ24 := blocks.io.output.bits.aqMapQ24
   composed.io.input.bits.strategyMaskQ16 := blocks.io.output.bits.strategyMaskQ16
   composed.io.input.bits.rawQuant := blocks.io.output.bits.quant

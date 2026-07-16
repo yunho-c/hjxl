@@ -570,6 +570,14 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     )
   }
 
+  "a nonzero-AC Q8 RGB random fixture assembles to the native VarDCT codestream" in {
+    verifyRgbCodestream(
+      pattern = "random",
+      expectedStrategyValues = Seq(3, 3, 2, 2),
+      expectedCodestreamBytes = 335
+    )
+  }
+
   "the RGB route reaches every logical-token phase and drains before another frame" in {
     val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 16)
     simulate(new FrameAqVarDctQuantizeTokenTraceStage(config)) { dut =>

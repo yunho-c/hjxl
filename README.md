@@ -13,7 +13,7 @@ board-proven FPGA encoder.
 | Area | Current state |
 | --- | --- |
 | Strongest validated boundary | Host-prepared, all-DCT coefficients through quantization and logical token traces, followed by host-side codestream assembly |
-| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and combined logical tokens; a focused compile-time route composes the tile-correct adaptive 8x8/16x8/8x16 search with first-block-owned variable-shape quantization and tokenization, with three exact nonzero 16x16 codestream fixtures; broad RGB parity and physical feasibility remain open |
+| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and combined logical tokens; a focused compile-time route composes the tile-correct adaptive 8x8/16x8/8x16 search with first-block-owned variable-shape quantization and tokenization, with four exact nonzero 16x16 codestream fixtures; broad RGB parity and physical feasibility remain open |
 | Hardware output | Trace/token records; entropy optimization and final JPEG XL bitstream assembly remain host software responsibilities |
 | Near-term FPGA top | `HjxlKv260PreparedDctTop`, the direct prepared-DCT variant, is frozen as the first synthesis and bring-up target |
 | Physical validation | Chisel simulation and generated SystemVerilog are covered; Vivado synthesis, timing closure, resource use, bitstream generation, and KV260 execution have not been demonstrated |
@@ -102,12 +102,14 @@ shares that completed chain between the final-map trace, pre-strategy raw-quant
 conversion, and downstream DCT quantization without a downstream RGB
 reconversion. `FrameAqDctBlockStage` converts each completed AQ block to one
 native-Q12 all-DCT record without elaborating reciprocal hardware. Only the
-focused RGB VarDCT build asks the shared converter for exact Q12 and Q16 taps,
-stores one additional Q16 frame at the final-AQ owner, and carries Q16 DCT
-values into its selected-owner sideband. The dual-output cube-root datapath
-derives the original Q12 table from the Q16 table plus a one-bit correction ROM,
-so this route contains one RGB converter rather than parallel Q12/Q16
-converters; older all-DCT routes keep the narrower Q12-only hierarchy.
+focused RGB VarDCT build asks the shared converter for a Q19 primary result plus
+exact Q18 and Q12 taps. It stores one Q18 X/Y/B frame and one Q19 luma frame at
+the final-AQ owner. Q18 DCT values drive CFL, strategy scoring, AC
+quantization, and chroma DC; the Q19 luma path carries only the first two
+selected-owner coefficients into luma DC. One-bit correction ROMs derive the
+exact lower-precision cube-root tables from the Q19 table, so this route
+contains one RGB converter rather than parallel converters; older all-DCT
+routes keep the narrower Q12-only hierarchy.
 `FrameAqDctOnlyBlockStage` enriches that record with the matching per-block
 inverse AC scale from the 33-cycle `AdaptiveInvQacQ16` restoring divider. Nonzero
 `fixedRawQuant` retains the explicit byte/`fixedInvQacQ16` experiment contract;
@@ -175,21 +177,21 @@ source through strategy selection, variable-shape quantization, and combined
 DC/strategy/metadata/AC logical tokens. This heavy path is selected only by
 the compile-time `HjxlCoreTraceRoute.AqVarDctTokens`; the default shell and the
 existing all-DCT `TraceStage.AcTokens` focused route are unchanged. The
-live route keeps the established Q12 XYB seam for AQ and captures aligned Q16
-XYB plus ordinary-DCT sidebands from the same conversion. Quantization retains
-the established Q16 coefficients. CFL and strategy scoring instead recompute a
-shared three-channel DCT set from stored Q16 XYB with eight internal guard bits,
-then round once to Q16; the analysis rectangular transforms use the same guard
-scale. This avoids making the frozen quantization seam absorb a scoring fix.
-Prepared users retain zero guard bits and their original Q12 behavior. Three
-16x16 signed-Q8 fixtures now prove the complete nonzero path under periodic
-output stalls: an impulse selects `[5, 4, 1, 1]` and matches a 197-byte
-codestream, a gradient selects `[1, 1, 5, 4]` and matches a 230-byte codestream,
-and a checkerboard selects `[5, 4, 5, 4]` and matches a 256-byte codestream.
-Every native DC/strategy/metadata/AC row is exact in all three cases. This is
-still narrow image parity: a deterministic random fixture first differs in DC
-quantization, entropy coding and assembly remain host responsibilities, and
-synthesis/timing/resource fit is unproven.
+live route keeps the established Q12 XYB seam for AQ and uses aligned Q18
+XYB/ordinary-DCT sidebands for CFL, strategy scoring, AC quantization, and
+chroma DC. All strategy and selected-owner rectangular transforms use eight
+internal guard bits and round once back to Q18. A narrow Q19 luma sideband
+retains the extra half-step needed by the selected rectangle's two luma-DC
+coefficients without perturbing Q18 AC results. Prepared users retain zero
+guard bits and their original Q12 behavior. Four 16x16 signed-Q8 fixtures now
+prove the complete nonzero path under periodic output stalls: an impulse
+selects `[5, 4, 1, 1]` and matches a 197-byte codestream, a gradient selects
+`[1, 1, 5, 4]` and matches a 230-byte codestream, a checkerboard selects
+`[5, 4, 5, 4]` and matches a 256-byte codestream, and the deterministic
+random fixture selects `[3, 3, 2, 2]` and matches a 335-byte codestream. Every
+native DC/strategy/metadata/AC row is exact in all four cases. This remains
+narrow image parity: entropy coding and assembly remain host responsibilities,
+the fixture corpus is tiny, and synthesis/timing/resource fit is unproven.
 `tools/hjxl_reference.py --scaled-dct-q12-csv ...` exports independent signed
 transform fixtures plus the exact fixed transform result;
 `--ac-strategy-cost-q16-csv ...` exports the prepared candidate-cost seam,
@@ -1502,10 +1504,11 @@ narrow synchronous 64/128-coefficient owner store.
 for horizontal adaptive-reciprocal and vertical fixed-reciprocal ownership,
 then composes the prepared strategy search with variable-shape quantization and
 compares all 32 native token rows from the zero-coefficient 2x2 fixture under
-periodic output stalls. Its nonzero signed-Q8 16x16 impulse, gradient, and
-checkerboard regressions compare all four native token arrays and the final
-197-byte, 230-byte, and 256-byte assembled codestreams while stalling output,
-including nonzero DC and AC values. The reference fixtures are explicitly
+periodic output stalls. Its nonzero signed-Q8 16x16 impulse, gradient,
+checkerboard, and deterministic-random regressions compare all four native
+token arrays and the final 197-byte, 230-byte, 256-byte, and 335-byte assembled
+codestreams while stalling output, including nonzero DC and AC values. The
+reference fixtures are explicitly
 rounded onto the Q8 host input grid. The suite also drives a live 16x16 RGB
 frame through every logical-
 token phase, checks unsupported-distance reporting, verifies packed
@@ -1536,8 +1539,8 @@ fixed-token oracle. It also checks `tools/hjxl_trace_to_codestream.py`, the
 one-step StageTrace-to-byte assembler, against the same token arrays and byte
 oracle. The full RGB-input token schedulers still depend on approximate fixed-
 point RGB/XYB/AQ arithmetic; the adaptive variable-shape route now establishes
-three exact nonzero RGB-to-codestream fixtures, not broad image parity. The
-deterministic random audit still first differs in DC tokens.
+four exact nonzero RGB-to-codestream fixtures, not broad image parity. The next
+parity frontier is a broader seeded and real-image corpus.
 
 ## ABI generation
 

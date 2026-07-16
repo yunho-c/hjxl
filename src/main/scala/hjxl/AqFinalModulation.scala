@@ -322,7 +322,7 @@ class AqFinalMapFrameOutput(includeQuantizationPrecision: Boolean = false) exten
   val xybXQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
   val xybYQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
   val xybBQ12 = Vec(AqHfModulationFixedPoint.SamplesPerBlock, SInt(AqHfModulationFixedPoint.XybValueBits.W))
-  val quantizationXybQ16 =
+  val precisionXyb =
     if (includeQuantizationPrecision)
       Some(
         Vec(
@@ -334,6 +334,15 @@ class AqFinalMapFrameOutput(includeQuantizationPrecision: Boolean = false) exten
         )
       )
     else None
+  val lumaDcY =
+    if (includeQuantizationPrecision)
+      Some(
+        Vec(
+          AqHfModulationFixedPoint.SamplesPerBlock,
+          SInt(AqHfModulationFixedPoint.XybValueBits.W)
+        )
+      )
+    else None
 }
 
 /** Shared RGB pipeline from raster pixels through the final per-block AQ map.
@@ -341,8 +350,9 @@ class AqFinalMapFrameOutput(includeQuantizationPrecision: Boolean = false) exten
   * Unsupported distances consistently use the shared distance-1 fallback for
   * every cumulative operation. The AXI-Lite shell reports that fallback through
   * its existing status bit. The focused VarDCT specialization stores the
-  * converter's Q16 accepted-pixel tap here and reads one padded block beside
-  * the completed Q12 AQ context; ordinary routes do not elaborate that store.
+  * converter's exact Q18 tap plus its Q19 luma output here and reads one
+  * padded block beside the completed Q12 AQ context; ordinary routes do not
+  * elaborate either store.
   */
 class FrameAqFinalMapPipeline(
     c: HjxlConfig = HjxlConfig(),
@@ -383,40 +393,51 @@ class FrameAqFinalMapPipeline(
   scheduler.io.input <> io.input
   io.xybAccepted := scheduler.io.xybAccepted
 
-  val quantizationFrame =
+  val precisionFrame =
     if (includeQuantizationPrecision)
       Some(Reg(Vec(numPixels, Vec(3, SInt(AqHfModulationFixedPoint.XybValueBits.W)))))
     else None
-  val quantizationReceived =
+  val lumaDcFrame =
+    if (includeQuantizationPrecision)
+      Some(Reg(Vec(numPixels, SInt(AqHfModulationFixedPoint.XybValueBits.W))))
+    else None
+  val precisionReceived =
     if (includeQuantizationPrecision) Some(RegInit(0.U(frameCountBits.W))) else None
-  val quantizationWidth =
+  val precisionWidth =
     if (includeQuantizationPrecision) Some(RegInit(0.U(widthBits.W))) else None
-  val quantizationHeight =
+  val precisionHeight =
     if (includeQuantizationPrecision) Some(RegInit(0.U(heightBits.W))) else None
-  val quantizationBlocksX =
+  val precisionBlocksX =
     if (includeQuantizationPrecision) Some(RegInit(0.U(widthBits.W))) else None
 
   scheduler.io.quantizationXybAccepted.foreach { accepted =>
     when(accepted.valid) {
-      val received = quantizationReceived.get
-      assert(received < numPixels.U, "AQ final-map Q16 frame store overflow")
-      val target = quantizationFrame.get(received(frameIndexBits - 1, 0))
+      val lumaDc = scheduler.io.lumaDcXybAccepted.get
+      val received = precisionReceived.get
+      assert(received < numPixels.U, "AQ final-map precision frame store overflow")
+      assert(lumaDc.valid, "AQ final-map Q19 luma sideband missed a Q18 sample")
+      assert(
+        lumaDc.bits.x === accepted.bits.x && lumaDc.bits.y === accepted.bits.y,
+        "AQ final-map Q18/Q19 sideband coordinates diverged"
+      )
+      val target = precisionFrame.get(received(frameIndexBits - 1, 0))
       target(0) := accepted.bits.xybX
       target(1) := accepted.bits.xybY
       target(2) := accepted.bits.xybB
+      lumaDcFrame.get(received(frameIndexBits - 1, 0)) := lumaDc.bits.xybY
       when(received === 0.U) {
-        quantizationWidth.get := effectiveConfig.xsize(widthBits - 1, 0)
-        quantizationHeight.get := effectiveConfig.ysize(heightBits - 1, 0)
-        quantizationBlocksX.get :=
+        precisionWidth.get := effectiveConfig.xsize(widthBits - 1, 0)
+        precisionHeight.get := effectiveConfig.ysize(heightBits - 1, 0)
+        precisionBlocksX.get :=
           ((effectiveConfig.xsize(widthBits - 1, 0) +& (HjxlConstants.BlockDim - 1).U) >>
             log2Ceil(HjxlConstants.BlockDim))
       }
-      quantizationReceived.get := received + 1.U
+      precisionReceived.get := received + 1.U
     }
   }
 
-  private def quantizationFrameSample(blockIndex: UInt, sample: Int, channel: Int): SInt = {
-    val safeBlocksX = Mux(quantizationBlocksX.get === 0.U, 1.U, quantizationBlocksX.get)
+  private def frameSourceIndex(blockIndex: UInt, sample: Int): UInt = {
+    val safeBlocksX = Mux(precisionBlocksX.get === 0.U, 1.U, precisionBlocksX.get)
     val blockX = blockIndex - (blockIndex / safeBlocksX) * safeBlocksX
     val blockY = blockIndex / safeBlocksX
     val paddedX =
@@ -424,18 +445,23 @@ class FrameAqFinalMapPipeline(
     val paddedY =
       (blockY << log2Ceil(HjxlConstants.BlockDim)) + (sample / HjxlConstants.BlockDim).U
     val sourceX = Mux(
-      paddedX >= quantizationWidth.get,
-      quantizationWidth.get - 1.U,
+      paddedX >= precisionWidth.get,
+      precisionWidth.get - 1.U,
       paddedX
     )
     val sourceY = Mux(
-      paddedY >= quantizationHeight.get,
-      quantizationHeight.get - 1.U,
+      paddedY >= precisionHeight.get,
+      precisionHeight.get - 1.U,
       paddedY
     )
-    val sourceIndex = sourceY * quantizationWidth.get + sourceX
-    quantizationFrame.get(sourceIndex(frameIndexBits - 1, 0))(channel)
+    sourceY * precisionWidth.get + sourceX
   }
+
+  private def precisionFrameSample(blockIndex: UInt, sample: Int, channel: Int): SInt =
+    precisionFrame.get(frameSourceIndex(blockIndex, sample)(frameIndexBits - 1, 0))(channel)
+
+  private def lumaDcFrameSample(blockIndex: UInt, sample: Int): SInt =
+    lumaDcFrame.get(frameSourceIndex(blockIndex, sample)(frameIndexBits - 1, 0))
 
   val cumulative = Module(new AqHfColorGammaModulationBlockPipeline)
   cumulative.io.input <> scheduler.io.block
@@ -512,18 +538,23 @@ class FrameAqFinalMapPipeline(
   io.output.bits.xybXQ12 := xybXQ12
   io.output.bits.xybYQ12 := xybYQ12
   io.output.bits.xybBQ12 := xybBQ12
-  io.output.bits.quantizationXybQ16.foreach { quantizationBlock =>
+  io.output.bits.precisionXyb.foreach { precisionBlock =>
     assert(
       !io.output.valid ||
-        quantizationReceived.get === quantizationWidth.get * quantizationHeight.get,
-      "AQ final-map Q16 sideband is incomplete at block output"
+        precisionReceived.get === precisionWidth.get * precisionHeight.get,
+      "AQ final-map precision sideband is incomplete at block output"
     )
     for {
       channel <- 0 until 3
       sample <- 0 until AqHfModulationFixedPoint.SamplesPerBlock
     } {
-      quantizationBlock(channel)(sample) :=
-        quantizationFrameSample(blockIndex, sample, channel)
+      precisionBlock(channel)(sample) :=
+        precisionFrameSample(blockIndex, sample, channel)
+    }
+  }
+  io.output.bits.lumaDcY.foreach { lumaBlock =>
+    for (sample <- 0 until AqHfModulationFixedPoint.SamplesPerBlock) {
+      lumaBlock(sample) := lumaDcFrameSample(blockIndex, sample)
     }
   }
   finalModulation.io.output.ready := io.output.ready && contextValid
@@ -545,10 +576,10 @@ class FrameAqFinalMapPipeline(
     fixedYtob := 0.S
     blockLast := false.B
     when(io.output.bits.blockLast) {
-      quantizationReceived.foreach(_ := 0.U)
-      quantizationWidth.foreach(_ := 0.U)
-      quantizationHeight.foreach(_ := 0.U)
-      quantizationBlocksX.foreach(_ := 0.U)
+      precisionReceived.foreach(_ := 0.U)
+      precisionWidth.foreach(_ := 0.U)
+      precisionHeight.foreach(_ := 0.U)
+      precisionBlocksX.foreach(_ := 0.U)
     }
   }
 }

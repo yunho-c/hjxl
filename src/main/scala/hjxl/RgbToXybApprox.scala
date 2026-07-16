@@ -141,7 +141,8 @@ class CbrtApprox(
     inputBits: Int,
     outputBits: Int,
     outputFractionBits: Int = RgbToXybApprox.OutputFractionBits,
-    includeQ12Output: Boolean = false
+    includeQ12Output: Boolean = false,
+    includeQ18Output: Boolean = false
 ) extends Module {
   import RgbToXybApprox._
 
@@ -155,6 +156,10 @@ class CbrtApprox(
     !includeQ12Output || outputFractionBits > OutputFractionBits,
     "the secondary Q12 cube-root output requires a higher-precision primary output"
   )
+  require(
+    !includeQ18Output || outputFractionBits > 18,
+    "the secondary Q18 cube-root output requires a primary output above Q18"
+  )
 
   private val tableBits = outputFractionBits + 2
   private val scaledRootBits = outputFractionBits + 5
@@ -166,6 +171,8 @@ class CbrtApprox(
     val output = Output(SInt(outputBits.W))
     val outputQ12 =
       if (includeQ12Output) Some(Output(SInt(outputBits.W))) else None
+    val outputQ18 =
+      if (includeQ18Output) Some(Output(SInt(outputBits.W))) else None
   })
 
   val safeInput = Mux(io.input === 0.U, 1.U, io.input)
@@ -211,52 +218,68 @@ class CbrtApprox(
   val withBias = scaledRoot.zext +& negativeBias.S
   io.output := Mux(io.input === 0.U, negativeBias.S(outputBits.W), withBias.pad(outputBits))
 
-  io.outputQ12.foreach { outputQ12 =>
-    val q12Shift = outputFractionBits - OutputFractionBits
-    // Rounding the high-precision ROM entries reproduces all but a handful of
-    // the original Q12 entries. A one-bit correction ROM retains the exact Q12
-    // contract without instantiating a second full cube-root table.
-    val q12Corrections = tableValues.zip(NormalizedCbrtTable).map {
-      case (highPrecision, q12) =>
-        ((highPrecision + (1 << (q12Shift - 1))) >> q12Shift) - q12
+  private def secondaryOutput(secondaryFractionBits: Int): SInt = {
+    require(
+      secondaryFractionBits >= OutputFractionBits && secondaryFractionBits < outputFractionBits,
+      "secondary cube-root precision must be below the primary output"
+    )
+    val shift = outputFractionBits - secondaryFractionBits
+    val secondaryTable = normalizedCbrtTable(secondaryFractionBits)
+    // Rounding the primary ROM entries reproduces all but a handful of the
+    // lower-precision entries. A one-bit correction ROM retains each exact
+    // lower-precision contract without duplicating the full cube-root table.
+    val corrections = tableValues.zip(secondaryTable).map {
+      case (highPrecision, secondary) =>
+        ((highPrecision + (1 << (shift - 1))) >> shift) - secondary
     }
     require(
-      q12Corrections.forall(correction => correction >= 0 && correction <= 1),
-      "Q12 cube-root table correction must fit one bit"
+      corrections.forall(correction => correction >= 0 && correction <= 1),
+      s"Q$secondaryFractionBits cube-root table correction must fit one bit"
     )
-    val correctionTable = VecInit(q12Corrections.map(_.U(1.W)))
-    val q12RoundBias = BigInt(1) << (q12Shift - 1)
-    val lowQ12 =
-      (((low + q12RoundBias.U) >> q12Shift) - correctionTable(tableOffset))(CbrtTableBits - 1, 0)
-    val highQ12 =
-      (((high + q12RoundBias.U) >> q12Shift) - correctionTable(tableOffset + 1.U))(
-        CbrtTableBits - 1,
+    val correctionTable = VecInit(corrections.map(_.U(1.W)))
+    val roundBias = BigInt(1) << (shift - 1)
+    val secondaryTableBits = secondaryFractionBits + 2
+    val lowSecondary =
+      (((low + roundBias.U) >> shift) - correctionTable(tableOffset))(
+        secondaryTableBits - 1,
         0
       )
-    val interpolatedWideQ12 =
-      lowQ12 * (interpolationScale.U - fraction) +&
-        highQ12 * fraction + (interpolationScale / 2).U
-    val normalizedRootQ12 =
-      (interpolatedWideQ12 >> CbrtInterpolationBits)(CbrtTableBits - 1, 0)
-    val scaledRootQ12 = Wire(UInt(16.W))
-    scaledRootQ12 := MuxLookup(scaleCode, normalizedRootQ12 << CbrtMaxExponent)(
+    val highSecondary =
+      (((high + roundBias.U) >> shift) - correctionTable(tableOffset + 1.U))(
+        secondaryTableBits - 1,
+        0
+      )
+    val interpolatedWideSecondary =
+      lowSecondary * (interpolationScale.U - fraction) +&
+        highSecondary * fraction + (interpolationScale / 2).U
+    val normalizedRootSecondary =
+      (interpolatedWideSecondary >> CbrtInterpolationBits)(secondaryTableBits - 1, 0)
+    val scaledRootSecondary = Wire(UInt((secondaryFractionBits + 4).W))
+    scaledRootSecondary := MuxLookup(
+      scaleCode,
+      normalizedRootSecondary << CbrtMaxExponent
+    )(
       CbrtExponents.zipWithIndex.map { case (exponent, code) =>
         code.U -> {
           if (exponent < 0) {
-            (normalizedRootQ12 + (BigInt(1) << (-exponent - 1)).U) >> -exponent
+            (normalizedRootSecondary + (BigInt(1) << (-exponent - 1)).U) >> -exponent
           } else {
-            normalizedRootQ12 << exponent
+            normalizedRootSecondary << exponent
           }
         }
       }
     )
-    val withBiasQ12 = scaledRootQ12.zext +& NegBiasQ12.S
-    outputQ12 := Mux(
+    val secondaryBias = negBias(secondaryFractionBits)
+    val withBiasSecondary = scaledRootSecondary.zext +& secondaryBias.S
+    Mux(
       io.input === 0.U,
-      NegBiasQ12.S(outputBits.W),
-      withBiasQ12.pad(outputBits)
+      secondaryBias.S(outputBits.W),
+      withBiasSecondary.pad(outputBits)
     )
   }
+
+  io.outputQ12.foreach(_ := secondaryOutput(OutputFractionBits))
+  io.outputQ18.foreach(_ := secondaryOutput(18))
 }
 
 class CbrtApproxQ12(inputBits: Int, outputBits: Int)
@@ -268,12 +291,13 @@ class CbrtApproxQ12(inputBits: Int, outputBits: Int)
   * after adding the opsin bias, matching the reference ordering. A normalized
   * cube-root table covers the full positive signed-16/Q8 input range without
   * the former high-value saturation. Outputs default to signed Q12; the live
-  * VarDCT quantization sideband requests Q16 from the same implementation.
+  * VarDCT route requests a Q19 primary with exact Q18 and Q12 secondary taps.
   */
 class RgbToXybApprox(
     c: HjxlConfig = HjxlConfig(),
     outputFractionBits: Int = RgbToXybApprox.OutputFractionBits,
-    includeQ12Output: Boolean = false
+    includeQ12Output: Boolean = false,
+    includeQ18Output: Boolean = false
 ) extends Module {
   import RgbToXybApprox._
 
@@ -292,12 +316,18 @@ class RgbToXybApprox(
     !includeQ12Output || outputFractionBits > OutputFractionBits,
     "the secondary Q12 XYB output requires a higher-precision primary output"
   )
+  require(
+    !includeQ18Output || outputFractionBits > 18,
+    "the secondary Q18 XYB output requires a primary output above Q18"
+  )
 
   val io = IO(new Bundle {
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val output = Decoupled(new XybPixel(c))
     val outputQ12 =
       if (includeQ12Output) Some(Output(Valid(new XybPixel(c)))) else None
+    val outputQ18 =
+      if (includeQ18Output) Some(Output(Valid(new XybPixel(c)))) else None
   })
 
   private def mixedAbsorbance(m0: Int, m1: Int, m2: Int): UInt = {
@@ -316,13 +346,31 @@ class RgbToXybApprox(
   }
 
   val cbrt0 = Module(
-    new CbrtApprox(absorbanceBits, c.traceValueBits, outputFractionBits, includeQ12Output)
+    new CbrtApprox(
+      absorbanceBits,
+      c.traceValueBits,
+      outputFractionBits,
+      includeQ12Output,
+      includeQ18Output
+    )
   )
   val cbrt1 = Module(
-    new CbrtApprox(absorbanceBits, c.traceValueBits, outputFractionBits, includeQ12Output)
+    new CbrtApprox(
+      absorbanceBits,
+      c.traceValueBits,
+      outputFractionBits,
+      includeQ12Output,
+      includeQ18Output
+    )
   )
   val cbrt2 = Module(
-    new CbrtApprox(absorbanceBits, c.traceValueBits, outputFractionBits, includeQ12Output)
+    new CbrtApprox(
+      absorbanceBits,
+      c.traceValueBits,
+      outputFractionBits,
+      includeQ12Output,
+      includeQ18Output
+    )
   )
   cbrt0.io.input := mixedAbsorbance(M00, M01, M02)
   cbrt1.io.input := mixedAbsorbance(M10, M11, M12)
@@ -342,5 +390,13 @@ class RgbToXybApprox(
     outputQ12.bits.xybX := (cbrt0.io.outputQ12.get - cbrt1.io.outputQ12.get) >> 1
     outputQ12.bits.xybY := (cbrt0.io.outputQ12.get +& cbrt1.io.outputQ12.get) >> 1
     outputQ12.bits.xybB := cbrt2.io.outputQ12.get
+  }
+  io.outputQ18.foreach { outputQ18 =>
+    outputQ18.valid := io.output.fire
+    outputQ18.bits.x := io.input.bits.x
+    outputQ18.bits.y := io.input.bits.y
+    outputQ18.bits.xybX := (cbrt0.io.outputQ18.get - cbrt1.io.outputQ18.get) >> 1
+    outputQ18.bits.xybY := (cbrt0.io.outputQ18.get +& cbrt1.io.outputQ18.get) >> 1
+    outputQ18.bits.xybB := cbrt2.io.outputQ18.get
   }
 }

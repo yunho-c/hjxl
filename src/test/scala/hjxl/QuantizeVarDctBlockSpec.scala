@@ -360,6 +360,78 @@ class QuantizeVarDctBlockSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
+  "a Q19 luma-DC sideband preserves Q18 AC while resolving a half-step DC boundary" in {
+    case class Result(ac: Vector[Vector[Int]], yDc: Vector[Int])
+
+    def run(lumaDcFractionBits: Int): Result = {
+      var result = Option.empty[Result]
+      simulate(
+        new VarDctQuantizeBlock(
+          config,
+          coefficientFractionBits = RgbVarDctFixedPoint.QuantizationXybFractionBits,
+          lumaDcCoefficientFractionBits = lumaDcFractionBits
+        )
+      ) { dut =>
+        dut.io.input.valid.poke(false.B)
+        dut.io.output.ready.poke(false.B)
+        dut.clock.step()
+
+        dut.io.input.bits.strategy.poke(AcStrategyCode.Dct16x8.U)
+        dut.io.input.bits.quant.poke(3.U)
+        dut.io.input.bits.scaleQ16.poke(7340.U)
+        dut.io.input.bits.invQacQ16.poke(195048.U)
+        dut.io.input.bits.invDcFactorQ16(0).poke(300646400.U)
+        dut.io.input.bits.invDcFactorQ16(1).poke(37580800.U)
+        dut.io.input.bits.invDcFactorQ16(2).poke(18790400.U)
+        dut.io.input.bits.xQmMultiplierQ16.poke(65536.U)
+        dut.io.input.bits.ytox.poke((-3).S)
+        dut.io.input.bits.ytob.poke((-21).S)
+        for (channel <- 0 until 3; coefficient <- 0 until maxCoefficients) {
+          val value =
+            if (channel == 1 && coefficient == 0) 163829
+            else if (channel == 1 && coefficient == 1) -571
+            else 0
+          dut.io.input.bits.coefficients(channel)(coefficient).poke(value.S)
+        }
+        dut.io.input.bits.lumaDcCoefficients.foreach { coefficients =>
+          coefficients(0).poke(327658.S)
+          coefficients(1).poke((-1141).S)
+        }
+
+        dut.io.input.valid.poke(true.B)
+        dut.io.input.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.input.valid.poke(false.B)
+
+        var cycles = 0
+        while (!dut.io.output.valid.peek().litToBoolean && cycles < 136) {
+          dut.clock.step()
+          cycles += 1
+        }
+        cycles must be < 136
+        result = Some(
+          Result(
+            ac = dut.io.output.bits.quantizedAc
+              .map(_.map(_.peekValue().asBigInt.toInt).toVector)
+              .toVector,
+            yDc = dut.io.output.bits.quantizedDc(1)
+              .map(_.peekValue().asBigInt.toInt)
+              .toVector
+          )
+        )
+        dut.io.output.ready.poke(true.B)
+        dut.clock.step()
+      }
+      result.getOrElse(fail("VarDCT quantizer did not produce a result"))
+    }
+
+    val q18 = run(RgbVarDctFixedPoint.QuantizationXybFractionBits)
+    val split = run(RgbVarDctFixedPoint.LumaDcXybFractionBits)
+    q18.ac mustBe split.ac
+    q18.yDc mustBe Vector(357, 360)
+    split.yDc mustBe Vector(357, 359)
+  }
+
   "the frozen Q16 seam stays within one AC integer of native-float quantization" in {
     val acDeltas = for {
       fixture <- oracleFixtures

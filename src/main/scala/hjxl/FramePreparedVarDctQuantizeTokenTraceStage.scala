@@ -208,18 +208,39 @@ class FramePreparedVarDctTokenTraceStage(c: HjxlConfig = HjxlConfig()) extends M
 /** Direct prepared VarDCT quantize-to-token composition. */
 class FramePreparedVarDctQuantizeTokenTraceStage(
     c: HjxlConfig = HjxlConfig(),
-    coefficientFractionBits: Int = 0
+    coefficientFractionBits: Int = 0,
+    lumaDcCoefficientFractionBits: Int = 0
 ) extends Module {
+  private val activeCoefficientFractionBits =
+    if (coefficientFractionBits == 0) c.preparedDctCoefficientFractionBits else coefficientFractionBits
+  private val activeLumaDcFractionBits =
+    if (lumaDcCoefficientFractionBits == 0)
+      activeCoefficientFractionBits
+    else lumaDcCoefficientFractionBits
+
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
-    val input = Flipped(Decoupled(new PreparedVarDctFrameBlock(c)))
+    val input = Flipped(
+      Decoupled(
+        new PreparedVarDctFrameBlock(
+          c,
+          includeLumaDcPrecision = activeLumaDcFractionBits > activeCoefficientFractionBits
+        )
+      )
+    )
     val trace = Decoupled(new StageTrace(c))
     val traceLast = Output(Bool())
     val busy = Output(Bool())
     val overflow = Output(Bool())
   })
 
-  val quantizer = Module(new FramePreparedVarDctQuantizeStage(c, coefficientFractionBits))
+  val quantizer = Module(
+    new FramePreparedVarDctQuantizeStage(
+      c,
+      coefficientFractionBits,
+      lumaDcCoefficientFractionBits
+    )
+  )
   val tokens = Module(new FramePreparedVarDctTokenTraceStage(c))
   quantizer.io.config := io.config
   tokens.io.config := io.config

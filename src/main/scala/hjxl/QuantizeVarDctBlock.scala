@@ -85,9 +85,21 @@ class VarDctChromaResidualOutput(c: HjxlConfig) extends Bundle {
   val numNonzeros = UInt(8.W)
 }
 
-class VarDctQuantizeBlockInput(c: HjxlConfig) extends Bundle {
+/** First-block coefficients and scalar parameters for variable-shape
+  * quantization. The optional two-value luma sideband retains a higher-
+  * precision raw low-frequency pair for DC only; AC and chroma residuals
+  * continue to consume `coefficients`.
+  */
+class VarDctQuantizeBlockInput(
+    c: HjxlConfig,
+    includeLumaDcPrecision: Boolean = false
+) extends Bundle {
   val strategy = UInt(2.W)
   val coefficients = Vec(3, Vec(QuantizeVarDctBlock.MaxCoefficients, SInt(c.traceValueBits.W)))
+  val lumaDcCoefficients =
+    if (includeLumaDcPrecision)
+      Some(Vec(2, SInt(c.traceValueBits.W)))
+    else None
   val quant = UInt(8.W)
   val scaleQ16 = UInt(16.W)
   val invQacQ16 = UInt(32.W)
@@ -115,9 +127,12 @@ class VarDctQuantizeBlockOutput(c: HjxlConfig) extends Bundle {
   val shiftedNumNonzeros = Vec(3, UInt(8.W))
 }
 
-class VarDctQuantizeTraceInput(c: HjxlConfig) extends Bundle {
+class VarDctQuantizeTraceInput(
+    c: HjxlConfig,
+    includeLumaDcPrecision: Boolean = false
+) extends Bundle {
   val group = UInt(c.groupBits.W)
-  val quantize = new VarDctQuantizeBlockInput(c)
+  val quantize = new VarDctQuantizeBlockInput(c, includeLumaDcPrecision)
 }
 
 /** AC quantizer shared by ordinary and two-block rectangular transforms. */
@@ -394,21 +409,41 @@ class QuantizeChromaResidualVarDctBlock(
 /** Quantizes one first-block-owned DCT/16x8/8x16 X/Y/B coefficient triplet. */
 class VarDctQuantizeBlock(
     c: HjxlConfig = HjxlConfig(),
-    coefficientFractionBits: Int = Dct8Approx.FractionBits
+    coefficientFractionBits: Int = Dct8Approx.FractionBits,
+    lumaDcCoefficientFractionBits: Int = 0
 ) extends Module {
   require(coefficientFractionBits > 0, "coefficientFractionBits must be positive")
+  private val activeLumaDcFractionBits =
+    if (lumaDcCoefficientFractionBits == 0)
+      coefficientFractionBits
+    else lumaDcCoefficientFractionBits
+  require(
+    activeLumaDcFractionBits >= coefficientFractionBits,
+    "luma DC precision cannot be below AC coefficient precision"
+  )
   private val maxCoefficients = QuantizeVarDctBlock.MaxCoefficients
   private val productBits = 128
-  private val dcProductFractionBits = coefficientFractionBits + QuantizeDct8x8Block.DcFactorFractionBits
 
   val io = IO(new Bundle {
-    val input = Flipped(Decoupled(new VarDctQuantizeBlockInput(c)))
+    val input = Flipped(
+      Decoupled(
+        new VarDctQuantizeBlockInput(
+          c,
+          includeLumaDcPrecision = activeLumaDcFractionBits > coefficientFractionBits
+        )
+      )
+    )
     val output = Decoupled(new VarDctQuantizeBlockOutput(c))
   })
 
   val idle :: waitForY :: Nil = Enum(2)
   val state = RegInit(idle)
-  val input = Reg(new VarDctQuantizeBlockInput(c))
+  val input = Reg(
+    new VarDctQuantizeBlockInput(
+      c,
+      includeLumaDcPrecision = activeLumaDcFractionBits > coefficientFractionBits
+    )
+  )
 
   private def roundShiftSigned(value: SInt, shift: Int): SInt = {
     val negative = value < 0.S
@@ -439,15 +474,18 @@ class VarDctQuantizeBlock(
       coefficient: SInt,
       channel: Int,
       invDcFactorQ16: UInt,
-      quantizedYDc: SInt
+      quantizedYDc: SInt,
+      coefficientFraction: Int
   ): SInt = {
+    val dcProductFraction =
+      coefficientFraction + QuantizeDct8x8Block.DcFactorFractionBits
     val invDcFactor = Cat(0.U(1.W), invDcFactorQ16).asSInt
     val baseProduct = coefficient.pad(productBits) * invDcFactor.pad(productBits)
     val bCorrection =
       (quantizedYDc.pad(productBits) * QuantizeDct8x8Block.BQuantDcFromYFactorQ16.S) <<
-        coefficientFractionBits
+        coefficientFraction
     val corrected = baseProduct - Mux(channel.U === 2.U, bCorrection, 0.S(productBits.W))
-    Dct8Approx.fit(roundShiftSigned(corrected.asSInt, dcProductFractionBits), c.traceValueBits)
+    Dct8Approx.fit(roundShiftSigned(corrected.asSInt, dcProductFraction), c.traceValueBits)
   }
 
   val yRoundtrip = Module(new QuantizeRoundtripYVarDctBlock(c, coefficientFractionBits))
@@ -490,14 +528,23 @@ class VarDctQuantizeBlock(
     state === waitForY && yRoundtrip.io.output.valid &&
       xResidual.io.output.valid && bResidual.io.output.valid
 
-  val yDcCoefficients = lowFrequencyPair(input.coefficients(1), input.strategy)
+  val yDcCoefficients = lowFrequencyPair(
+    input.lumaDcCoefficients.getOrElse(input.coefficients(1)),
+    input.strategy
+  )
   val xDcCoefficients = lowFrequencyPair(xResidual.io.output.bits.residual, input.strategy)
   val bDcCoefficients = lowFrequencyPair(bResidual.io.output.bits.residual, input.strategy)
 
   val quantizedYDc = Wire(Vec(2, SInt(c.traceValueBits.W)))
   for (covered <- 0 until QuantizeVarDctBlock.MaxCoveredBlocks) {
     quantizedYDc(covered) :=
-      quantizeDc(yDcCoefficients(covered), 1, input.invDcFactorQ16(1), 0.S)
+      quantizeDc(
+        yDcCoefficients(covered),
+        1,
+        input.invDcFactorQ16(1),
+        0.S,
+        activeLumaDcFractionBits
+      )
   }
 
   io.output.bits.strategy := input.strategy
@@ -521,10 +568,22 @@ class VarDctQuantizeBlock(
   }
   for (covered <- 0 until QuantizeVarDctBlock.MaxCoveredBlocks) {
     io.output.bits.quantizedDc(0)(covered) :=
-      quantizeDc(xDcCoefficients(covered), 0, input.invDcFactorQ16(0), quantizedYDc(covered))
+      quantizeDc(
+        xDcCoefficients(covered),
+        0,
+        input.invDcFactorQ16(0),
+        quantizedYDc(covered),
+        coefficientFractionBits
+      )
     io.output.bits.quantizedDc(1)(covered) := quantizedYDc(covered)
     io.output.bits.quantizedDc(2)(covered) :=
-      quantizeDc(bDcCoefficients(covered), 2, input.invDcFactorQ16(2), quantizedYDc(covered))
+      quantizeDc(
+        bDcCoefficients(covered),
+        2,
+        input.invDcFactorQ16(2),
+        quantizedYDc(covered),
+        coefficientFractionBits
+      )
   }
   io.output.bits.numNonzeros(0) := xResidual.io.output.bits.numNonzeros
   io.output.bits.numNonzeros(1) := yRoundtrip.io.output.bits.numNonzeros

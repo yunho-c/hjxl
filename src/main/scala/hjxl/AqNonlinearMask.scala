@@ -379,6 +379,10 @@ class FrameAqNonlinearMaskTraceStage(
       if (xybOutputFractionBits > RgbToXybApprox.OutputFractionBits)
         Some(Output(Valid(new XybPixel(c))))
       else None
+    val lumaDcXybAccepted =
+      if (xybOutputFractionBits > RgbVarDctFixedPoint.QuantizationXybFractionBits)
+        Some(Output(Valid(new XybPixel(c))))
+      else None
     val trace = Decoupled(new StageTrace(c))
     val strategyMaskQ16 = Output(UInt(AqStrategyMaskFixedPoint.ValueBits.W))
     val traceLast = Output(Bool())
@@ -400,6 +404,7 @@ class FrameAqNonlinearMaskTraceStage(
   io.input.ready := fuzzyErosion.io.input.ready && !fuzzyErosionDone
   io.xybAccepted := fuzzyErosion.io.xybAccepted
   io.quantizationXybAccepted.foreach(_ := fuzzyErosion.io.quantizationXybAccepted.get)
+  io.lumaDcXybAccepted.foreach(_ := fuzzyErosion.io.lumaDcXybAccepted.get)
 
   nonlinearMask.io.config := activeConfig
   nonlinearMask.io.input.valid := fuzzyErosion.io.trace.valid

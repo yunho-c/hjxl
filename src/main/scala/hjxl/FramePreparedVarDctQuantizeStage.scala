@@ -10,11 +10,14 @@ import chisel3.util._
   * Records arrive in raster order over first blocks only. Continuation cells
   * are represented by the owning rectangle and must not be sent separately.
   */
-class PreparedVarDctFrameBlock(c: HjxlConfig) extends Bundle {
+class PreparedVarDctFrameBlock(
+    c: HjxlConfig,
+    includeLumaDcPrecision: Boolean = false
+) extends Bundle {
   val blockX = UInt(c.coordBits.W)
   val blockY = UInt(c.coordBits.W)
   val last = Bool()
-  val quantize = new VarDctQuantizeBlockInput(c)
+  val quantize = new VarDctQuantizeBlockInput(c, includeLumaDcPrecision)
 }
 
 /** Quantized first-block record retained for metadata and token schedulers. */
@@ -38,7 +41,8 @@ class PreparedVarDctQuantizedFrameBlock(c: HjxlConfig) extends Bundle {
   */
 class FramePreparedVarDctQuantizeStage(
     c: HjxlConfig = HjxlConfig(),
-    coefficientFractionBits: Int = 0
+    coefficientFractionBits: Int = 0,
+    lumaDcCoefficientFractionBits: Int = 0
 ) extends Module {
   private val blockDim = HjxlConstants.BlockDim
   private val maxXBlocks = c.maxFrameWidth / blockDim
@@ -48,13 +52,28 @@ class FramePreparedVarDctQuantizeStage(
   private val blockCountBits = math.max(1, log2Ceil(maxBlocks + 1))
   private val activeCoefficientFractionBits =
     if (coefficientFractionBits == 0) c.preparedDctCoefficientFractionBits else coefficientFractionBits
+  private val activeLumaDcFractionBits =
+    if (lumaDcCoefficientFractionBits == 0)
+      activeCoefficientFractionBits
+    else lumaDcCoefficientFractionBits
 
   require(maxBlocks > 0, "prepared VarDCT frame must contain a block")
   require(activeCoefficientFractionBits > 0, "coefficientFractionBits must be positive")
+  require(
+    activeLumaDcFractionBits >= activeCoefficientFractionBits,
+    "luma DC precision cannot be below prepared coefficient precision"
+  )
 
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
-    val input = Flipped(Decoupled(new PreparedVarDctFrameBlock(c)))
+    val input = Flipped(
+      Decoupled(
+        new PreparedVarDctFrameBlock(
+          c,
+          includeLumaDcPrecision = activeLumaDcFractionBits > activeCoefficientFractionBits
+        )
+      )
+    )
     val output = Decoupled(new PreparedVarDctQuantizedFrameBlock(c))
     val busy = Output(Bool())
     val overflow = Output(Bool())
@@ -139,7 +158,13 @@ class FramePreparedVarDctQuantizeStage(
   val lastMatches = io.input.bits.last === allCoveredAfter
   val validRecord = geometryValid && lastMatches
 
-  val quantizer = Module(new VarDctQuantizeBlock(c, activeCoefficientFractionBits))
+  val quantizer = Module(
+    new VarDctQuantizeBlock(
+      c,
+      activeCoefficientFractionBits,
+      lumaDcCoefficientFractionBits = activeLumaDcFractionBits
+    )
+  )
   quantizer.io.input.valid := io.input.valid && validRecord
   quantizer.io.input.bits := io.input.bits.quantize
   quantizer.io.output.ready := io.output.ready

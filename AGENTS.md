@@ -310,29 +310,26 @@ Read these libjxl-tiny files before making architectural changes:
   composes prepared strategy search, ownership conversion, variable-shape
   quantization, and logical tokens. `FrameAqVarDctQuantizeTokenTraceStage`
   supplies that path from the shared RGB AQ/DCT source. It retains Q12 for AQ
-  and captures Q16 XYB/DCT from the same converter. Quantization must keep the
-  established unguarded Q16 ordinary/selected-rectangle coefficients: applying
-  the analysis rounding change there breaks the exact gradient AC stream. CFL
-  and all eight strategy candidates instead use scheduler-local DCT
-  recomputation from stored Q16 XYB with eight internal guard bits; the three
-  8x8 analysis instances are reused across CFL blocks and ordinary candidates,
-  while scoring-only rectangular transforms use the same guard scale. Prepared
-  users default to zero guard bits. Do not collapse the sideband back to Q12 or
-  merge the analysis and quantization transforms without re-proving all exact
-  codestream fixtures. The focused path must use the shared converter's exact-
-  Q12 tap plus its Q16 primary output and one final-AQ-owned Q16 frame store,
-  not parallel RGB converters. Use
+  and obtains exact Q18 plus primary Q19 outputs from the same converter. Q18
+  X/Y/B frame state and eight-guard-bit transforms must feed CFL, all strategy
+  candidates, selected-owner AC quantization, and chroma DC. A separate Q19
+  luma frame and one-channel transform set carry only the first two
+  selected-owner coefficients into luma DC. Uniform Q18 leaves the random
+  fixture one luma-DC token wrong, while uniform Q19 changes checkerboard AC;
+  do not merge those paths or collapse them to Q12 without re-proving every
+  exact codestream fixture. Prepared users default to zero guard bits and do
+  not elaborate the optional luma-DC sideband. The focused path must use one
+  shared converter with exact Q12/Q18 taps, not parallel RGB converters. Use
   `tools/hjxl_reference.py --strategy-var-dct-zero-fixture-dir ...` for the
   exact 2x2 zero-coefficient integration oracle. It proves ownership, adjusted
   bytes, continuation suppression, and native token order. Use the
   `--var-dct-*-tokens-npy`, `--var-dct-ac-strategy-npy`, and
   `--var-dct-codestream-bin` outputs for one-group searched-strategy end-to-end
   comparisons. Pass `--quantize-input-q8` so the native reference consumes the
-  same host-input samples as RTL. Exact-Q8 16x16 impulse, gradient, and
-  checkerboard fixtures are the current nonzero DC/AC and
-  197-byte/230-byte/256-byte codestream regressions; they are not broad RGB
-  parity evidence. The deterministic random fixture now remains the earliest
-  known mismatch, first differing in DC tokens.
+  same host-input samples as RTL. Exact-Q8 16x16 impulse, gradient,
+  checkerboard, and deterministic-random fixtures are the current nonzero
+  DC/AC regressions, with exact 197-byte, 230-byte, 256-byte, and 335-byte
+  codestreams respectively; they are not broad RGB parity evidence.
 - `AcStrategyDecisionSelector` is the exact decision-only tail for one complete
   2x2 block region. It consumes common-scale nonnegative candidate costs,
   chooses horizontal on aggregate ties, replaces a rectangle only on a strict
@@ -343,7 +340,7 @@ Read these libjxl-tiny files before making architectural changes:
   precision for one 8x8, 16x8, or 8x16 candidate plus Q24 AQ, Q16 strategy
   mask, Q8 distance, and signed CFL values; it walks one coefficient per cycle
   and emits both the raw Q16 entropy/loss estimate and distance-scaled Q16 cost.
-  Prepared users default to Q12 and the focused RGB VarDCT route uses Q16.
+  Prepared users default to Q12 and the focused RGB VarDCT route uses Q18.
   Unsupported distances use distance 1 and are reported, while extreme
   arithmetic saturates with an overflow flag.
   The integer model is exact against

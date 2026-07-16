@@ -252,9 +252,9 @@ owned by the host tools for now.
   scale triplet generated from the current libjxl-tiny Python formulas.
 - `Dct8Approx` is a standalone fixed-point 1D DCT-8 primitive matching
   libjxl-tiny's recursive scaled-DCT structure. Its Q12 coefficient constants
-  remain the default; the focused RGB VarDCT route selects Q16 constants to
-  retain the precision of its existing Q16 XYB sideband. It is the shared
-  kernel for the current 8x8 and rectangular transform stages.
+  remain the default; the focused RGB VarDCT route selects Q18 constants for
+  strategy/AC/chroma work and Q19 for its narrow luma-DC sideband. It is the
+  shared kernel for the current 8x8 and rectangular transform stages.
 - `Dct8x8Approx` composes the 1D kernel into libjxl-tiny's scaled 8x8 DCT
   coefficient layout. It applies the 1/8 scale after each dimension and emits
   the transposed canonical order consumed by later quantization work. Optional
@@ -280,7 +280,7 @@ owned by the host tools for now.
   signed tile CFL, and supported Q8 distance; one coefficient is evaluated per
   cycle. Its raw and outer-scaled Q16 outputs match the host integer model
   exactly. Prepared users default to Q12, while the focused RGB VarDCT route
-  scores its Q16 DCT/rectangular values directly. Unsupported distances fall
+  scores its Q18 DCT/rectangular values directly. Unsupported distances fall
   back to distance 1 with an explicit flag.
   Its one-coefficient-per-cycle control does not prove that the wide residual/
   inverse/AQ product and two combinational square roots will meet FPGA timing.
@@ -457,14 +457,13 @@ wrappers.
   `Dct8x8Approx` instances, selects adaptive or explicit fixed raw quant, and
   emits distance-derived scalars without a reciprocal. This keeps map and
   metadata-only hierarchies from elaborating unused divider hardware. The
-  focused RGB VarDCT build also captures exact Q12 and Q16 results from one
-  cube-root lookup path, stores one optional Q16 frame at the final-AQ owner,
-  and emits Q16 ordinary-DCT values for CFL fitting, strategy scoring,
-  selected-owner transforms, and quantization. Its dedicated Q16 DCT constants
-  avoid throwing away that sideband's extra precision. A one-bit correction
-  ROM preserves the original Q12 lookup contract without a second full
-  converter; older all-DCT routes do not elaborate the Q16 sideband or frame
-  store.
+  focused RGB VarDCT build captures a Q19 primary result plus exact Q18 and Q12
+  taps from one cube-root lookup path. The final-AQ owner stores one Q18 X/Y/B
+  frame and one Q19 luma frame. Q18 ordinary-DCT values feed CFL, strategy
+  scoring, AC quantization, and chroma DC; a Q19 luma DCT supplies only the
+  first two selected-owner coefficients for luma DC. One-bit correction ROMs
+  preserve both lower-precision lookup contracts without parallel converters;
+  older all-DCT routes do not elaborate either higher-precision frame.
   `FrameAqDctOnlyBlockStage` enriches the same record for quantization:
   adaptive blocks compute `round(2^32 / (scaleQ16 * rawQuant))` with the
   33-cycle `AdaptiveInvQacQ16` restoring divider; zero divisors saturate and no
@@ -882,13 +881,14 @@ wrappers.
   route therefore uses one RGB-to-XYB conversion and three ordinary DCTs.
   `FrameAqAdjustedRawQuantTraceStage` exposes the sideband as raw-quant traces.
   The selected-owner composition can optionally buffer higher-precision XYB
-  and ordinary-DCT sidebands. The live VarDCT route obtains both Q12 and Q16
-  from one converter. Quantization consumes the established Q16 DCT, while CFL
-  fitting and candidate scoring recompute one shared three-channel analysis DCT
-  from stored Q16 XYB with eight guard bits and round only once back to Q16.
-  Guarded rectangular transforms are used only for candidate scoring; selected-
-  owner quantization keeps the established Q16 transform. Prepared Q12 strategy
-  users retain their original zero-guard interface and decisions.
+  and ordinary-DCT sidebands. The live VarDCT route obtains Q12, Q18, and Q19
+  from one converter. Q18 guarded transforms drive CFL, candidate scoring,
+  selected-owner AC quantization, and chroma DC. The separate Q19 path stores
+  only luma samples, computes only one-channel ordinary/selected transforms,
+  and carries just coefficients 0 and 1 into luma DC. This preserves the Q18 AC
+  stream while retaining one extra bit across the low-frequency pair's
+  half-step boundary. Prepared Q12 strategy users retain their original
+  zero-guard interface and decisions.
 - `tools/hjxl_reference.py --scaled-dct-q12-csv ...` writes signed Q12 DCT-16,
   16x8, and 8x16 inputs beside independent libjxl-tiny coefficients and the
   exact integer transform model. The axis ramps guard the two different
@@ -909,9 +909,10 @@ wrappers.
   AC group. `--var-dct-frame-bin ...` and `--var-dct-codestream-bin ...`
   serialize those same arrays. `--quantize-input-q8` first rounds the generated
   fixture onto the signed-Q8 RTL input grid so the native oracle and hardware
-  consume identical samples. The 16x16 impulse, gradient, and checkerboard
-  regressions use this seam to prove exact nonzero DC/strategy/metadata/AC
-  traces and 197-byte, 230-byte, and 256-byte codestream parity respectively.
+  consume identical samples. The 16x16 impulse, gradient, checkerboard, and
+  deterministic-random regressions use this seam to prove exact nonzero
+  DC/strategy/metadata/AC traces and 197-byte, 230-byte, 256-byte, and 335-byte
+  codestream parity respectively.
 - `tools/hjxl_reference.py --default-ac-strategy-npy ...` writes the matching
   default DCT-first strategy map.
 - `tools/hjxl_reference.py --raw-quant-field-npy ...`,

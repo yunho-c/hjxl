@@ -308,6 +308,8 @@ class FrameAqModulationBlockStage(
     val xybAccepted = Output(Valid(new XybPixel(c)))
     val quantizationXybAccepted =
       if (includeQuantizationPrecision) Some(Output(Valid(new XybPixel(c)))) else None
+    val lumaDcXybAccepted =
+      if (includeQuantizationPrecision) Some(Output(Valid(new XybPixel(c)))) else None
     val block = Decoupled(new AqModulationBlockInput)
     val frameDone = Input(Bool())
     val busy = Output(Bool())
@@ -340,7 +342,8 @@ class FrameAqModulationBlockStage(
   val acceptingPixels = !frameActive || received < activePixelCount
 
   private val xybOutputFractionBits =
-    if (includeQuantizationPrecision) 16 else RgbToXybApprox.OutputFractionBits
+    if (includeQuantizationPrecision) RgbVarDctFixedPoint.LumaDcXybFractionBits
+    else RgbToXybApprox.OutputFractionBits
   val nonlinear = Module(new FrameAqNonlinearMaskTraceStage(c, xybOutputFractionBits))
   nonlinear.io.config := activeConfig
   nonlinear.io.input.bits := io.input.bits
@@ -348,6 +351,7 @@ class FrameAqModulationBlockStage(
   io.input.ready := nonlinear.io.input.ready && acceptingPixels
   io.xybAccepted := nonlinear.io.xybAccepted
   io.quantizationXybAccepted.foreach(_ := nonlinear.io.quantizationXybAccepted.get)
+  io.lumaDcXybAccepted.foreach(_ := nonlinear.io.lumaDcXybAccepted.get)
 
   when(io.input.fire && !frameActive) {
     latchedConfig := io.config

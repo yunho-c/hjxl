@@ -120,24 +120,28 @@ phase/cycle regression for sparse and dense multi-block frames and then obtain
 Vivado utilization and timing evidence; the prepared-DCT numbers must not be
 used as a proxy for this substantially larger hierarchy.
 
-## Focused RGB VarDCT precision note — 2026-07-15
+## Focused RGB VarDCT precision note — 2026-07-16
 
-The focused RGB variable-shape hierarchy keeps its Q12 AQ seam and aligned Q16
-XYB/DCT sidebands. Quantization retains the prior Q16 ordinary and selected-
-rectangle coefficients, preserving the exact impulse and gradient behavior.
-CFL fitting and strategy scoring now recompute a shared three-channel analysis
-DCT from stored Q16 XYB with eight internal guard bits, and the scoring-only
-rectangular transforms use the same guard scale. All analysis transforms round
-once back to Q16 after both dimensions. Prepared Q12 paths and selected-owner
-quantization use zero guard bits.
+The focused RGB variable-shape hierarchy keeps its Q12 AQ seam. A single Q19
+RGB-to-XYB converter also emits exact Q18 and Q12 taps using one-bit correction
+ROMs rather than parallel cube-root tables. Q18 X/Y/B frame state and guarded
+Q18 transforms feed CFL, strategy scoring, AC quantization, and chroma DC. One
+additional Q19 luma frame and one-channel Q19 transform set preserve the first
+two selected-owner coefficients for luma DC. Prepared Q12 paths do not
+elaborate this optional sideband.
 
-This is a correctness change: the signed-Q8 checkerboard joins impulse and
-gradient with exact native logical tokens and a 256-byte codestream. It is not
-a timing-neutral claim. Fresh elaboration emits 67 SystemVerilog files/146,380
-lines for `ElaborateAqVarDctQuantizeTokens` and 69 files/146,551 lines for
-`ElaborateAxiStreamCoreAqVarDctTokens`, increases of three files and 10,986
-lines. The new specializations are the guarded 8x8, 16x8, and 8x16 analysis
-transforms; each is instantiated three times for X/Y/B. The hierarchy still
-contains the existing Q12 and unguarded Q16 transforms, one candidate scorer,
-and both selected-owner rectangular transforms. File/line counts are structural
-complexity indicators, not utilization, timing, or power evidence.
+This split is correctness-driven. Q18 alone preserves impulse, gradient, and
+checkerboard but leaves one deterministic-random luma-DC token wrong; uniform
+Q19 fixes random but changes checkerboard AC. The split keeps both boundaries:
+impulse, gradient, checkerboard, and random now match every native logical token
+and their 197-byte, 230-byte, 256-byte, and 335-byte codestreams.
+
+Fresh elaboration emits 70 SystemVerilog files/157,330 lines for
+`ElaborateAqVarDctQuantizeTokens` and 72 files/157,509 lines for
+`ElaborateAxiStreamCoreAqVarDctTokens`. Relative to the prior guarded-Q16
+snapshot, those are increases of three files/10,950 lines and three
+files/10,958 lines respectively. The three new specializations are Q19 8x8,
+16x8, and 8x16 DCTs, each instantiated only for luma. The scheduler stores two
+Q19 ordinary-DCT coefficients per block, but the extra Q19 luma pixel plane is
+still frame-scaled state. File/line counts are structural complexity
+indicators, not utilization, timing, or power evidence.
