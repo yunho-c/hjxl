@@ -3,8 +3,9 @@
 > Consolidated review refreshed through 2026-07-16. Commit `51894ae`
 > (`docs: consolidate project quality assessment`) established the compact
 > baseline; this revision includes the separated Q18-analysis/Q21-quantization
-> multi-seed, all-supported-distance, non-aligned, and real-crop follow-up. The
-> filename preserves the original requested assessment date.
+> multi-seed, all-supported-distance, non-aligned, real-crop, and 65x65
+> multi-tile/stripe follow-up. The filename preserves the original requested
+> assessment date.
 
 ## Executive summary
 
@@ -15,8 +16,8 @@ engineered than its current product completeness might suggest.
 
 It is not yet a complete JPEG XL encoder or a demonstrated FPGA accelerator.
 The most reliable path begins with host-prepared DCT coefficients; the most
-complete RGB path reaches adaptive DCT/16x8/8x16 logical tokens, but only 15
-small cases, including one real-image crop, have exact end-to-end token and
+complete RGB path reaches adaptive DCT/16x8/8x16 logical tokens, but only 16
+small cases, including two real-image crops, have exact end-to-end token and
 codestream parity. Final entropy optimization and bitstream assembly remain in
 host software. More
 importantly, no Vivado synthesis, utilization, timing, power, place-and-route,
@@ -257,8 +258,8 @@ is not complete.
 | Adaptive quantization | Full focused RGB chain implemented | Independent fixed models and stage tests; approximation remains |
 | CFL | Fixed, prepared-estimated, and RGB-estimated paths | Exact fixed-model checks; small bounded native differences |
 | AC strategy | DCT, 16x8, and 8x16 selection implemented | Exact integer model; some float-boundary sensitivity |
-| DCT/VarDCT quantization | Ordinary and two rectangular shapes implemented | Exact prepared fixed-model checks; 15 exact RGB cases |
-| DC, strategy, metadata, and AC logical tokens | Implemented for prepared and focused RGB paths | Strong exact prepared oracles; 15 exact nonzero RGB cases |
+| DCT/VarDCT quantization | Ordinary and two rectangular shapes implemented | Exact prepared fixed-model checks; 16 exact RGB cases |
+| DC, strategy, metadata, and AC logical tokens | Implemented for prepared and focused RGB paths | Strong exact prepared oracles; 16 exact nonzero RGB cases |
 | Entropy optimization | Host only | Reuses `libjxl-tiny` |
 | Frame/codestream assembly | Host only | Exact byte checks for constrained fixtures |
 | Full JPEG XL feature surface | Intentionally out of scope | Lossless, alpha, broad boxes/metadata absent |
@@ -273,19 +274,23 @@ is not complete.
 - Prepared variable-shape tests cover DCT, 16x8, and 8x16 ownership,
   continuation suppression, two-cell DC/prediction semantics, rectangular
   scans, and exact native logical-token arrays.
-- The focused RGB VarDCT route has 15 exact signed-Q8 nonzero cases: six
+- The focused RGB VarDCT route has 16 exact signed-Q8 nonzero cases: six
   distance-1 16x16 patterns/seeds, random seed 1 at all six supported
-  distances, 17x9/9x17/17x17 non-aligned random frames, and one 17x17 crop of
-  the pinned Tesla JPEG. Every DC/strategy/metadata/AC row and final codestream
-  byte matches the oracle, and system `djxl` decodes every assembled stream.
+  distances, 17x9/9x17/17x17 non-aligned random frames, and 17x17 plus 65x65
+  crops of the pinned Tesla JPEG. The larger crop covers a two-dimensional 9x9
+  block grid, both tile axes, and the native 64-row AQ stripe boundary. Every
+  DC/strategy/metadata/AC row and final codestream byte matches the oracle, and
+  system `djxl` decodes every assembled stream.
 
 ### Current parity frontier
 
-- The first multi-seed, supported-distance, and non-aligned boundaries are
-  closed with Q18 analysis and Q21 selected-owner quantization, but 15 tiny
-  cases do not establish broad RGB parity.
-- Only one source-image crop is exact end to end. There is no varied real-image
-  corpus and no quality or rate-distortion characterization.
+- The first multi-seed, supported-distance, non-aligned, two-dimensional tile,
+  and vertical-stripe boundaries are closed with Q18 analysis and Q21
+  selected-owner quantization, but 16 small cases do not establish broad RGB
+  parity.
+- Both exact real-image crops come from one source image. There is no varied
+  real-image corpus, multi-AC-group RGB case, or quality/rate-distortion
+  characterization.
 
 The project should continue to describe itself as a research prototype with a
 strong prepared-data accelerator boundary, not as a complete JPEG XL encoder.
@@ -296,7 +301,7 @@ Verification is the best-developed part of the repository.
 
 ### Strong evidence
 
-- The reviewed candidate records **85 suites and 361 tests** passing under both
+- The reviewed candidate records **85 suites and 363 tests** passing under both
   sbt and Mill, with zero failures, errors, cancellations, ignored, or pending
   tests. Running both build systems catches build-definition drift, though it
   roughly doubles CI cost.
@@ -313,7 +318,7 @@ Verification is the best-developed part of the repository.
   output stalls and assert stable trace fields plus final-only TLAST.
 - Oracle tests compare at the correct boundary: tolerant comparisons for
   floating/fixed approximations, exact equality for quantized maps and logical
-  tokens, and byte equality when a codestream claim is made. The 15 exact RGB
+  tokens, and byte equality when a codestream claim is made. The 16 exact RGB
   cases also require independent system-`djxl` decode acceptance.
 - Host tools reject malformed CSV/JSON fields, inconsistent geometry, stale
   checksums, wrong variants, wrong trace packing, wrong register maps, and
@@ -331,13 +336,13 @@ Verification is the best-developed part of the repository.
 - Randomized stalls and malformed streams exist in places but are not a shared,
   seeded property-based framework. Reset-at-every-state and repeated-frame
   stress are not systematic.
-- Oracle diversity is narrow. More signed/extreme fixtures, multi-tile two-
-  dimensional RGB images, and varied real-image crops are needed.
+- Oracle diversity is narrow. More signed/extreme fixtures, varied source
+  images, and geometry spanning multiple AC groups are needed.
 - Local oracle tests use `assume` when the reference checkout is absent. CI
   provides the pinned checkout, but an incomplete local environment can skip
   meaningful tests unless the cancellation count is noticed.
-- The full suite is expensive: the current exact candidate took about 29
-  minutes under sbt and 30 minutes under Mill. This raises iteration cost and
+- The full suite is expensive: the current exact candidate took about 37
+  minutes under sbt and 36 minutes under Mill. This raises iteration cost and
   encourages focused runs, so CI remains essential.
 
 ## Host tooling and ABI
@@ -359,7 +364,7 @@ Verification is the best-developed part of the repository.
 
 ### Weaknesses
 
-- `tools/hjxl_reference.py` is 5,361 lines and mixes reference access, fixed
+- `tools/hjxl_reference.py` is 5,470 lines and mixes reference access, fixed
   models, fixture generation, analysis, and a very large CLI. Two other tools
   exceed 1,500 lines. These are now subsystems and should be a Python package.
 - There is no `pyproject.toml`, dependency lock, native Python test suite,
@@ -383,8 +388,8 @@ performance, the FPGA guide states timing assumptions and missing proof, and
 
 The weakness is information architecture:
 
-- `README.md` is 1,583 lines, `docs/architecture.md` is 1,387, and `AGENTS.md`
-  is 1,473. Much stage status is repeated across all three.
+- `README.md`, `docs/architecture.md`, and `AGENTS.md` are each roughly
+  1,400-1,600 lines. Much stage status is repeated across all three.
 - The README has only a handful of top-level headings, so hundreds of lines of
   implementation detail sit under “Project status” or “Build.” It is accurate
   but difficult to scan as onboarding documentation.
@@ -418,14 +423,12 @@ rules and current debugging cautions in `AGENTS.md`.
   commit SHAs.
 - There is no formatting, linting, type-checking, coverage, or documentation
   gate.
-- The repository has one contributor, 62 commits over roughly twelve days,
+- The repository has one contributor and 68 commits over roughly twelve days,
   no tags, and no releases. Bus factor and release reproducibility are low.
 - There is no `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, or `CODEOWNERS`.
-- The reviewed branch is 39 commits ahead of `origin/main`; external users of
+- The reviewed branch is 45 commits ahead of `origin/main`; external users of
   the remote default branch cannot reproduce the local state until it is
   pushed.
-- Seven unrelated modified RTL/test paths were present during this assessment.
-  They were intentionally excluded from this documentation-only commit.
 
 ## Performance and FPGA readiness
 
@@ -443,10 +446,10 @@ These values expose parser stalls, output bubbles, and content-dependent token
 expansion. They do not include AXI-Lite setup, DMA, memory traffic, clock
 crossings, host assembly, or an achieved clock.
 
-The frozen KV260 top currently elaborates to 19 SystemVerilog files and 14,465
+The frozen KV260 top currently elaborates to 19 SystemVerilog files and 14,656
 lines. The focused RGB VarDCT route is far larger: fresh split-precision
-elaboration records 68 files/172,781 lines for the standalone hierarchy and 70
-files/172,960 lines for its AXI-stream shell. The route retains Q12 AQ, Q18
+elaboration records 68 files/172,429 lines for the standalone hierarchy and 70
+files/172,608 lines for its AXI-stream shell. The route retains Q12 AQ, Q18
 analysis, and full-channel Q21 selected-owner transform families. Line counts
 are only complexity indicators, but they
 strongly justify synthesizing the smaller prepared top before expanding the
@@ -476,10 +479,11 @@ outside simulation.
    cache-coherency rules, timeout/error recovery, repeat-frame operation, and a
    host program that captures traces and reconstructs a checked codestream.
 3. **Keep completeness claims tied to exact evidence.** Do not generalize the
-   15 exact small cases into broad RGB parity. Multiple random seeds, all
-   supported distances, non-aligned geometry, one real crop, and independent
-   decode acceptance are now covered; expand next to multiple source images and
-   larger/multi-tile RGB geometry while localizing the earliest divergent stage.
+   16 exact cases into broad RGB parity. Multiple random seeds, all supported
+   distances, non-aligned geometry, two-dimensional tile/stripe geometry, two
+   same-source crops, and independent decode acceptance are covered; expand
+   next to multiple source images and multi-AC-group geometry while localizing
+   the earliest divergent stage.
 
 ### P1 — Architecture and maintainability
 
@@ -509,10 +513,10 @@ outside simulation.
    malformed-frame generators, reset-at-state tests, repeated-frame stress,
    functional/assertion coverage, and formal checks for small protocol/FSM
    blocks.
-10. **Expand parity oracles.** Cover all supported distances, signed/extreme
-    inputs, non-aligned multi-tile images, and real-image crops. Decode emitted
-    codestreams with an independent JPEG XL implementation.
-11. **Turn `tools/` into a tested Python package.** Split the 5,361-line oracle
+10. **Expand parity oracles.** Cover signed/extreme inputs, varied source-image
+    crops, and frames spanning multiple AC groups. Decode emitted codestreams
+    with an independent JPEG XL implementation.
+11. **Turn `tools/` into a tested Python package.** Split the 5,470-line oracle
     helper by responsibility; add `pyproject.toml`, pinned dependencies, native
     unit tests, formatting, linting, and type checks. Keep Scala process tests
     for cross-language integration only.
@@ -525,17 +529,17 @@ outside simulation.
 
 ## Verification performed for this assessment
 
-The prior Q18/Q21 multi-distance candidate was committed as `ebc17ba`; the
-current non-aligned/real-crop candidate following that commit adds four exact
-codestream/decoder regressions and was fully revalidated on 2026-07-16:
+The prior non-aligned/17x17 real-crop candidate was committed as `291ef4d`; the
+current candidate adds exact 65x65 multi-tile/stripe parity and was fully
+revalidated on 2026-07-16:
 
-- `sbt test`: 85 suites, 361 tests, all passed in 1,751 seconds;
+- `sbt test`: 85 suites, 363 tests, all passed in 2,222 seconds;
 - `HJXL_REPO_ROOT=$PWD ./mill --no-server -j 2 hjxl.test`: all 85 suites and
-  361 tests passed in 1,796 seconds, split 202/159 across two forks, with zero
+  363 tests passed in 2,161 seconds, split 272/91 across two forks, with zero
   failures, cancellations, ignored, or pending tests;
-- 15 exact RGB VarDCT codestream checks spanning three random seeds, every
-  supported distance, three non-block-aligned frames, and one pinned real-image
-  crop, each independently decoded by system `djxl`;
+- 16 exact RGB VarDCT codestream checks spanning three random seeds, every
+  supported distance, three non-block-aligned frames, and two pinned real-image
+  crops, each independently decoded by system `djxl`;
 - focused primitive, prepared-DCT, variable-shape, core, AXI, discovery,
   elaboration, host-tool, and throughput checks described above.
 
@@ -546,10 +550,16 @@ The following ancillary checks were also run on that candidate:
 - `python3 tools/hjxl_generate_abi.py --check` — generated bindings current;
 - `PYTHONDONTWRITEBYTECODE=1 python3 tools/hjxl_host_metadata_smoke.py` — passed;
 - `sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'` — passed;
-- `tclsh fpga/vivado/synth.tcl --preflight-only` — passed with 19 RTL files.
+- `tclsh fpga/vivado/synth.tcl --preflight-only` — passed with 19 RTL files;
+- fresh focused elaboration produced 68 files/172,429 lines for the standalone
+  RGB VarDCT route and 70 files/172,608 lines for its AXI-stream shell;
+- every AQ oracle writer regenerated successfully for the 65x65 crop, including
+  stripe-aware contrast, erosion, strategy mask, nonlinear/HF/color/gamma
+  modulation, final map, and raw quant.
 
-Java 26, Verilator 5.048, and `djxl` 0.12.0 were available. Vivado, Vitis, and
-Yosys were not found. The full dual-build results apply to the exact
+The sbt launcher used Homebrew Java 26.0.1, the shell `java` command reported
+OpenJDK 21.0.5, and Verilator 5.048 plus `djxl` 0.12.0 were available. Vivado,
+Vitis, and Yosys were not found. The full dual-build results apply to the exact
 implementation and documentation candidate described here.
 
 No claim is made about synthesis, timing closure, resource use, power,
@@ -566,8 +576,8 @@ The next major quality gain will not come from another broad set of trace
 wrappers. It will come from using the frozen prepared-DCT top to obtain the
 first real synthesis and board evidence, then redesigning the frame-scaled
 structures that the reports identify. In parallel, parity work should remain
-trace-first and grow from the 15 exact small cases into a varied real-image and
-larger/multi-tile corpus.
+trace-first and grow from the 16 exact cases into a varied-source and
+multi-AC-group corpus.
 
 Until those milestones are reached, the most accurate description is:
 **a high-quality verification scaffold and partial JPEG XL RTL implementation,

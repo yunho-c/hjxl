@@ -135,7 +135,7 @@ owned by the host tools for now.
   libjxl-tiny XYB conversion. It performs signed RGB mixing with Q26 matrix
   coefficients, adds the opsin bias before clamping like the reference, keeps
   Q24 mixed absorbance, and uses `CbrtApproxQ12` to normalize by powers of
-  eight before interpolating a 225-entry Q5 table over `[1, 8)`. This removes
+  eight before interpolating a 449-entry Q6 table over `[1, 8)`. This removes
   the former source-clamp mismatch and absorbance saturation above roughly 2.0
   while keeping the cube-root table smaller than the former range-limited
   table. It remains an approximation, but
@@ -150,22 +150,28 @@ owned by the host tools for now.
   the masking expression uses fixed-point squares plus a 74-bit integer square
   root. `FrameAqContrastTraceStage` converts incoming RGB once, stores Q12 X/Y,
   and schedules one shared contrast datapath across global 4x4 padded-pixel
-  cells. It emits positive Q16 `AqContrast` rows with raster cell ordinal in
+  cells. Horizontal neighborhoods remain global across 64-pixel tile edges;
+  vertical neighborhoods clamp at each 64-row boundary because libjxl-tiny
+  converts every 256x64 encoder stripe independently. It emits positive Q16
+  `AqContrast` rows with raster cell ordinal in
   `trace.index`. The all-route RGB core selects this extension only when
   `enableXyb && enableQuant`, `tokenSelect=AqContrast`, and DCT/tokenization are
   disabled, preserving the previous default-selector AC-strategy route.
-  Keeping a global grid avoids duplicating 4-pixel tile halos.
+  Keeping one stored grid avoids duplicating 4-pixel tile halos while retaining
+  the native stripe-local boundary rule.
   `tools/hjxl_reference.py --aq-contrast-q16-csv ...` exports the matching
   native-float and Q12-input libjxl-tiny oracle values; the exporter checks its
   native reconstruction exactly against the `pre_erosion` array consumed by
   the full reference AQ function. Five RGB fixture families are bounded to two
-  percent at this seam, and a 65x1 regression
-  proves that the global cell grid and carry-safe 72-pixel padding cross a
-  64-pixel tile boundary correctly. This is not yet the eroded AQ state.
+  percent at this seam. A 65x1 regression proves that the global horizontal
+  cell grid and carry-safe 72-pixel padding cross a tile boundary; a 65x65
+  regression proves the independent vertical stripe clamp. This is not yet the
+  eroded AQ state.
 - `AqFuzzyErosionSample` forms the center plus four-minimum weighted numerator
   for one clamped 3x3 Q16 contrast neighborhood. The prepared frame scheduler
-  buffers the global row-major contrast grid, visits the four quarter-resolution
-  cells belonging to each padded 8x8 block, accumulates their numerators, and
+  buffers the row-major contrast grid, visits the four quarter-resolution cells
+  belonging to each padded 8x8 block, clamps vertical neighbors within each
+  16-cell/64-pixel stripe, accumulates their numerators, and
   performs one nearest divide by 20. This retains enough precision for the
   emitted block value to stay within one Q16 LSB of the native reference.
   `FrameAqFuzzyErosionTraceStage` composes that prepared scheduler after
@@ -174,14 +180,15 @@ owned by the host tools for now.
   the default all-route core retains `AqContrast` behavior for ABI compatibility.
   Five RGB families remain within two percent, a 65x1 case crosses the
   horizontal 64-pixel tile edge, and prepared 65x65 input exercises the full
-  18x18-cell/9x9-block grid padded to 72x72.
+  18x18-cell/9x9-block grid plus the stripe-local vertical neighborhood padded
+  to 72x72.
 - `AqStrategyMaskReciprocal` computes the block mask used only by AC-strategy
   scoring: `1 / (fuzzy_erosion + 0.001)`. The Q16 boundary represents 0.001 as
   the exact rational 1/1000 and uses a 42-cycle restoring divider rather than a
   combinational division operator. `FramePreparedAqStrategyMaskTraceStage`
   provides a one-block-at-a-time ready/valid boundary, while
   `FrameAqStrategyMaskTraceStage` composes it after the RGB fuzzy-erosion path.
-  The oracle checks the full-frame reconstruction against both the returned
+  The oracle checks the stripe-aware reconstruction against both the returned
   reference mask and the stitched 64x64 calls used by the real encoder; five
   RGB families stay within two percent and prepared fixtures match Q16 exactly.
   The nonlinear/final-map pipeline also carries this exact mask alongside the
@@ -392,7 +399,10 @@ wrappers.
 - `QuantizeChromaResidualDct8x8Block` consumes X or B coefficients, the
   reconstructed Y coefficients, a signed CFL multiplier, and quantization
   parameters. It subtracts `ytox / 84 * Y` for X or `(1 + ytob / 84) * Y` for B,
-  then reuses `QuantizeDct8x8Block` for AC quantization and nonzero counting.
+  using the same nearest signed Q16 factor table as strategy scoring, then
+  reuses `QuantizeDct8x8Block` for AC quantization and nonzero counting. The
+  variable-shape residual quantizer shares this rule; truncating the factor can
+  change threshold-adjacent chroma tokens.
 - `QuantizeDcDct8x8Block` quantizes one DCT-only DC coefficient using an
   explicit inverse DC factor. For B it subtracts half of the already-quantized Y
   DC value, matching libjxl-tiny's chroma DC storage convention. This completes
@@ -909,11 +919,12 @@ wrappers.
   consume identical samples. `--random-seed` expands the deterministic random
   corpus without changing the seed-0 default. `--input-image` plus bounded crop
   coordinates uses Pillow to decode sRGB, converts it explicitly to linear RGB,
-  and then enters the same optional Q8 host boundary. Fifteen cases currently
+  and then enters the same optional Q8 host boundary. Sixteen cases currently
   prove exact nonzero DC/strategy/metadata/AC traces and codestream bytes: six
   distance-1 16x16 patterns/seeds, seed 1 at every supported distance, three
-  non-aligned seed-1 geometries, and one 17x17 pinned real-image crop. System
-  `djxl` independently decodes every assembled stream.
+  non-aligned seed-1 geometries, and 17x17 plus 65x65 crops of the pinned Tesla
+  image. The larger crop crosses both tile axes and the native 64-row AQ stripe
+  boundary. System `djxl` independently decodes every assembled stream.
 - `tools/hjxl_reference.py --default-ac-strategy-npy ...` writes the matching
   default DCT-first strategy map.
 - `tools/hjxl_reference.py --raw-quant-field-npy ...`,

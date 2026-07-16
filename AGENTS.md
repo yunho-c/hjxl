@@ -164,7 +164,7 @@ Read these libjxl-tiny files before making architectural changes:
 - `RgbToXybApprox` is a standalone Q8 linear-RGB to Q12 XYB approximation. It
   performs the signed matrix at Q26, adds the opsin bias and then clamps at
   Q24, and uses `CbrtApproxQ12` to normalize by powers of eight before
-  interpolating a 225-entry Q5 cube-root table over `[1, 8)`. It covers the
+  interpolating a 449-entry Q6 cube-root table over `[1, 8)`. It covers the
   full positive signed-16/Q8 range without the former absorbance saturation
   above roughly 2.0. The libjxl-tiny Q8-to-Q12 fixture bound is two Q12 units
   and the deterministic 100,000-vector full signed-range model bound is five;
@@ -186,8 +186,10 @@ Read these libjxl-tiny files before making architectural changes:
   `tokenSelect = TokenTraceSelect.AqContrast` when DCT and tokenization are
   disabled; the default token selector preserves the existing AC-strategy
   route. It snapshots geometry on the first accepted beat;
-  later control changes apply to the next frame. The global grid deliberately
-  avoids duplicate 4-pixel tile halos. Its passive `xybAccepted` sideband marks
+  later control changes apply to the next frame. The stored global grid avoids
+  duplicate 4-pixel tile halos. Horizontal neighborhoods cross tile edges, but
+  vertical neighborhoods clamp at each 64-row boundary to match libjxl-tiny's
+  independent 256x64 encoder stripes. Its passive `xybAccepted` sideband marks
   the converted sample stored for each accepted input, allowing later AQ
   modulation stages to share the same converter. Do not describe this trace as final
   AQ-map or raw-quant parity.
@@ -329,12 +331,13 @@ Read these libjxl-tiny files before making architectural changes:
   comparisons. Pass `--quantize-input-q8` so the native reference consumes the
   same host-input samples as RTL, and use `--random-seed` to extend the corpus
   without changing the seed-0 default. `--input-image` decodes a bounded Pillow
-  crop and converts sRGB to linear RGB before the same Q8 boundary. Fifteen
+  crop and converts sRGB to linear RGB before the same Q8 boundary. Sixteen
   exact-Q8 cases are the current nonzero DC/AC regressions: six distance-1
   16x16 patterns/seeds, random seed 1 at every supported distance, three
-  non-aligned geometries, and one 17x17 crop of the pinned Tesla JPEG. Every
-  assembled stream must also decode with system `djxl`; this tiny corpus is not
-  broad RGB parity evidence.
+  non-aligned geometries, and 17x17 plus 65x65 crops of the pinned Tesla JPEG.
+  The 65x65 case crosses both tile axes and the native 64-row AQ stripe
+  boundary. Every assembled stream must also decode with system `djxl`; this
+  single-source corpus is not broad RGB parity evidence.
 - `AcStrategyDecisionSelector` is the exact decision-only tail for one complete
   2x2 block region. It consumes common-scale nonnegative candidate costs,
   chooses horizontal on aggregate ties, replaces a rectangle only on a strict
@@ -433,7 +436,10 @@ Read these libjxl-tiny files before making architectural changes:
 - `QuantizeChromaResidualDct8x8Block` implements the X/B CFL residual step
   before quantization. It expects reconstructed Y coefficients from
   `QuantizeRoundtripYDct8x8Block`, a signed CFL multiplier, and the same raw
-  quant/scale/QM inputs as `QuantizeDct8x8Block`.
+  quant/scale/QM inputs as `QuantizeDct8x8Block`. DCT and VarDCT residual
+  quantizers must use the same nearest signed Q16 `multiplier / 84` factor as
+  AC-strategy scoring; truncating that factor can change threshold-adjacent
+  chroma tokens.
 - `QuantizeDcDct8x8Block` implements DCT-only quantized DC for one channel. Feed
   it an explicit inverse DC factor from distance parameters; for B, also feed
   the already-quantized Y DC so it can subtract the libjxl-tiny half-Y

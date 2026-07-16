@@ -1228,15 +1228,18 @@ def tiled_aq_nonlinear_mask_from_xyb(xyb):
     output = np.empty((y_blocks, x_blocks), dtype=np.float32)
     for block_y0 in range(0, y_blocks, tile_blocks):
         block_height = min(tile_blocks, y_blocks - block_y0)
+        stripe_source = source[
+            :, block_y0 * 8 : (block_y0 + block_height) * 8, :
+        ]
         for block_x0 in range(0, x_blocks, tile_blocks):
             block_width = min(tile_blocks, x_blocks - block_x0)
             output[
                 block_y0 : block_y0 + block_height,
                 block_x0 : block_x0 + block_width,
             ] = capture_aq_nonlinear_mask_from_xyb(
-                source,
+                stripe_source,
                 block_x0=block_x0,
-                block_y0=block_y0,
+                block_y0=0,
                 block_width=block_width,
                 block_height=block_height,
             )
@@ -1253,15 +1256,18 @@ def tiled_aq_hf_modulation_from_xyb(xyb):
     output = np.empty((y_blocks, x_blocks), dtype=np.float32)
     for block_y0 in range(0, y_blocks, tile_blocks):
         block_height = min(tile_blocks, y_blocks - block_y0)
+        stripe_source = source[
+            :, block_y0 * 8 : (block_y0 + block_height) * 8, :
+        ]
         for block_x0 in range(0, x_blocks, tile_blocks):
             block_width = min(tile_blocks, x_blocks - block_x0)
             output[
                 block_y0 : block_y0 + block_height,
                 block_x0 : block_x0 + block_width,
             ] = capture_aq_hf_modulation_from_xyb(
-                source,
+                stripe_source,
                 block_x0=block_x0,
-                block_y0=block_y0,
+                block_y0=0,
                 block_width=block_width,
                 block_height=block_height,
             )
@@ -1278,16 +1284,19 @@ def tiled_aq_color_modulation_from_xyb(xyb, distance: float):
     output = np.empty((y_blocks, x_blocks), dtype=np.float32)
     for block_y0 in range(0, y_blocks, tile_blocks):
         block_height = min(tile_blocks, y_blocks - block_y0)
+        stripe_source = source[
+            :, block_y0 * 8 : (block_y0 + block_height) * 8, :
+        ]
         for block_x0 in range(0, x_blocks, tile_blocks):
             block_width = min(tile_blocks, x_blocks - block_x0)
             output[
                 block_y0 : block_y0 + block_height,
                 block_x0 : block_x0 + block_width,
             ] = capture_aq_color_modulation_from_xyb(
-                source,
+                stripe_source,
                 distance=distance,
                 block_x0=block_x0,
-                block_y0=block_y0,
+                block_y0=0,
                 block_width=block_width,
                 block_height=block_height,
             )
@@ -1304,16 +1313,19 @@ def tiled_aq_gamma_modulation_from_xyb(xyb, distance: float):
     output = np.empty((y_blocks, x_blocks), dtype=np.float32)
     for block_y0 in range(0, y_blocks, tile_blocks):
         block_height = min(tile_blocks, y_blocks - block_y0)
+        stripe_source = source[
+            :, block_y0 * 8 : (block_y0 + block_height) * 8, :
+        ]
         for block_x0 in range(0, x_blocks, tile_blocks):
             block_width = min(tile_blocks, x_blocks - block_x0)
             output[
                 block_y0 : block_y0 + block_height,
                 block_x0 : block_x0 + block_width,
             ] = capture_aq_gamma_modulation_from_xyb(
-                source,
+                stripe_source,
                 distance=distance,
                 block_x0=block_x0,
-                block_y0=block_y0,
+                block_y0=0,
                 block_width=block_width,
                 block_height=block_height,
             )
@@ -1336,13 +1348,16 @@ def tiled_aq_strategy_mask_from_xyb(xyb):
     output = np.empty((y_blocks, x_blocks), dtype=np.float32)
     for block_y0 in range(0, y_blocks, tile_blocks):
         block_height = min(tile_blocks, y_blocks - block_y0)
+        stripe_source = source[
+            :, block_y0 * 8 : (block_y0 + block_height) * 8, :
+        ]
         for block_x0 in range(0, x_blocks, tile_blocks):
             block_width = min(tile_blocks, x_blocks - block_x0)
             result = compute_adaptive_quantization(
-                source,
+                stripe_source,
                 distance=1.0,
                 block_x0=block_x0,
-                block_y0=block_y0,
+                block_y0=0,
                 block_width=block_width,
                 block_height=block_height,
             )
@@ -1383,12 +1398,105 @@ def capture_aq_erosion_inputs_from_xyb(xyb):
     )
 
 
+def striped_aq_contrast_pre_erosion_from_xyb(xyb):
+    """Reconstruct contrast with libjxl-tiny's independent 64-row stripes."""
+    np = _load_numpy()
+    source = np.asarray(xyb, dtype=np.float32)
+    stripe_rows = 64
+    return np.concatenate(
+        [
+            aq_contrast_pre_erosion_from_xyb(
+                source[:, stripe_y : min(stripe_y + stripe_rows, source.shape[1]), :]
+            )
+            for stripe_y in range(0, source.shape[1], stripe_rows)
+        ],
+        axis=0,
+    )
+
+
+def striped_aq_fuzzy_erosion_from_pre_erosion(pre_erosion):
+    """Reconstruct fuzzy erosion without crossing 64-row stripe boundaries."""
+    np = _load_numpy()
+    source = np.asarray(pre_erosion, dtype=np.float32)
+    stripe_cell_rows = 64 // 4
+    return np.concatenate(
+        [
+            aq_fuzzy_erosion_from_pre_erosion(
+                source[
+                    stripe_y : min(stripe_y + stripe_cell_rows, source.shape[0]),
+                    :,
+                ]
+            )
+            for stripe_y in range(0, source.shape[0], stripe_cell_rows)
+        ],
+        axis=0,
+    )
+
+
+def capture_striped_aq_erosion_inputs_from_xyb(xyb):
+    """Capture the native contrast, erosion, and mask for each encoder stripe."""
+    np = _load_numpy()
+    source = np.asarray(xyb, dtype=np.float32)
+    stripe_rows = 64
+    captures = [
+        capture_aq_erosion_inputs_from_xyb(
+            source[:, stripe_y : min(stripe_y + stripe_rows, source.shape[1]), :]
+        )
+        for stripe_y in range(0, source.shape[1], stripe_rows)
+    ]
+    return tuple(
+        np.concatenate([capture[index] for capture in captures], axis=0)
+        for index in range(3)
+    )
+
+
+def capture_striped_aq_stage_from_xyb(xyb, capture, *args):
+    """Capture one AQ stage independently for every native 64-row stripe."""
+    np = _load_numpy()
+    source = np.asarray(xyb, dtype=np.float32)
+    stripe_rows = 64
+    return np.concatenate(
+        [
+            capture(
+                source[:, stripe_y : min(stripe_y + stripe_rows, source.shape[1]), :],
+                *args,
+            )
+            for stripe_y in range(0, source.shape[1], stripe_rows)
+        ],
+        axis=0,
+    )
+
+
+def striped_aq_result_arrays_from_xyb(xyb, distance: float):
+    """Run full reference AQ per native stripe and stitch its result arrays."""
+    np = _load_numpy()
+    root = _libjxl_tiny_root()
+    _add_libjxl_tiny(root)
+    from jxl_tiny.adaptive_quantization import (  # pylint: disable=import-outside-toplevel
+        compute_adaptive_quantization,
+    )
+
+    source = np.asarray(xyb, dtype=np.float32)
+    stripe_rows = 64
+    results = [
+        compute_adaptive_quantization(
+            source[:, stripe_y : min(stripe_y + stripe_rows, source.shape[1]), :],
+            distance,
+        )
+        for stripe_y in range(0, source.shape[1], stripe_rows)
+    ]
+    return tuple(
+        np.concatenate([np.asarray(getattr(result, name)) for result in results], axis=0)
+        for name in ("aq_map", "raw_quant_field", "mask")
+    )
+
+
 def write_aq_contrast_q16_csv(path: Path, image) -> None:
     """Write the first image-dependent AQ contrast seam in signed Q16."""
     np = _load_numpy()
     xyb = xyb_from_python_port(image)
-    reference = aq_contrast_pre_erosion_from_xyb(xyb)
-    captured_pre_erosion, _, _ = capture_aq_erosion_inputs_from_xyb(xyb)
+    reference = striped_aq_contrast_pre_erosion_from_xyb(xyb)
+    captured_pre_erosion, _, _ = capture_striped_aq_erosion_inputs_from_xyb(xyb)
     if captured_pre_erosion is None or not np.array_equal(reference, captured_pre_erosion):
         raise RuntimeError(
             "AQ contrast reconstruction does not match libjxl-tiny pre_erosion input"
@@ -1398,7 +1506,7 @@ def write_aq_contrast_q16_csv(path: Path, image) -> None:
         np.rint(np.asarray(xyb, dtype=np.float64) * (1 << 12)).astype(np.float32)
         / np.float32(1 << 12)
     )
-    quantized_reference = aq_contrast_pre_erosion_from_xyb(quantized_xyb)
+    quantized_reference = striped_aq_contrast_pre_erosion_from_xyb(quantized_xyb)
     reference_q16 = np.rint(reference.astype(np.float64) * (1 << 16)).astype(np.int64)
     quantized_reference_q16 = np.rint(
         quantized_reference.astype(np.float64) * (1 << 16)
@@ -1441,9 +1549,11 @@ def write_aq_fuzzy_erosion_q16_csv(path: Path, image) -> None:
     """Write libjxl-tiny's erosion-derived per-block AQ intermediate in Q16."""
     np = _load_numpy()
     xyb = xyb_from_python_port(image)
-    pre_erosion = aq_contrast_pre_erosion_from_xyb(xyb)
-    reference = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
-    captured_pre_erosion, captured_reference, _ = capture_aq_erosion_inputs_from_xyb(xyb)
+    pre_erosion = striped_aq_contrast_pre_erosion_from_xyb(xyb)
+    reference = striped_aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+    captured_pre_erosion, captured_reference, _ = (
+        capture_striped_aq_erosion_inputs_from_xyb(xyb)
+    )
     if not np.array_equal(pre_erosion, captured_pre_erosion):
         raise RuntimeError(
             "AQ contrast reconstruction does not match libjxl-tiny pre_erosion input"
@@ -1457,8 +1567,10 @@ def write_aq_fuzzy_erosion_q16_csv(path: Path, image) -> None:
         np.rint(np.asarray(xyb, dtype=np.float64) * (1 << 12)).astype(np.float32)
         / np.float32(1 << 12)
     )
-    quantized_pre_erosion = aq_contrast_pre_erosion_from_xyb(quantized_xyb)
-    quantized_reference = aq_fuzzy_erosion_from_pre_erosion(quantized_pre_erosion)
+    quantized_pre_erosion = striped_aq_contrast_pre_erosion_from_xyb(quantized_xyb)
+    quantized_reference = striped_aq_fuzzy_erosion_from_pre_erosion(
+        quantized_pre_erosion
+    )
     reference_q16 = np.rint(reference.astype(np.float64) * (1 << 16)).astype(np.int64)
     quantized_reference_q16 = np.rint(
         quantized_reference.astype(np.float64) * (1 << 16)
@@ -1501,11 +1613,11 @@ def write_aq_strategy_mask_q16_csv(path: Path, image) -> None:
     """Write the block mask consumed by AC-strategy scoring in Q16."""
     np = _load_numpy()
     xyb = xyb_from_python_port(image)
-    pre_erosion = aq_contrast_pre_erosion_from_xyb(xyb)
-    erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+    pre_erosion = striped_aq_contrast_pre_erosion_from_xyb(xyb)
+    erosion = striped_aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
     reference = aq_strategy_mask_from_fuzzy_erosion(erosion)
     captured_pre, captured_erosion, captured_reference = (
-        capture_aq_erosion_inputs_from_xyb(xyb)
+        capture_striped_aq_erosion_inputs_from_xyb(xyb)
     )
     if not np.array_equal(pre_erosion, captured_pre):
         raise RuntimeError(
@@ -1522,15 +1634,15 @@ def write_aq_strategy_mask_q16_csv(path: Path, image) -> None:
     tiled_reference = tiled_aq_strategy_mask_from_xyb(xyb)
     if not np.array_equal(reference, tiled_reference):
         raise RuntimeError(
-            "full-frame AQ strategy mask does not match encoder-style tiled AQ calls"
+            "stripe-aware AQ strategy mask does not match encoder-style tiled AQ calls"
         )
 
     quantized_xyb = (
         np.rint(np.asarray(xyb, dtype=np.float64) * (1 << 12)).astype(np.float32)
         / np.float32(1 << 12)
     )
-    quantized_pre = aq_contrast_pre_erosion_from_xyb(quantized_xyb)
-    quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(quantized_pre)
+    quantized_pre = striped_aq_contrast_pre_erosion_from_xyb(quantized_xyb)
+    quantized_erosion = striped_aq_fuzzy_erosion_from_pre_erosion(quantized_pre)
     quantized_reference = aq_strategy_mask_from_fuzzy_erosion(quantized_erosion)
 
     erosion_q16 = np.rint(erosion.astype(np.float64) * (1 << 16)).astype(np.int64)
@@ -1594,10 +1706,12 @@ def write_aq_nonlinear_mask_q24_csv(path: Path, image) -> None:
     """Write `_compute_mask` output, the signed Q24 AQ modulation seed."""
     np = _load_numpy()
     xyb = xyb_from_python_port(image)
-    pre_erosion = aq_contrast_pre_erosion_from_xyb(xyb)
-    erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+    pre_erosion = striped_aq_contrast_pre_erosion_from_xyb(xyb)
+    erosion = striped_aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
     reference = aq_nonlinear_mask_from_fuzzy_erosion(erosion)
-    captured_reference = capture_aq_nonlinear_mask_from_xyb(xyb)
+    captured_reference = capture_striped_aq_stage_from_xyb(
+        xyb, capture_aq_nonlinear_mask_from_xyb
+    )
     if not np.array_equal(reference, captured_reference):
         raise RuntimeError(
             "AQ nonlinear-mask reconstruction does not match libjxl-tiny `_compute_mask`"
@@ -1605,15 +1719,15 @@ def write_aq_nonlinear_mask_q24_csv(path: Path, image) -> None:
     tiled_reference = tiled_aq_nonlinear_mask_from_xyb(xyb)
     if not np.array_equal(reference, tiled_reference):
         raise RuntimeError(
-            "full-frame AQ nonlinear mask does not match encoder-style tiled AQ calls"
+            "stripe-aware AQ nonlinear mask does not match encoder-style tiled AQ calls"
         )
 
     quantized_xyb = (
         np.rint(np.asarray(xyb, dtype=np.float64) * (1 << 12)).astype(np.float32)
         / np.float32(1 << 12)
     )
-    quantized_pre = aq_contrast_pre_erosion_from_xyb(quantized_xyb)
-    quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(quantized_pre)
+    quantized_pre = striped_aq_contrast_pre_erosion_from_xyb(quantized_xyb)
+    quantized_erosion = striped_aq_fuzzy_erosion_from_pre_erosion(quantized_pre)
     quantized_reference = aq_nonlinear_mask_from_fuzzy_erosion(quantized_erosion)
 
     erosion_q16 = np.rint(erosion.astype(np.float64) * (1 << 16)).astype(np.int64)
@@ -1682,11 +1796,13 @@ def write_aq_hf_modulation_q24_csv(path: Path, image) -> None:
     """Write the cumulative signed-Q24 AQ seed after Y HF modulation."""
     np = _load_numpy()
     xyb = xyb_from_python_port(image)
-    pre_erosion = aq_contrast_pre_erosion_from_xyb(xyb)
-    erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+    pre_erosion = striped_aq_contrast_pre_erosion_from_xyb(xyb)
+    erosion = striped_aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
     nonlinear = aq_nonlinear_mask_from_fuzzy_erosion(erosion)
     reference = aq_hf_modulation_from_xyb(xyb, nonlinear)
-    captured_reference = capture_aq_hf_modulation_from_xyb(xyb)
+    captured_reference = capture_striped_aq_stage_from_xyb(
+        xyb, capture_aq_hf_modulation_from_xyb
+    )
     if not np.array_equal(reference, captured_reference):
         raise RuntimeError(
             "AQ HF-modulation reconstruction does not match libjxl-tiny `_hf_modulation`"
@@ -1694,7 +1810,7 @@ def write_aq_hf_modulation_q24_csv(path: Path, image) -> None:
     tiled_reference = tiled_aq_hf_modulation_from_xyb(xyb)
     if not np.array_equal(reference, tiled_reference):
         raise RuntimeError(
-            "full-frame AQ HF modulation does not match encoder-style tiled AQ calls"
+            "stripe-aware AQ HF modulation does not match encoder-style tiled AQ calls"
         )
 
     quantized_xyb_q12 = np.rint(
@@ -1703,8 +1819,8 @@ def write_aq_hf_modulation_q24_csv(path: Path, image) -> None:
     quantized_xyb = (
         quantized_xyb_q12.astype(np.float32) / np.float32(1 << 12)
     ).astype(np.float32)
-    quantized_pre = aq_contrast_pre_erosion_from_xyb(quantized_xyb)
-    quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(quantized_pre)
+    quantized_pre = striped_aq_contrast_pre_erosion_from_xyb(quantized_xyb)
+    quantized_erosion = striped_aq_fuzzy_erosion_from_pre_erosion(quantized_pre)
     quantized_nonlinear = aq_nonlinear_mask_from_fuzzy_erosion(quantized_erosion)
     quantized_reference = aq_hf_modulation_from_xyb(
         quantized_xyb, quantized_nonlinear
@@ -1727,8 +1843,8 @@ def write_aq_hf_modulation_q24_csv(path: Path, image) -> None:
     input_q8_xyb_q12 = (
         input_quantized_xyb_q12.astype(np.float32) / np.float32(1 << 12)
     ).astype(np.float32)
-    input_quantized_pre = aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
-    input_quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(
+    input_quantized_pre = striped_aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
+    input_quantized_erosion = striped_aq_fuzzy_erosion_from_pre_erosion(
         input_quantized_pre
     )
     input_quantized_erosion_q16 = np.rint(
@@ -1874,8 +1990,8 @@ def write_aq_color_modulation_q24_csv(
     reference_distance = float(np.float32(distance_q8 / float(1 << 8)))
 
     def float_chain(source):
-        pre_erosion = aq_contrast_pre_erosion_from_xyb(source)
-        erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+        pre_erosion = striped_aq_contrast_pre_erosion_from_xyb(source)
+        erosion = striped_aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
         nonlinear = aq_nonlinear_mask_from_fuzzy_erosion(erosion)
         hf = aq_hf_modulation_from_xyb(source, nonlinear)
         color = aq_color_modulation_from_xyb(source, hf, reference_distance)
@@ -1909,8 +2025,8 @@ def write_aq_color_modulation_q24_csv(
 
     xyb = xyb_from_python_port(image)
     erosion, hf, reference = float_chain(xyb)
-    captured_reference = capture_aq_color_modulation_from_xyb(
-        xyb, reference_distance
+    captured_reference = capture_striped_aq_stage_from_xyb(
+        xyb, capture_aq_color_modulation_from_xyb, reference_distance
     )
     if not np.array_equal(reference, captured_reference):
         raise RuntimeError(
@@ -1922,7 +2038,7 @@ def write_aq_color_modulation_q24_csv(
     )
     if not np.array_equal(reference, tiled_reference):
         raise RuntimeError(
-            "full-frame AQ color modulation does not match encoder-style tiled AQ calls"
+            "stripe-aware AQ color modulation does not match encoder-style tiled AQ calls"
         )
 
     xyb_q12 = np.rint(
@@ -1952,8 +2068,8 @@ def write_aq_color_modulation_q24_csv(
     input_q8_xyb_q12 = (
         input_quantized_xyb_q12.astype(np.float32) / np.float32(1 << 12)
     ).astype(np.float32)
-    input_quantized_pre = aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
-    input_quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(
+    input_quantized_pre = striped_aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
+    input_quantized_erosion = striped_aq_fuzzy_erosion_from_pre_erosion(
         input_quantized_pre
     )
 
@@ -2058,8 +2174,8 @@ def write_aq_gamma_modulation_q24_csv(
     reference_distance = float(np.float32(distance_q8 / float(1 << 8)))
 
     def float_chain(source):
-        pre_erosion = aq_contrast_pre_erosion_from_xyb(source)
-        erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+        pre_erosion = striped_aq_contrast_pre_erosion_from_xyb(source)
+        erosion = striped_aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
         nonlinear = aq_nonlinear_mask_from_fuzzy_erosion(erosion)
         hf = aq_hf_modulation_from_xyb(source, nonlinear)
         color = aq_color_modulation_from_xyb(source, hf, reference_distance)
@@ -2095,8 +2211,8 @@ def write_aq_gamma_modulation_q24_csv(
 
     xyb = xyb_from_python_port(image)
     erosion, color, reference = float_chain(xyb)
-    captured_reference = capture_aq_gamma_modulation_from_xyb(
-        xyb, reference_distance
+    captured_reference = capture_striped_aq_stage_from_xyb(
+        xyb, capture_aq_gamma_modulation_from_xyb, reference_distance
     )
     if not np.array_equal(reference, captured_reference):
         raise RuntimeError(
@@ -2108,7 +2224,7 @@ def write_aq_gamma_modulation_q24_csv(
     )
     if not np.array_equal(reference, tiled_reference):
         raise RuntimeError(
-            "full-frame AQ gamma modulation does not match encoder-style tiled AQ calls"
+            "stripe-aware AQ gamma modulation does not match encoder-style tiled AQ calls"
         )
 
     xyb_q12 = np.rint(
@@ -2136,8 +2252,8 @@ def write_aq_gamma_modulation_q24_csv(
     input_q8_xyb_q12 = (
         input_quantized_xyb_q12.astype(np.float32) / np.float32(1 << 12)
     ).astype(np.float32)
-    input_quantized_pre = aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
-    input_quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(
+    input_quantized_pre = striped_aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
+    input_quantized_erosion = striped_aq_fuzzy_erosion_from_pre_erosion(
         input_quantized_pre
     )
 
@@ -2228,11 +2344,6 @@ def write_aq_final_map_q24_csv(
 ) -> None:
     """Write completed AQ-map and raw-quant evidence for the RGB chain."""
     np = _load_numpy()
-    root = _libjxl_tiny_root()
-    _add_libjxl_tiny(root)
-    from jxl_tiny.adaptive_quantization import (  # pylint: disable=import-outside-toplevel
-        compute_adaptive_quantization,
-    )
 
     distance_q8 = int(round(float(distance) * (1 << 8)))
     if distance_q8 <= 0 or distance_q8 > np.iinfo(np.uint16).max:
@@ -2243,8 +2354,8 @@ def write_aq_final_map_q24_csv(
     )
 
     def float_chain(source):
-        pre_erosion = aq_contrast_pre_erosion_from_xyb(source)
-        erosion = aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
+        pre_erosion = striped_aq_contrast_pre_erosion_from_xyb(source)
+        erosion = striped_aq_fuzzy_erosion_from_pre_erosion(pre_erosion)
         nonlinear = aq_nonlinear_mask_from_fuzzy_erosion(erosion)
         hf = aq_hf_modulation_from_xyb(source, nonlinear)
         color = aq_color_modulation_from_xyb(source, hf, reference_distance)
@@ -2290,8 +2401,10 @@ def write_aq_final_map_q24_csv(
 
     xyb = xyb_from_python_port(image)
     erosion, gamma, reference_map = float_chain(xyb)
-    direct = compute_adaptive_quantization(xyb, reference_distance)
-    if not np.array_equal(reference_map, direct.aq_map):
+    direct_map, direct_raw_quant, _ = striped_aq_result_arrays_from_xyb(
+        xyb, reference_distance
+    )
+    if not np.array_equal(reference_map, direct_map):
         raise RuntimeError(
             "AQ final-map reconstruction does not match libjxl-tiny "
             "`_per_block_modulations`"
@@ -2322,8 +2435,8 @@ def write_aq_final_map_q24_csv(
     input_q8_xyb_q12 = (
         input_quantized_xyb_q12.astype(np.float32) / np.float32(1 << 12)
     ).astype(np.float32)
-    input_quantized_pre = aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
-    input_quantized_erosion = aq_fuzzy_erosion_from_pre_erosion(
+    input_quantized_pre = striped_aq_contrast_pre_erosion_from_xyb(input_q8_xyb_q12)
+    input_quantized_erosion = striped_aq_fuzzy_erosion_from_pre_erosion(
         input_quantized_pre
     )
 
@@ -2410,7 +2523,7 @@ def write_aq_final_map_q24_csv(
                         scale_q24,
                         dampen_q24,
                         inv_global_scale_q24,
-                        int(direct.raw_quant_field[block_y, block_x]),
+                        int(direct_raw_quant[block_y, block_x]),
                         int(fixed_raw[block_y, block_x]),
                         int(input_quantized_fixed_raw[block_y, block_x]),
                     )
@@ -3779,10 +3892,6 @@ def write_var_dct_quantize_q16_csv(
         rounded = (magnitude + (1 << (shift - 1))) >> shift
         return -rounded if value < 0 else rounded
 
-    def trunc_div_signed(numerator: int, denominator: int) -> int:
-        quotient = abs(int(numerator)) // int(denominator)
-        return -quotient if numerator < 0 else quotient
-
     dct_thresholds_q12 = (
         (2376, 2929, 3031, 3195),
         (2376, 2601, 2703, 2867),
@@ -3888,8 +3997,8 @@ def write_var_dct_quantize_q16_csv(
                 (adjusted_q16 * weight_q32 * inv_qac_q16) >> 48
             )
 
-        x_factor_q16 = trunc_div_signed(ytox * (1 << 16), 84)
-        b_factor_q16 = (1 << 16) + trunc_div_signed(ytob * (1 << 16), 84)
+        x_factor_q16 = _round_divide_signed(ytox * (1 << 16), 84)
+        b_factor_q16 = (1 << 16) + _round_divide_signed(ytob * (1 << 16), 84)
         residual_x_q16 = [
             int(raw_coefficients_q16[0][index])
             - ((x_factor_q16 * reconstructed_y_q16[index]) >> 16)

@@ -291,7 +291,7 @@ class AqFuzzyErosionSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
-  "FrameAqFuzzyErosionTraceStage preserves the global grid across a 64-pixel tile boundary" in {
+  "FrameAqFuzzyErosionTraceStage preserves the horizontal grid across a 64-pixel tile boundary" in {
     requireReferenceTools()
     val width = 65
     val height = 1
@@ -343,7 +343,7 @@ class AqFuzzyErosionSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
-  "FramePreparedAqFuzzyErosionTraceStage preserves two-dimensional 72x72 traversal" in {
+  "FramePreparedAqFuzzyErosionTraceStage preserves 72x72 traversal with stripe-local neighborhoods" in {
     requireReferenceTools()
     val width = 65
     val height = 65

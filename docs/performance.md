@@ -136,15 +136,18 @@ dense distance-0.25 X coefficient. Keeping analysis at Q18 and quantization at
 Q21 preserves the established distance-1 cases and closes that AC boundary.
 Eleven synthetic 16x16 cases match every native logical token and codestream
 byte across three random seeds and every supported distance. Three non-aligned
-seed-1 frames and one pinned 17x17 real-image crop bring the exact total to 15;
-system `djxl` accepts every result. These additions change verification breadth,
-not the focused RTL hierarchy or its elaboration counts.
+seed-1 frames and pinned 17x17 and 65x65 real-image crops bring the exact total
+to 16; system `djxl` accepts every result. The larger crop exercises a 9x9
+block grid, both 64-pixel tile axes, and two native 64-row AQ stripes. Its
+focused ChiselSim regression takes roughly 526 seconds locally, so it is a
+verification breadth case rather than a throughput measurement.
 
-Fresh elaboration emits 68 SystemVerilog files/172,781 lines for
-`ElaborateAqVarDctQuantizeTokens` and 70 files/172,960 lines for
-`ElaborateAxiStreamCoreAqVarDctTokens`. Relative to the prior Q18/Q19 split,
-the generated file count falls by two while each hierarchy grows by 15,451
-lines because selected-owner Q21 quantization now retains all three channels.
+The multi-tile correction doubles the normalized cube-root interpolation
+resolution from Q5 to Q6 and uses the same nearest signed CFL factor in strategy
+scoring and quantization. Fresh elaboration emits 68 SystemVerilog files/172,429
+lines for `ElaborateAqVarDctQuantizeTokens` and 70 files/172,608 lines for
+`ElaborateAxiStreamCoreAqVarDctTokens`. The frozen prepared-DCT file list remains
+19 files and now totals 14,656 lines.
 File/line counts are structural complexity indicators, not utilization,
 timing, or power evidence. The two frame-scaled precision stores reinforce the
 need to synthesize and then redesign this diagnostic-first hierarchy before it

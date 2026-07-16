@@ -67,6 +67,10 @@ object QuantizeDct8x8Block {
   val DcProductFractionBits = Dct8Approx.FractionBits + DcFactorFractionBits
   val BQuantDcFromYFactorQ16 = 1 << (DcFactorFractionBits - 1)
 
+  /** Nearest signed Q16 multiplier/84 term shared by scoring and quantization. */
+  private[hjxl] def cflFactorDeltaQ16(multiplier: SInt): SInt =
+    VecInit(AcStrategyCostTables.CflFactorDeltaQ16.map(_.S(20.W)))(multiplier.asUInt)
+
   val DctYWeightsQ32: Seq[Long] = Seq(
     7669586, 7669590, 7690040, 8779679, 10023714, 11444023, 13065581, 14916908,
     7669590, 7669592, 7934404, 8970521, 10188574, 11595175, 13209664, 15058051,
@@ -348,8 +352,7 @@ class QuantizeChromaResidualDct8x8Block(
     Mux(io.input.bits.channel === 2.U, (1 << QuantizeDct8x8Block.CflFactorFractionBits).S, 0.S)
   private val cflFactorQ16 =
     baseFactorQ16 +
-      ((io.input.bits.cflMultiplier.pad(32) * (1 << QuantizeDct8x8Block.CflFactorFractionBits).S) /
-        QuantizeDct8x8Block.ColorFactorDenominator.S)
+      QuantizeDct8x8Block.cflFactorDeltaQ16(io.input.bits.cflMultiplier)
 
   private val residual = Seq.tabulate(blockSize) { i =>
     val predicted =

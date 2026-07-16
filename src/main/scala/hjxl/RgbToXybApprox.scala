@@ -11,7 +11,7 @@ object RgbToXybApprox {
   val OutputFractionBits = 12
   val CoefficientFractionBits = 26
   val AbsorbanceFractionBits = 24
-  val CbrtLutFractionBits = 5
+  val CbrtLutFractionBits = 6
   val CbrtInterpolationBits = AbsorbanceFractionBits - CbrtLutFractionBits
   val CbrtTableMin = 1 << CbrtLutFractionBits
   val CbrtTableMax = 8 << CbrtLutFractionBits

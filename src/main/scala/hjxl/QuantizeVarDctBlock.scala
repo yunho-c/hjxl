@@ -376,9 +376,7 @@ class QuantizeChromaResidualVarDctBlock(
     Mux(io.input.bits.channel === 2.U, (1 << QuantizeDct8x8Block.CflFactorFractionBits).S, 0.S)
   private val cflFactorQ16 =
     baseFactorQ16 +
-      ((io.input.bits.cflMultiplier.pad(32) *
-        (1 << QuantizeDct8x8Block.CflFactorFractionBits).S) /
-        QuantizeDct8x8Block.ColorFactorDenominator.S)
+      QuantizeDct8x8Block.cflFactorDeltaQ16(io.input.bits.cflMultiplier)
 
   private val residual = Seq.tabulate(maxCoefficients) { i =>
     val predicted =

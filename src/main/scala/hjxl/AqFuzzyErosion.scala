@@ -85,6 +85,8 @@ class FramePreparedAqFuzzyErosionTraceStage(
   import AqFuzzyErosionFixedPoint._
 
   private val cellDim = 4
+  private val stripeCells = HjxlConstants.TileDim / cellDim
+  private val stripeCellShift = log2Ceil(stripeCells)
   private val maxCellsX = c.maxFrameWidth / cellDim
   private val maxCellsY = c.maxFrameHeight / cellDim
   private val maxCells = maxCellsX * maxCellsY
@@ -190,8 +192,11 @@ class FramePreparedAqFuzzyErosionTraceStage(
   val centerY = (currentBlockY << 1) + localY
   val leftX = Mux(centerX === 0.U, centerX, centerX - 1.U)
   val rightX = Mux(centerX + 1.U >= cellsX, centerX, centerX + 1.U)
-  val upY = Mux(centerY === 0.U, centerY, centerY - 1.U)
-  val downY = Mux(centerY + 1.U >= cellsY, centerY, centerY + 1.U)
+  val stripeBaseCellY = (centerY >> stripeCellShift) << stripeCellShift
+  val stripeEndCandidate = stripeBaseCellY + stripeCells.U
+  val stripeEndCellY = Mux(stripeEndCandidate < cellsY, stripeEndCandidate, cellsY)
+  val upY = Mux(centerY === stripeBaseCellY, centerY, centerY - 1.U)
+  val downY = Mux(centerY + 1.U >= stripeEndCellY, centerY, centerY + 1.U)
 
   private def cellAt(x: UInt, y: UInt): UInt = {
     val index = y * cellsX + x

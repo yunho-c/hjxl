@@ -419,7 +419,7 @@ class AqContrastSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
-  "FrameAqContrastTraceStage keeps one global cell grid across a 64-pixel tile boundary" in {
+  "FrameAqContrastTraceStage keeps one horizontal cell grid across a 64-pixel tile boundary" in {
     requireReferenceTools()
     val width = 65
     val height = 1
@@ -467,6 +467,58 @@ class AqContrastSpec extends AnyFreeSpec with Matchers with ChiselSim {
       dut.io.trace.valid.expect(false.B)
       dut.io.busy.expect(false.B)
       dut.io.overflow.expect(false.B)
+    }
+  }
+
+  "FrameAqContrastTraceStage clamps vertical neighborhoods at the 64-row stripe boundary" in {
+    requireReferenceTools()
+    val width = 65
+    val height = 65
+    val (rgb, expectedRows) = generateFixture("gradient", width, height)
+    expectedRows.length mustBe 18 * 18
+
+    simulate(new FrameAqContrastTraceStage(HjxlConfig(maxFrameWidth = 72, maxFrameHeight = 72))) {
+      dut =>
+        dut.io.input.valid.poke(false.B)
+        dut.io.trace.ready.poke(true.B)
+        pokeConfig(dut, width, height)
+        dut.clock.step()
+
+        for (row <- rgb) {
+          dut.io.input.valid.poke(true.B)
+          dut.io.input.bits.x.poke(row.x.U)
+          dut.io.input.bits.y.poke(row.y.U)
+          dut.io.input.bits.r.poke(row.r.S)
+          dut.io.input.bits.g.poke(row.g.S)
+          dut.io.input.bits.b.poke(row.b.S)
+          dut.io.input.ready.expect(true.B)
+          dut.clock.step()
+        }
+        dut.io.input.valid.poke(false.B)
+
+        for ((expected, outputIndex) <- expectedRows.zipWithIndex) {
+          var waitCycles = 0
+          while (dut.io.trace.valid.peekValue().asBigInt == 0 && waitCycles < 24) {
+            dut.clock.step()
+            waitCycles += 1
+          }
+          withClue(s"stripe-boundary AQ contrast output $outputIndex") {
+            waitCycles must be < 24
+            dut.io.trace.bits.stage.expect(TraceStage.AqContrast.U)
+            dut.io.trace.bits.index.expect(outputIndex.U)
+            dut.io.traceLast.expect((outputIndex == expectedRows.length - 1).B)
+            expected.cellX mustBe outputIndex % 18
+            expected.cellY mustBe outputIndex / 18
+            val actual = dut.io.trace.bits.value.peekValue().asBigInt
+            val error = (actual - expected.referenceQ16).abs
+            val allowed = (expected.referenceQ16 / 50).max(BigInt(1 << 15))
+            error must be <= allowed
+          }
+          dut.clock.step()
+        }
+        dut.io.trace.valid.expect(false.B)
+        dut.io.busy.expect(false.B)
+        dut.io.overflow.expect(false.B)
     }
   }
 }

@@ -297,9 +297,9 @@ class AqGammaRatioQ16(inputBits: Int = 16) extends Module {
 /** Buffers approximate XYB from one RGB frame and emits Q16 AQ contrast cells.
   *
   * Each output is the quarter-resolution `pre_erosion` value for one 4x4 pixel
-  * cell, in row-major order over the block-padded frame. The global grid keeps
-  * tile-halo duplication out of storage; a later fuzzy-erosion scheduler can
-  * address neighboring cells when traversing 64x64 tiles.
+  * cell, in row-major order over the block-padded frame. Horizontal tile halos
+  * share the global grid, while vertical neighborhoods clamp at each 64-pixel
+  * AC-group stripe boundary to match libjxl-tiny's 256x64 stripe conversion.
   */
 class FrameAqContrastTraceStage(
     c: HjxlConfig = HjxlConfig(),
@@ -309,6 +309,8 @@ class FrameAqContrastTraceStage(
 
   private val cellDim = 4
   private val samplesPerCell = cellDim * cellDim
+  private val stripeDim = HjxlConstants.TileDim
+  private val stripeShift = log2Ceil(stripeDim)
   private val numPixels = c.maxFrameWidth * c.maxFrameHeight
   private val frameIndexBits = log2Ceil(numPixels)
   private val frameCountBits = log2Ceil(numPixels + 1)
@@ -414,8 +416,11 @@ class FrameAqContrastTraceStage(
   val sampleY = (cellBaseY + localY)(heightBits - 1, 0)
   val leftX = Mux(sampleX === 0.U, sampleX, sampleX - 1.U)
   val rightX = Mux(sampleX + 1.U >= paddedWidth, sampleX, sampleX + 1.U)
-  val upY = Mux(sampleY === 0.U, sampleY, sampleY - 1.U)
-  val downY = Mux(sampleY + 1.U >= paddedHeight, sampleY, sampleY + 1.U)
+  val stripeBaseY = (sampleY >> stripeShift) << stripeShift
+  val stripeEndCandidate = stripeBaseY + stripeDim.U
+  val stripeEndY = Mux(stripeEndCandidate < paddedHeight, stripeEndCandidate, paddedHeight)
+  val upY = Mux(sampleY === stripeBaseY, sampleY, sampleY - 1.U)
+  val downY = Mux(sampleY + 1.U >= stripeEndY, sampleY, sampleY + 1.U)
 
   private def frameSample(samples: Vec[SInt], paddedX: UInt, paddedY: UInt): SInt = {
     val sourceX = Mux(paddedX >= latchedWidth, latchedWidth - 1.U, paddedX)

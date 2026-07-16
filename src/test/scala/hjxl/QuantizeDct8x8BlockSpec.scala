@@ -102,9 +102,7 @@ class QuantizeDct8x8BlockSpec extends AnyFreeSpec with Matchers with ChiselSim {
   ): (Seq[Int], Seq[Int], Int) = {
     val base = if (channel == 2) BigInt(1) << QuantizeDct8x8Block.CflFactorFractionBits else BigInt(0)
     val cflFactorQ16 =
-      base +
-        (BigInt(cflMultiplier) * (BigInt(1) << QuantizeDct8x8Block.CflFactorFractionBits)) /
-        BigInt(QuantizeDct8x8Block.ColorFactorDenominator)
+      base + AcStrategyCostTables.CflFactorDeltaQ16(cflMultiplier & 0xff)
     val residual = coefficients.zip(reconstructedY).map { case (coefficient, y) =>
       val predicted = (cflFactorQ16 * BigInt(y)) >> QuantizeDct8x8Block.CflFactorFractionBits
       (BigInt(coefficient) - predicted).toInt

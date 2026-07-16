@@ -496,9 +496,12 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
       }
       dut.io.input.valid.poke(false.B)
 
+      val blockCount = ((width + HjxlConstants.BlockDim - 1) / HjxlConstants.BlockDim) *
+        ((height + HjxlConstants.BlockDim - 1) / HjxlConstants.BlockDim)
+      val maxCycles = 250000 + blockCount * 5000
       var cycles = 0
       var finished = false
-      while (!finished && cycles < 200000) {
+      while (!finished && cycles < maxCycles) {
         val ready = cycles % 5 != 2
         dut.io.trace.ready.poke(ready.B)
         if (dut.io.trace.valid.peek().litToBoolean && ready) {
@@ -514,7 +517,7 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
         dut.clock.step()
         cycles += 1
       }
-      withClue(s"nonzero-AC $pattern RGB VarDCT completion wait: ") {
+      withClue(s"nonzero-AC $fixtureLabel RGB VarDCT completion wait: ") {
         finished mustBe true
       }
       dut.io.overflow.expect(false.B)
@@ -706,6 +709,33 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
       inputImage = Some(image),
       cropX = 96,
       cropY = 96
+    )
+  }
+
+  "a two-dimensional multi-tile real-image crop assembles to the native codestream" in {
+    val image = libjxlTinyRoot.resolve("test-images/tesla-256x256.jpg")
+    withClue(s"missing pinned libjxl-tiny image fixture: $image") {
+      Files.isRegularFile(image) mustBe true
+    }
+    verifyRgbCodestream(
+      pattern = "image",
+      expectedStrategyValues = Seq(
+        5, 4, 1, 1, 3, 3, 3, 1, 1,
+        1, 1, 5, 4, 2, 2, 2, 1, 1,
+        5, 4, 5, 4, 5, 4, 1, 1, 1,
+        5, 4, 5, 4, 5, 4, 1, 1, 1,
+        5, 4, 5, 4, 5, 4, 5, 4, 1,
+        5, 4, 5, 4, 1, 1, 5, 4, 1,
+        5, 4, 5, 4, 3, 3, 3, 1, 1,
+        5, 4, 5, 4, 2, 2, 2, 1, 1,
+        1, 1, 1, 1, 1, 1, 1, 1, 1
+      ),
+      expectedCodestreamBytes = 2113,
+      width = 65,
+      height = 65,
+      inputImage = Some(image),
+      cropX = 64,
+      cropY = 64
     )
   }
 
