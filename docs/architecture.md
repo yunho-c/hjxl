@@ -257,15 +257,19 @@ owned by the host tools for now.
   kernel for the current 8x8 and rectangular transform stages.
 - `Dct8x8Approx` composes the 1D kernel into libjxl-tiny's scaled 8x8 DCT
   coefficient layout. It applies the 1/8 scale after each dimension and emits
-  the transposed canonical order consumed by later quantization work.
+  the transposed canonical order consumed by later quantization work. Optional
+  internal guard bits promote the input and transform constants, preserve
+  intermediate multiply precision through both dimensions, then round once
+  away from zero at the caller's output scale. The default remains zero guard
+  bits.
 - `Dct16Approx` extends the same precision-parameterized recursive kernel to 16
   samples.
   `Dct16x8Approx` and `Dct8x16Approx` apply the correct 1/16 and 1/8
   per-dimension scales and emit libjxl-tiny's canonical 8x16 coefficient
   layouts. The vertical transform is intentionally transposed; the horizontal
-  transform is not. These are combinational reusable primitives for both
-  strategy scoring and prepared variable-shape quantization, not frame
-  schedulers.
+  transform is not. They expose the same optional guard scale as the 8x8 block.
+  These are combinational reusable primitives for both strategy scoring and
+  prepared variable-shape quantization, not frame schedulers.
 - `AcStrategyDecisionSelector` implements the exact decision-only tail of
   `find_best_16x16_transform`: aggregate orientation comparison, horizontal
   tie selection, strict subregion replacement, and raster first/continuation
@@ -877,11 +881,14 @@ wrappers.
   that boundary from the shared RGB final-AQ/DCT block source; the focused core
   route therefore uses one RGB-to-XYB conversion and three ordinary DCTs.
   `FrameAqAdjustedRawQuantTraceStage` exposes the sideband as raw-quant traces.
-  The selected-owner composition can optionally buffer a higher-precision
-  coefficient sideband for CFL fitting, candidate scoring, and quantization.
-  The live VarDCT route obtains both precisions from one converter and uses Q16
-  throughout those downstream operations; prepared Q12 strategy users retain
-  their original interface and decisions.
+  The selected-owner composition can optionally buffer higher-precision XYB
+  and ordinary-DCT sidebands. The live VarDCT route obtains both Q12 and Q16
+  from one converter. Quantization consumes the established Q16 DCT, while CFL
+  fitting and candidate scoring recompute one shared three-channel analysis DCT
+  from stored Q16 XYB with eight guard bits and round only once back to Q16.
+  Guarded rectangular transforms are used only for candidate scoring; selected-
+  owner quantization keeps the established Q16 transform. Prepared Q12 strategy
+  users retain their original zero-guard interface and decisions.
 - `tools/hjxl_reference.py --scaled-dct-q12-csv ...` writes signed Q12 DCT-16,
   16x8, and 8x16 inputs beside independent libjxl-tiny coefficients and the
   exact integer transform model. The axis ramps guard the two different
@@ -902,9 +909,9 @@ wrappers.
   AC group. `--var-dct-frame-bin ...` and `--var-dct-codestream-bin ...`
   serialize those same arrays. `--quantize-input-q8` first rounds the generated
   fixture onto the signed-Q8 RTL input grid so the native oracle and hardware
-  consume identical samples. The 16x16 impulse and gradient regressions use
-  this seam to prove exact nonzero DC/strategy/metadata/AC traces and 197-byte
-  and 230-byte codestream parity respectively.
+  consume identical samples. The 16x16 impulse, gradient, and checkerboard
+  regressions use this seam to prove exact nonzero DC/strategy/metadata/AC
+  traces and 197-byte, 230-byte, and 256-byte codestream parity respectively.
 - `tools/hjxl_reference.py --default-ac-strategy-npy ...` writes the matching
   default DCT-first strategy map.
 - `tools/hjxl_reference.py --raw-quant-field-npy ...`,

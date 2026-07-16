@@ -215,7 +215,16 @@ class FrameAqDctBlockStage(
   }
 
   val precisionDcts = if (includeQuantizationPrecision) {
-    Some(Seq.fill(3)(Module(new Dct8x8Approx(c, quantizationFractionBits))))
+    Some(
+      Seq.fill(3)(
+        Module(
+          new Dct8x8Approx(
+            c,
+            coefficientFractionBits = quantizationFractionBits
+          )
+        )
+      )
+    )
   } else {
     None
   }

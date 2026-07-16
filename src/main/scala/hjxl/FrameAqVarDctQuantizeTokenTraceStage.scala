@@ -10,9 +10,10 @@ import chisel3.util._
   * Continuation cells are consumed without producing an owner. First cells
   * reuse the stored ordinary DCT coefficients or recompute the selected
   * rectangular transform from the two covered XYB blocks. The live RGB route
-  * supplies Q16 quantization sidebands while keeping Q12 strategy scoring;
-  * prepared Q12 users retain the original compact interface. Adaptive raw
-  * quantization uses a reciprocal matched to the post-strategy maximum.
+  * supplies Q16 quantization sidebands while the strategy scheduler owns its
+  * independent analysis precision; prepared Q12 users retain the original
+  * compact interface. Adaptive raw quantization uses a reciprocal matched to
+  * the post-strategy maximum.
   */
 class AcStrategySelectedCellToVarDctOwnerStage(
     c: HjxlConfig = HjxlConfig(),
@@ -158,7 +159,8 @@ class AcStrategySelectedCellToVarDctOwnerStage(
 /** Prepared AQ/strategy search directly composed with VarDCT logical tokens. */
 class FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
     c: HjxlConfig = HjxlConfig(),
-    coefficientFractionBits: Int = Dct8Approx.FractionBits
+    coefficientFractionBits: Int = Dct8Approx.FractionBits,
+    analysisDctGuardBits: Int = 0
 ) extends Module {
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
@@ -172,7 +174,13 @@ class FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
     val unsupportedDistance = Output(Bool())
   })
 
-  val strategy = Module(new FramePreparedAcStrategyTraceStage(c, coefficientFractionBits))
+  val strategy = Module(
+    new FramePreparedAcStrategyTraceStage(
+      c,
+      coefficientFractionBits,
+      analysisDctGuardBits = analysisDctGuardBits
+    )
+  )
   val owners = Module(new AcStrategySelectedCellToVarDctOwnerStage(c, coefficientFractionBits))
   val tokens = Module(
     new FramePreparedVarDctQuantizeTokenTraceStage(
@@ -236,7 +244,8 @@ class FrameAqVarDctQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig())
   val composed = Module(
     new FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
       c,
-      coefficientFractionBits = quantizationCoefficientFractionBits
+      coefficientFractionBits = quantizationCoefficientFractionBits,
+      analysisDctGuardBits = 8
     )
   )
   val distanceStatus = Module(new DistanceParamsLookup)

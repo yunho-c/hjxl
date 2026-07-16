@@ -1,10 +1,9 @@
 # HJXL quality assessment — 2026-07-12
 
-> Consolidated review refreshed through 2026-07-15 at commit `d6915b8`
-> (`feat: improve RGB VarDCT scoring precision`). The filename preserves the
-> original requested assessment date. Seven unrelated, uncommitted RTL/test
-> paths present at review time are excluded from claims about the committed
-> baseline.
+> Consolidated review refreshed through 2026-07-16. Commit `51894ae`
+> (`docs: consolidate project quality assessment`) established the compact
+> baseline; this revision includes the guarded-analysis-DCT checkerboard parity
+> follow-up. The filename preserves the original requested assessment date.
 
 ## Executive summary
 
@@ -15,7 +14,7 @@ engineered than its current product completeness might suggest.
 
 It is not yet a complete JPEG XL encoder or a demonstrated FPGA accelerator.
 The most reliable path begins with host-prepared DCT coefficients; the most
-complete RGB path reaches adaptive DCT/16x8/8x16 logical tokens, but only two
+complete RGB path reaches adaptive DCT/16x8/8x16 logical tokens, but only three
 small nonzero images have exact end-to-end token and codestream parity. Final
 entropy optimization and bitstream assembly remain in host software. More
 importantly, no Vivado synthesis, utilization, timing, power, place-and-route,
@@ -52,7 +51,8 @@ care in the code already present.
 
 ## Scope and method
 
-This review covered the committed tree at `d6915b8`, including:
+This review covers the current implementation through the guarded-analysis-DCT
+checkerboard follow-up, including:
 
 - repository history, worktree state, build definitions, CI, ignore rules,
   license, and generated-file policy;
@@ -72,10 +72,10 @@ Snapshot size at the reviewed commit:
 
 | Area | Files | Lines |
 | --- | ---: | ---: |
-| Main Scala/Chisel | 70 | 17,810 |
-| Scala tests | 72 | 28,629 |
+| Main Scala/Chisel | 70 | 17,948 |
+| Scala tests | 72 | 28,654 |
 | Python host/oracle tools | 18 | 14,708 |
-| `README.md`, `docs/architecture.md`, and `AGENTS.md` | 3 | 4,396 |
+| `README.md`, `docs/architecture.md`, and `AGENTS.md` | 3 | 4,416 |
 
 The test-to-RTL ratio is a genuine strength. It also shows where complexity has
 moved: the host/oracle layer is nearly as large as the RTL, and the test layer
@@ -163,10 +163,12 @@ final file was produced.
    say nothing about DSP mapping, critical paths, fanout, or routing.
 
 4. **Focused routes trade area for verification convenience.** The RGB VarDCT
-   path carries both Q12 and Q16 precision, stores frame data, evaluates eight
+   path carries Q12 and Q16 precision, stores frame data, evaluates eight
    strategy candidates, recomputes selected rectangular transforms, and feeds
-   variable-shape quantization/tokenization. This is defensible for parity
-   closure but should be treated as an experiment, not the final physical
+   variable-shape quantization/tokenization. Its analysis-only guard-bit DCT
+   fixes checkerboard CFL/scoring without perturbing quantization, but adds
+   three more transform specializations. This is defensible for parity closure
+   and should still be treated as an experiment, not the final physical
    organization.
 
 5. **Route selection has two overlapping mechanisms.** Compile-time
@@ -253,7 +255,7 @@ is not complete.
 | CFL | Fixed, prepared-estimated, and RGB-estimated paths | Exact fixed-model checks; small bounded native differences |
 | AC strategy | DCT, 16x8, and 8x16 selection implemented | Exact integer model; some float-boundary sensitivity |
 | DCT/VarDCT quantization | Ordinary and two rectangular shapes implemented | Exact prepared fixed-model checks; RGB precision gaps remain |
-| DC, strategy, metadata, and AC logical tokens | Implemented for prepared and focused RGB paths | Strong exact prepared oracles; two exact nonzero RGB fixtures |
+| DC, strategy, metadata, and AC logical tokens | Implemented for prepared and focused RGB paths | Strong exact prepared oracles; three exact nonzero RGB fixtures |
 | Entropy optimization | Host only | Reuses `libjxl-tiny` |
 | Frame/codestream assembly | Host only | Exact byte checks for constrained fixtures |
 | Full JPEG XL feature surface | Intentionally out of scope | Lossless, alpha, broad boxes/metadata absent |
@@ -268,14 +270,13 @@ is not complete.
 - Prepared variable-shape tests cover DCT, 16x8, and 8x16 ownership,
   continuation suppression, two-cell DC/prediction semantics, rectangular
   scans, and exact native logical-token arrays.
-- The focused RGB VarDCT route has two exact 16x16 signed-Q8 nonzero cases at
-  distance 1: an impulse with a 197-byte codestream and a gradient with a
-  230-byte codestream. Every DC/strategy/metadata/AC row matches the oracle.
+- The focused RGB VarDCT route has three exact 16x16 signed-Q8 nonzero cases at
+  distance 1: an impulse with a 197-byte codestream, a gradient with a 230-byte
+  codestream, and a checkerboard with a 256-byte codestream. Every
+  DC/strategy/metadata/AC row matches the oracle.
 
 ### Current parity frontier
 
-- A checkerboard now agrees on strategy and DC but estimates Y-to-X CFL as
-  `-18` instead of native `-17`.
 - A deterministic random fixture first differs in three DC residuals.
 - These are narrow fixed-point boundary issues, but they prove that broad RGB
   parity has not been reached.
@@ -292,7 +293,7 @@ Verification is the best-developed part of the repository.
 
 ### Strong evidence
 
-- The reviewed baseline records **85 suites and 345 tests** passing under both
+- The reviewed candidate records **85 suites and 347 tests** passing under both
   sbt and Mill, with zero failures, errors, cancellations, ignored, or pending
   tests. Running both build systems catches build-definition drift, though it
   roughly doubles CI cost.
@@ -441,11 +442,13 @@ expansion. They do not include AXI-Lite setup, DMA, memory traffic, clock
 crossings, host assembly, or an achieved clock.
 
 The frozen KV260 top currently elaborates to 19 SystemVerilog files and 14,465
-lines. The focused RGB VarDCT route is far larger: the reviewed evidence records
-64 files/135,394 lines for the standalone hierarchy and 66 files/135,565 lines
-for its AXI-stream shell. Line counts are only complexity indicators, but they
-strongly justify synthesizing the smaller prepared top before expanding the
-physical target.
+lines. The focused RGB VarDCT route is far larger: fresh guarded-analysis
+elaboration records 67 files/146,380 lines for the standalone hierarchy and 69
+files/146,551 lines for its AXI-stream shell. The three new specializations are
+the scoring-only 8x8, 16x8, and 8x16 transforms; quantization keeps its prior
+Q16 transforms. Line counts are only complexity indicators, but they strongly
+justify synthesizing the smaller prepared top before expanding the physical
+target.
 
 [`fpga/vivado/synth.tcl`](../fpga/vivado/synth.tcl) and the XDC establish a
 reasonable first gate: K26/KV260 identity, 200 MHz, 0.2 ns uncertainty, 1 ns
@@ -471,8 +474,8 @@ outside simulation.
    cache-coherency rules, timeout/error recovery, repeat-frame operation, and a
    host program that captures traces and reconstructs a checked codestream.
 3. **Keep completeness claims tied to exact evidence.** Do not generalize the
-   two exact 16x16 RGB fixtures into broad RGB parity. Close checkerboard CFL
-   and random DC at the earliest mismatching stage, then expand the corpus.
+   three exact 16x16 RGB fixtures into broad RGB parity. Close the random DC
+   mismatch at the earliest divergent operation, then expand the corpus.
 
 ### P1 — Architecture and maintainability
 
@@ -518,20 +521,21 @@ outside simulation.
 
 ## Verification performed for this assessment
 
-The exact functional baseline at `d6915b8` had already completed the full gate
-immediately before this review:
+The guarded-analysis-DCT candidate following `51894ae` completed the full gate
+on 2026-07-15/16:
 
-- `sbt test`: 85 suites, 345 tests, all passed in 2,020 seconds;
-- `HJXL_REPO_ROOT=$PWD ./mill --no-server -j 2 hjxl.test`: the same 85 suites
-  and 345 tests, all passed in 2,039 seconds;
-- exact 197-byte impulse and 230-byte gradient RGB VarDCT codestream checks;
+- `sbt test`: 85 suites, 347 tests, all passed in 1,374 seconds;
+- `HJXL_REPO_ROOT=$PWD ./mill --no-server -j 2 hjxl.test`: all 85 suites and
+  347 tests passed in 1,311 seconds; the generated JUnit report records zero
+  failures, errors, or skipped tests;
+- exact 197-byte impulse, 230-byte gradient, and 256-byte checkerboard RGB
+  VarDCT codestream checks;
 - focused primitive, prepared-DCT, variable-shape, core, AXI, discovery,
   elaboration, host-tool, and throughput checks described above.
 
-For this consolidated assessment, the following checks were rerun on
-2026-07-15:
+The following ancillary checks were also run on that candidate:
 
-- `git diff --check` — passed before the documentation edit;
+- `git diff --check` — passed before the final documentation refresh;
 - `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/*.py` — passed;
 - `python3 tools/hjxl_generate_abi.py --check` — generated bindings current;
 - `PYTHONDONTWRITEBYTECODE=1 python3 tools/hjxl_host_metadata_smoke.py` — passed;
@@ -539,8 +543,8 @@ For this consolidated assessment, the following checks were rerun on
 - `tclsh fpga/vivado/synth.tcl --preflight-only` — passed with 19 RTL files.
 
 Java 21 and Verilator 5.048 were available. Vivado, Vitis, and Yosys were not
-found. The full Scala suites were not repeated solely for a documentation-only
-change; the recorded dual-build results apply to the exact reviewed commit.
+found. The full dual-build results apply to the exact implementation and
+documentation candidate described here.
 
 No claim is made about synthesis, timing closure, resource use, power,
 place-and-route, bitstream generation, DMA operation, or KV260 execution.
@@ -556,7 +560,7 @@ The next major quality gain will not come from another broad set of trace
 wrappers. It will come from using the frozen prepared-DCT top to obtain the
 first real synthesis and board evidence, then redesigning the frame-scaled
 structures that the reports identify. In parallel, parity work should remain
-trace-first and grow from the two exact RGB fixtures into a varied corpus.
+trace-first and grow from the three exact RGB fixtures into a varied corpus.
 
 Until those milestones are reached, the most accurate description is:
 **a high-quality verification scaffold and partial JPEG XL RTL implementation,

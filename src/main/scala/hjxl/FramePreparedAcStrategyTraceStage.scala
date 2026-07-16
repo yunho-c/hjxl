@@ -98,15 +98,17 @@ class PreparedAcStrategySelectedCell(
   * 64x64 tile from ordinary-DCT coefficients, then visits tile-local 2x2 block
   * regions in libjxl-tiny order. Every region feeds four 8x8, two 16x8, and two
   * 8x16 candidates through `PreparedAcStrategy2x2Selector`. When a higher
-  * precision sideband is present, CFL, candidate scoring, and selected-owner
-  * quantization all consume that common scale. Incomplete rows or columns at
-  * tile edges remain ordinary DCT, matching the reference loop. A final raster
-  * pass raises both raw-quant bytes in each selected rectangle to their maximum
-  * and emits that byte beside the strategy trace.
+  * precision sideband is present, selected-owner quantization consumes its
+  * stored DCT while an optional guard-bit analysis transform recomputes DCTs
+  * from the matching XYB for CFL and candidate scoring. Incomplete rows or
+  * columns at tile edges remain ordinary DCT, matching the reference loop. A
+  * final raster pass raises both raw-quant bytes in each selected rectangle to
+  * their maximum and emits that byte beside the strategy trace.
   */
 class FramePreparedAcStrategyTraceStage(
     c: HjxlConfig = HjxlConfig(),
-    quantizationCoefficientFractionBits: Int = Dct8Approx.FractionBits
+    quantizationCoefficientFractionBits: Int = Dct8Approx.FractionBits,
+    analysisDctGuardBits: Int = 0
 ) extends Module {
   private val blockDim = HjxlConstants.BlockDim
   private val blockSize = blockDim * blockDim
@@ -334,6 +336,21 @@ class FramePreparedAcStrategyTraceStage(
   val cflBlockY = tileBaseBlockY + localBlockY
   val cflBlockIndex = cflBlockY * xBlocks + cflBlockX
   val cflCoefficientIndexSafe = cflCoefficientIndex(log2Ceil(blockSize) - 1, 0)
+  val regionBlockX = tileBaseBlockX + regionX
+  val regionBlockY = tileBaseBlockY + regionY
+  val topLeftBlock = regionBlockY * xBlocks + regionBlockX
+  val topRightBlock = topLeftBlock + 1.U
+  val bottomLeftBlock = topLeftBlock + xBlocks
+  val bottomRightBlock = bottomLeftBlock + 1.U
+  val dctCandidateBlock = MuxLookup(candidateIndex, topLeftBlock)(
+    Seq(
+      0.U -> topLeftBlock,
+      1.U -> topRightBlock,
+      2.U -> bottomLeftBlock,
+      3.U -> bottomRightBlock
+    )
+  )
+  val analysisDctBlock = Mux(state === cflStreaming, cflBlockIndex, dctCandidateBlock)
 
   private val quantizationToQ16Shift = 16 - quantizationCoefficientFractionBits
 
@@ -351,14 +368,57 @@ class FramePreparedAcStrategyTraceStage(
       sumBits = estimatorSumBits
     )
   )
-  cflEstimator.io.input.valid := state === cflStreaming && tileSampleCount =/= 0.U
+  val analysisPrecisionDcts =
+    if (analysisDctGuardBits > 0) {
+      Some(
+        Seq.fill(3)(
+          Module(
+            new Dct8x8Approx(
+              c,
+              coefficientFractionBits = quantizationCoefficientFractionBits,
+              internalGuardBits = analysisDctGuardBits
+            )
+          )
+        )
+      )
+    } else {
+      None
+    }
+  val cflDctActive = state === cflStreaming && tileSampleCount =/= 0.U
+  val candidateDctActive =
+    state === feedCandidates && candidateIndex < 4.U
+  val analysisDctActive = cflDctActive || candidateDctActive
+  val analysisDctReady = WireDefault(false.B)
+  analysisPrecisionDcts.foreach { dcts =>
+    for (channel <- 0 until 3) {
+      dcts(channel).io.input.valid := analysisDctActive
+      dcts(channel).io.output.ready := analysisDctReady
+      for (sample <- 0 until blockSize) {
+        dcts(channel).io.input.bits(sample) :=
+          storedQuantizationXyb(analysisDctBlock, channel, sample)
+      }
+    }
+  }
+  val analysisDctValid =
+    analysisPrecisionDcts.map(_.map(_.io.output.valid).reduce(_ && _)).getOrElse(true.B)
+
+  private def analysisDctCoefficient(
+      block: UInt,
+      channel: Int,
+      coefficient: UInt
+  ): SInt =
+    analysisPrecisionDcts
+      .map(_(channel).io.output.bits(coefficient))
+      .getOrElse(storedQuantizationDct(block, channel, coefficient))
+
+  cflEstimator.io.input.valid := cflDctActive && analysisDctValid
   cflEstimator.io.input.bits.coefficientIndex := cflCoefficientIndexSafe
   cflEstimator.io.input.bits.yCoeffQ16 :=
-    coefficientQ16(storedQuantizationDct(cflBlockIndex, 1, cflCoefficientIndexSafe))
+    coefficientQ16(analysisDctCoefficient(cflBlockIndex, 1, cflCoefficientIndexSafe))
   cflEstimator.io.input.bits.xCoeffQ16 :=
-    coefficientQ16(storedQuantizationDct(cflBlockIndex, 0, cflCoefficientIndexSafe))
+    coefficientQ16(analysisDctCoefficient(cflBlockIndex, 0, cflCoefficientIndexSafe))
   cflEstimator.io.input.bits.bCoeffQ16 :=
-    coefficientQ16(storedQuantizationDct(cflBlockIndex, 2, cflCoefficientIndexSafe))
+    coefficientQ16(analysisDctCoefficient(cflBlockIndex, 2, cflCoefficientIndexSafe))
   cflEstimator.io.input.bits.last := tileSampleOrdinal === tileSampleCount - 1.U
   cflEstimator.io.output.ready := state === cflWaiting
 
@@ -403,31 +463,28 @@ class FramePreparedAcStrategyTraceStage(
     }
   }
 
-  val regionBlockX = tileBaseBlockX + regionX
-  val regionBlockY = tileBaseBlockY + regionY
-  val topLeftBlock = regionBlockY * xBlocks + regionBlockX
-  val topRightBlock = topLeftBlock + 1.U
-  val bottomLeftBlock = topLeftBlock + xBlocks
-  val bottomRightBlock = bottomLeftBlock + 1.U
-  val dctCandidateBlock = MuxLookup(candidateIndex, topLeftBlock)(
-    Seq(
-      0.U -> topLeftBlock,
-      1.U -> topRightBlock,
-      2.U -> bottomLeftBlock,
-      3.U -> bottomRightBlock
-    )
-  )
-
   val verticalTopBlock = Mux(candidateIndex(0), topRightBlock, topLeftBlock)
   val verticalBottomBlock = Mux(candidateIndex(0), bottomRightBlock, bottomLeftBlock)
   val horizontalLeftBlock = Mux(candidateIndex(0), bottomLeftBlock, topLeftBlock)
   val horizontalRightBlock = Mux(candidateIndex(0), bottomRightBlock, topRightBlock)
 
   val verticalDct = Seq.fill(3)(
-    Module(new Dct16x8Approx(c, quantizationCoefficientFractionBits))
+    Module(
+      new Dct16x8Approx(
+        c,
+        quantizationCoefficientFractionBits,
+        internalGuardBits = analysisDctGuardBits
+      )
+    )
   )
   val horizontalDct = Seq.fill(3)(
-    Module(new Dct8x16Approx(c, quantizationCoefficientFractionBits))
+    Module(
+      new Dct8x16Approx(
+        c,
+        quantizationCoefficientFractionBits,
+        internalGuardBits = analysisDctGuardBits
+      )
+    )
   )
   for (channel <- 0 until 3) {
     verticalDct(channel).io.input.valid :=
@@ -460,8 +517,13 @@ class FramePreparedAcStrategyTraceStage(
   val horizontalValid = horizontalDct.map(_.io.output.valid).reduce(_ && _)
   val selectedCoefficientsValid = Mux(
     candidateIndex < 4.U,
-    true.B,
+    analysisDctValid,
     Mux(candidateIndex < 6.U, verticalValid, horizontalValid)
+  )
+  analysisDctReady := Mux(
+    cflDctActive,
+    cflEstimator.io.input.ready,
+    selector.io.input.ready && candidateDctActive
   )
   selector.io.input.valid := state === feedCandidates && selectedCoefficientsValid
   selector.io.input.bits.strategy := Mux(
@@ -502,7 +564,7 @@ class FramePreparedAcStrategyTraceStage(
   for (channel <- 0 until 3; coefficient <- 0 until 128) {
     val dctValue =
       if (coefficient < blockSize) {
-        storedQuantizationDct(dctCandidateBlock, channel, coefficient.U)
+        analysisDctCoefficient(dctCandidateBlock, channel, coefficient.U)
       } else {
         0.S(c.traceValueBits.W)
       }

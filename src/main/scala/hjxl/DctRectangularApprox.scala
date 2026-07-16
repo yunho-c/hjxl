@@ -11,13 +11,16 @@ import chisel3.util._
   * The input is raster ordered at `pixelRows` by `pixelColumns`. Both supported
   * shapes emit 128 coefficients in the reference's canonical 8x16 layout:
   * a 16x8 pixel transform is transposed to `(xFrequency, yFrequency)`, while an
-  * 8x16 pixel transform remains `(yFrequency, xFrequency)`.
+  * 8x16 pixel transform remains `(yFrequency, xFrequency)`. Optional internal
+  * guard bits preserve intermediate multiply precision and are rounded away
+  * only after both transform dimensions.
   */
 class DctRectangularApprox(
     pixelRows: Int,
     pixelColumns: Int,
     c: HjxlConfig = HjxlConfig(),
-    coefficientFractionBits: Int = Dct8Approx.FractionBits
+    coefficientFractionBits: Int = Dct8Approx.FractionBits,
+    internalGuardBits: Int = 0
 ) extends Module {
   require(
     (pixelRows == 16 && pixelColumns == 8) ||
@@ -26,6 +29,10 @@ class DctRectangularApprox(
   )
 
   private val sampleCount = pixelRows * pixelColumns
+  private val internalFractionBits = coefficientFractionBits + internalGuardBits
+
+  require(internalGuardBits >= 0, "DCT internal guard-bit count cannot be negative")
+  require(internalFractionBits < 29, "DCT internal coefficient precision must fit Int")
 
   val io = IO(new Bundle {
     val input = Flipped(Decoupled(Vec(sampleCount, SInt(c.traceValueBits.W))))
@@ -34,15 +41,28 @@ class DctRectangularApprox(
 
   private def transform(values: Seq[SInt]): Seq[SInt] =
     values.length match {
-      case 8  => Dct8Approx.dct8(values, c.traceValueBits, coefficientFractionBits)
-      case 16 => Dct16Approx.dct16(values, c.traceValueBits, coefficientFractionBits)
+      case 8 =>
+        Dct8Approx.dct8(
+          values,
+          c.traceValueBits,
+          internalFractionBits
+        )
+      case 16 =>
+        Dct16Approx.dct16(
+          values,
+          c.traceValueBits,
+          internalFractionBits
+        )
       case length => throw new IllegalArgumentException(s"unsupported DCT dimension: $length")
     }
 
   private def scale(value: SInt, dimension: Int): SInt =
     Dct8Approx.fit(value >> log2Ceil(dimension), c.traceValueBits)
 
-  private def inputAt(y: Int, x: Int): SInt = io.input.bits(y * pixelColumns + x)
+  private def inputAt(y: Int, x: Int): SInt = {
+    val value = io.input.bits(y * pixelColumns + x)
+    if (internalGuardBits == 0) value else (value << internalGuardBits).asSInt
+  }
 
   val columnPass = Seq.tabulate(pixelColumns) { x =>
     transform((0 until pixelRows).map(y => inputAt(y, x))).map(scale(_, pixelRows))
@@ -56,21 +76,31 @@ class DctRectangularApprox(
   io.output.valid := io.input.valid
   if (pixelRows == 16) {
     for (xFrequency <- 0 until pixelColumns; yFrequency <- 0 until pixelRows) {
-      io.output.bits(xFrequency * pixelRows + yFrequency) := rowPass(yFrequency)(xFrequency)
+      io.output.bits(xFrequency * pixelRows + yFrequency) :=
+        Dct8Approx.roundShiftAwayFromZero(
+          rowPass(yFrequency)(xFrequency),
+          internalGuardBits
+        )
     }
   } else {
     for (yFrequency <- 0 until pixelRows; xFrequency <- 0 until pixelColumns) {
-      io.output.bits(yFrequency * pixelColumns + xFrequency) := rowPass(yFrequency)(xFrequency)
+      io.output.bits(yFrequency * pixelColumns + xFrequency) :=
+        Dct8Approx.roundShiftAwayFromZero(
+          rowPass(yFrequency)(xFrequency),
+          internalGuardBits
+        )
     }
   }
 }
 
 class Dct16x8Approx(
     c: HjxlConfig = HjxlConfig(),
-    coefficientFractionBits: Int = Dct8Approx.FractionBits
-) extends DctRectangularApprox(16, 8, c, coefficientFractionBits)
+    coefficientFractionBits: Int = Dct8Approx.FractionBits,
+    internalGuardBits: Int = 0
+) extends DctRectangularApprox(16, 8, c, coefficientFractionBits, internalGuardBits)
 
 class Dct8x16Approx(
     c: HjxlConfig = HjxlConfig(),
-    coefficientFractionBits: Int = Dct8Approx.FractionBits
-) extends DctRectangularApprox(8, 16, c, coefficientFractionBits)
+    coefficientFractionBits: Int = Dct8Approx.FractionBits,
+    internalGuardBits: Int = 0
+) extends DctRectangularApprox(8, 16, c, coefficientFractionBits, internalGuardBits)

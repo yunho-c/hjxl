@@ -117,4 +117,21 @@ class Dct8x8ApproxSpec extends AnyFreeSpec with Matchers with ChiselSim {
       )
     }
   }
+
+  "internal guard bits keep checkerboard Q16 coefficients within two LSBs after final rounding" in {
+    val q16Scale = 1 << 16
+    val checkerboardX = Seq.tabulate(blockSize) { index =>
+      val x = index % blockDim
+      val y = index / blockDim
+      if (((x + y) & 1) == 0) -1009 else 1681
+    }
+    simulate(
+      new Dct8x8Approx(
+        coefficientFractionBits = 16,
+        internalGuardBits = 8
+      )
+    ) { dut =>
+      expectBlock(dut, checkerboardX, q16Scale, tolerance = 2)
+    }
+  }
 }

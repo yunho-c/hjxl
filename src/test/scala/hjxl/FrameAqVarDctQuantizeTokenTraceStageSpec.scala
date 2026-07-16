@@ -562,6 +562,14 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     )
   }
 
+  "a nonzero-AC Q8 RGB checkerboard assembles to the native VarDCT codestream" in {
+    verifyRgbCodestream(
+      pattern = "checkerboard",
+      expectedStrategyValues = Seq(5, 4, 5, 4),
+      expectedCodestreamBytes = 256
+    )
+  }
+
   "the RGB route reaches every logical-token phase and drains before another frame" in {
     val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 16)
     simulate(new FrameAqVarDctQuantizeTokenTraceStage(config)) { dut =>

@@ -263,11 +263,15 @@ Read these libjxl-tiny files before making architectural changes:
 - `Dct8x8Approx` is the first block-level transform primitive. It uses
   `Dct8Approx` for both dimensions, applies libjxl-tiny's per-dimension 1/8
   scale, and emits the scaled 8x8 coefficient layout used before quantization.
+  Its optional `internalGuardBits` promotes input/constants through both
+  dimensions and rounds once away from zero on output; zero preserves the
+  existing prepared/quantization behavior.
 - `Dct16Approx` is the matching precision-parameterized recursive 16-point
   kernel.
   `Dct16x8Approx` and `Dct8x16Approx` implement libjxl-tiny's two rectangular
   transforms with their intentionally different canonical 8x16 layouts. Reuse
-  them for AC-strategy scoring and prepared rectangular quantization; do not
+  them for AC-strategy scoring and prepared rectangular quantization; they
+  expose the same optional internal guard scale as `Dct8x8Approx`. Do not
   duplicate their orientation logic in a scheduler. Use
   `tools/hjxl_reference.py --scaled-dct-q12-csv ...` for signed float-reference
   and exact fixed-model oracle cases.
@@ -305,24 +309,30 @@ Read these libjxl-tiny files before making architectural changes:
   first-block-owned prepared ABI. `FramePreparedAcStrategyVarDctQuantizeTokenTraceStage`
   composes prepared strategy search, ownership conversion, variable-shape
   quantization, and logical tokens. `FrameAqVarDctQuantizeTokenTraceStage`
-  supplies that path from the shared RGB AQ/DCT source. It retains Q12 for AQ,
-  but its optional Q16 XYB/DCT sideband must feed CFL estimation, all eight
-  strategy candidates, selected-owner rectangular transforms, and
-  quantization; do not collapse that sideband back to Q12, because transform
-  choice and low-frequency rounding can change tokens. The focused path must
-  use the shared converter's exact-Q12 tap plus its Q16 primary output and one
-  final-AQ-owned Q16 frame store, not parallel RGB converters. Use
+  supplies that path from the shared RGB AQ/DCT source. It retains Q12 for AQ
+  and captures Q16 XYB/DCT from the same converter. Quantization must keep the
+  established unguarded Q16 ordinary/selected-rectangle coefficients: applying
+  the analysis rounding change there breaks the exact gradient AC stream. CFL
+  and all eight strategy candidates instead use scheduler-local DCT
+  recomputation from stored Q16 XYB with eight internal guard bits; the three
+  8x8 analysis instances are reused across CFL blocks and ordinary candidates,
+  while scoring-only rectangular transforms use the same guard scale. Prepared
+  users default to zero guard bits. Do not collapse the sideband back to Q12 or
+  merge the analysis and quantization transforms without re-proving all exact
+  codestream fixtures. The focused path must use the shared converter's exact-
+  Q12 tap plus its Q16 primary output and one final-AQ-owned Q16 frame store,
+  not parallel RGB converters. Use
   `tools/hjxl_reference.py --strategy-var-dct-zero-fixture-dir ...` for the
   exact 2x2 zero-coefficient integration oracle. It proves ownership, adjusted
   bytes, continuation suppression, and native token order. Use the
   `--var-dct-*-tokens-npy`, `--var-dct-ac-strategy-npy`, and
   `--var-dct-codestream-bin` outputs for one-group searched-strategy end-to-end
   comparisons. Pass `--quantize-input-q8` so the native reference consumes the
-  same host-input samples as RTL. Exact-Q8 16x16 impulse and gradient fixtures
-  are the current nonzero DC/AC and 197-byte/230-byte codestream regressions;
-  they are not broad RGB parity evidence. Checkerboard currently differs first
-  by one Y-to-X CFL unit, while the deterministic random fixture differs first
-  in DC tokens.
+  same host-input samples as RTL. Exact-Q8 16x16 impulse, gradient, and
+  checkerboard fixtures are the current nonzero DC/AC and
+  197-byte/230-byte/256-byte codestream regressions; they are not broad RGB
+  parity evidence. The deterministic random fixture now remains the earliest
+  known mismatch, first differing in DC tokens.
 - `AcStrategyDecisionSelector` is the exact decision-only tail for one complete
   2x2 block region. It consumes common-scale nonnegative candidate costs,
   chooses horizontal on aggregate ties, replaces a rectangle only on a strict
@@ -339,9 +349,11 @@ Read these libjxl-tiny files before making architectural changes:
   The integer model is exact against
   `tools/hjxl_reference.py --ac-strategy-cost-q16-csv ...`; that artifact also
   records the exact scheduler decision after fixed rectangular transforms and
-  fixed CFL. The prior Q12 30-region audit matches 27 float decisions; the Q16
-  audit matches 28, with only the symmetric checkerboard cases at distances 4
-  and 8 remaining.
+  fixed CFL. The prior Q12 30-region audit matches 27 float decisions; the
+  unguarded Q16 audit matches 28, with only the symmetric checkerboard cases at
+  distances 4 and 8 remaining. That audit predates the live route's guarded
+  analysis transform and should not be used to characterize the new variant
+  without regeneration.
 - `PreparedAcStrategy2x2Selector` accepts eight prepared candidates in strict
   order: four raster 8x8 blocks, left/right 16x8 rectangles, then top/bottom
   8x16 rectangles. It retains their 64-bit costs, feeds

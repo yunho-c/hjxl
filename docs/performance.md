@@ -122,19 +122,22 @@ used as a proxy for this substantially larger hierarchy.
 
 ## Focused RGB VarDCT precision note — 2026-07-15
 
-The focused RGB variable-shape hierarchy now keeps its existing Q16 sideband
-through CFL fitting, candidate scoring, rectangular transforms, and
-quantization. Q12 prepared paths are unchanged, but the focused hierarchy's
-DCT multipliers use four additional fractional coefficient bits. This is a
-correctness change: the signed-Q8 gradient now matches every native logical
-token and its 230-byte codestream. It is not a timing-neutral claim; the wider
-constant products still require synthesis evidence.
+The focused RGB variable-shape hierarchy keeps its Q12 AQ seam and aligned Q16
+XYB/DCT sidebands. Quantization retains the prior Q16 ordinary and selected-
+rectangle coefficients, preserving the exact impulse and gradient behavior.
+CFL fitting and strategy scoring now recompute a shared three-channel analysis
+DCT from stored Q16 XYB with eight internal guard bits, and the scoring-only
+rectangular transforms use the same guard scale. All analysis transforms round
+once back to Q16 after both dimensions. Prepared Q12 paths and selected-owner
+quantization use zero guard bits.
 
-Fresh elaboration emits 64 SystemVerilog files/135,394 lines for
-`ElaborateAqVarDctQuantizeTokens` and 66 files/135,565 lines for
-`ElaborateAxiStreamCoreAqVarDctTokens`. Each hierarchy contains separate Q12
-and Q16 `Dct8x8Approx` specializations plus one candidate scorer and both
-rectangular transform shapes. The lower line totals than the earlier 160k-line
-snapshot also include subsequent frame-store ownership cleanups, so they must
-not be attributed solely to the precision change. File/line counts remain
-structural complexity indicators, not utilization, timing, or power evidence.
+This is a correctness change: the signed-Q8 checkerboard joins impulse and
+gradient with exact native logical tokens and a 256-byte codestream. It is not
+a timing-neutral claim. Fresh elaboration emits 67 SystemVerilog files/146,380
+lines for `ElaborateAqVarDctQuantizeTokens` and 69 files/146,551 lines for
+`ElaborateAxiStreamCoreAqVarDctTokens`, increases of three files and 10,986
+lines. The new specializations are the guarded 8x8, 16x8, and 8x16 analysis
+transforms; each is instantiated three times for X/Y/B. The hierarchy still
+contains the existing Q12 and unguarded Q16 transforms, one candidate scorer,
+and both selected-owner rectangular transforms. File/line counts are structural
+complexity indicators, not utilization, timing, or power evidence.

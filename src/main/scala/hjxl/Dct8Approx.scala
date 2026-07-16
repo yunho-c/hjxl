@@ -32,6 +32,20 @@ object Dct8Approx {
 
   def fit(value: SInt, width: Int): SInt = value.asSInt.pad(width)
 
+  /** Rounds a signed fixed-point value away from zero at the half-way point. */
+  private[hjxl] def roundShiftAwayFromZero(value: SInt, shift: Int): SInt = {
+    require(shift >= 0, "rounded right shift cannot be negative")
+    if (shift == 0) {
+      value
+    } else {
+      val widened = value.pad(value.getWidth + 1)
+      val negative = widened < 0.S
+      val magnitude = Mux(negative, (-widened).asUInt, widened.asUInt)
+      val rounded = (magnitude + (BigInt(1) << (shift - 1)).U) >> shift
+      Mux(negative, -rounded.asSInt, rounded.asSInt)
+    }
+  }
+
   def mulQ(
       value: SInt,
       coefficient: Int,
