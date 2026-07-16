@@ -70,6 +70,46 @@ def generate_fixture(width: int, height: int, pattern: str, random_seed: int = 0
     raise ValueError(f"unknown pattern: {pattern}")
 
 
+def load_srgb_image_crop(
+    path: Path,
+    width: int,
+    height: int,
+    crop_x: int = 0,
+    crop_y: int = 0,
+):
+    """Decode an RGB image crop and convert its sRGB samples to linear RGB."""
+    np = _load_numpy()
+    try:
+        from PIL import Image  # pylint: disable=import-outside-toplevel
+    except ModuleNotFoundError as error:
+        raise ValueError("Pillow is required for --input-image") from error
+
+    if width <= 0 or height <= 0:
+        raise ValueError("image crop dimensions must be positive")
+    if crop_x < 0 or crop_y < 0:
+        raise ValueError("image crop origin must be nonnegative")
+    with Image.open(path) as source:
+        rgb = source.convert("RGB")
+        if crop_x + width > rgb.width or crop_y + height > rgb.height:
+            raise ValueError(
+                f"image crop ({crop_x}, {crop_y}, {width}, {height}) exceeds "
+                f"{rgb.width}x{rgb.height} source"
+            )
+        encoded = np.asarray(
+            rgb.crop((crop_x, crop_y, crop_x + width, crop_y + height)),
+            dtype=np.float32,
+        ) / np.float32(255.0)
+    linear = np.where(
+        encoded <= np.float32(0.04045),
+        encoded / np.float32(12.92),
+        np.power(
+            (encoded + np.float32(0.055)) / np.float32(1.055),
+            np.float32(2.4),
+        ),
+    ).astype(np.float32)
+    return np.moveaxis(linear, -1, 0)
+
+
 def quantize_rgb_q8(image):
     """Round a linear-RGB fixture onto the RTL host input's signed-Q8 grid."""
     np = _load_numpy()
@@ -4526,6 +4566,13 @@ def main() -> int:
         default=0,
         help="NumPy generator seed used by the random fixture pattern",
     )
+    parser.add_argument(
+        "--input-image",
+        type=Path,
+        help="optional sRGB image decoded with Pillow and converted to linear RGB",
+    )
+    parser.add_argument("--crop-x", type=int, default=0)
+    parser.add_argument("--crop-y", type=int, default=0)
     parser.add_argument("--distance", type=float, default=1.0)
     parser.add_argument(
         "--quantize-input-q8",
@@ -4840,7 +4887,21 @@ def main() -> int:
         if value < -(1 << 7) or value > (1 << 7) - 1:
             raise SystemExit(f"{name} must fit in signed 8-bit")
 
-    image = generate_fixture(args.width, args.height, args.pattern, args.random_seed)
+    if args.input_image is None:
+        if args.crop_x != 0 or args.crop_y != 0:
+            raise SystemExit("--crop-x/--crop-y require --input-image")
+        image = generate_fixture(args.width, args.height, args.pattern, args.random_seed)
+    else:
+        try:
+            image = load_srgb_image_crop(
+                args.input_image,
+                args.width,
+                args.height,
+                args.crop_x,
+                args.crop_y,
+            )
+        except (OSError, ValueError) as error:
+            raise SystemExit(str(error)) from error
     if args.quantize_input_q8:
         image = quantize_rgb_q8(image)
     quant_metadata = None

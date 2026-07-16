@@ -328,10 +328,13 @@ Read these libjxl-tiny files before making architectural changes:
   `--var-dct-codestream-bin` outputs for one-group searched-strategy end-to-end
   comparisons. Pass `--quantize-input-q8` so the native reference consumes the
   same host-input samples as RTL, and use `--random-seed` to extend the corpus
-  without changing the seed-0 default. Eleven exact-Q8 16x16 cases are the
-  current nonzero DC/AC regressions: six distance-1 patterns/seeds plus random
-  seed 1 at every supported distance. Every assembled stream must also decode
-  with system `djxl`; these synthetic cases are not broad RGB parity evidence.
+  without changing the seed-0 default. `--input-image` decodes a bounded Pillow
+  crop and converts sRGB to linear RGB before the same Q8 boundary. Fifteen
+  exact-Q8 cases are the current nonzero DC/AC regressions: six distance-1
+  16x16 patterns/seeds, random seed 1 at every supported distance, three
+  non-aligned geometries, and one 17x17 crop of the pinned Tesla JPEG. Every
+  assembled stream must also decode with system `djxl`; this tiny corpus is not
+  broad RGB parity evidence.
 - `AcStrategyDecisionSelector` is the exact decision-only tail for one complete
   2x2 block region. It consumes common-scale nonnegative candidate costs,
   chooses horizontal on aggregate ties, replaces a rectangle only on a strict

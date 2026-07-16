@@ -3,8 +3,8 @@
 > Consolidated review refreshed through 2026-07-16. Commit `51894ae`
 > (`docs: consolidate project quality assessment`) established the compact
 > baseline; this revision includes the separated Q18-analysis/Q21-quantization
-> multi-seed and all-supported-distance follow-up. The filename preserves the
-> original requested assessment date.
+> multi-seed, all-supported-distance, non-aligned, and real-crop follow-up. The
+> filename preserves the original requested assessment date.
 
 ## Executive summary
 
@@ -15,9 +15,10 @@ engineered than its current product completeness might suggest.
 
 It is not yet a complete JPEG XL encoder or a demonstrated FPGA accelerator.
 The most reliable path begins with host-prepared DCT coefficients; the most
-complete RGB path reaches adaptive DCT/16x8/8x16 logical tokens, but only 11
-small synthetic cases have exact end-to-end token and codestream parity. Final
-entropy optimization and bitstream assembly remain in host software. More
+complete RGB path reaches adaptive DCT/16x8/8x16 logical tokens, but only 15
+small cases, including one real-image crop, have exact end-to-end token and
+codestream parity. Final entropy optimization and bitstream assembly remain in
+host software. More
 importantly, no Vivado synthesis, utilization, timing, power, place-and-route,
 bitstream, DMA, or KV260 execution result exists.
 
@@ -53,7 +54,8 @@ care in the code already present.
 ## Scope and method
 
 This review covers the current implementation through the split analysis/
-quantization multi-distance parity follow-up, including:
+quantization multi-distance, non-aligned, and real-crop parity follow-up,
+including:
 
 - repository history, worktree state, build definitions, CI, ignore rules,
   license, and generated-file policy;
@@ -74,9 +76,9 @@ Snapshot size at the reviewed commit:
 | Area | Files | Lines |
 | --- | ---: | ---: |
 | Main Scala/Chisel | 70 | 18,476 |
-| Scala tests | 72 | 28,861 |
-| Python host/oracle tools | 18 | 14,708 |
-| `README.md`, `docs/architecture.md`, and `AGENTS.md` | 3 | 4,426 |
+| Scala tests | 72 | 28,917 |
+| Python host/oracle tools | 18 | 14,775 |
+| `README.md`, `docs/architecture.md`, and `AGENTS.md` | 3 | 4,443 |
 
 The test-to-RTL ratio is a genuine strength. It also shows where complexity has
 moved: the host/oracle layer is nearly as large as the RTL, and the test layer
@@ -255,8 +257,8 @@ is not complete.
 | Adaptive quantization | Full focused RGB chain implemented | Independent fixed models and stage tests; approximation remains |
 | CFL | Fixed, prepared-estimated, and RGB-estimated paths | Exact fixed-model checks; small bounded native differences |
 | AC strategy | DCT, 16x8, and 8x16 selection implemented | Exact integer model; some float-boundary sensitivity |
-| DCT/VarDCT quantization | Ordinary and two rectangular shapes implemented | Exact prepared fixed-model checks; 11 exact RGB cases |
-| DC, strategy, metadata, and AC logical tokens | Implemented for prepared and focused RGB paths | Strong exact prepared oracles; 11 exact nonzero RGB cases |
+| DCT/VarDCT quantization | Ordinary and two rectangular shapes implemented | Exact prepared fixed-model checks; 15 exact RGB cases |
+| DC, strategy, metadata, and AC logical tokens | Implemented for prepared and focused RGB paths | Strong exact prepared oracles; 15 exact nonzero RGB cases |
 | Entropy optimization | Host only | Reuses `libjxl-tiny` |
 | Frame/codestream assembly | Host only | Exact byte checks for constrained fixtures |
 | Full JPEG XL feature surface | Intentionally out of scope | Lossless, alpha, broad boxes/metadata absent |
@@ -271,18 +273,19 @@ is not complete.
 - Prepared variable-shape tests cover DCT, 16x8, and 8x16 ownership,
   continuation suppression, two-cell DC/prediction semantics, rectangular
   scans, and exact native logical-token arrays.
-- The focused RGB VarDCT route has 11 exact 16x16 signed-Q8 nonzero cases: six
-  distance-1 patterns/seeds plus random seed 1 at all six supported distances.
-  Every DC/strategy/metadata/AC row and final codestream byte matches the
-  oracle, and system `djxl` decodes every assembled stream.
+- The focused RGB VarDCT route has 15 exact signed-Q8 nonzero cases: six
+  distance-1 16x16 patterns/seeds, random seed 1 at all six supported
+  distances, 17x9/9x17/17x17 non-aligned random frames, and one 17x17 crop of
+  the pinned Tesla JPEG. Every DC/strategy/metadata/AC row and final codestream
+  byte matches the oracle, and system `djxl` decodes every assembled stream.
 
 ### Current parity frontier
 
-- The first multi-seed and supported-distance boundaries are closed with Q18
-  analysis and Q21 selected-owner quantization, but 11 tiny synthetic cases do
-  not establish broad RGB parity.
-- Only tiny deterministic fixtures are exact end to end. There is no corpus of
-  real-image crops and no quality or rate-distortion characterization.
+- The first multi-seed, supported-distance, and non-aligned boundaries are
+  closed with Q18 analysis and Q21 selected-owner quantization, but 15 tiny
+  cases do not establish broad RGB parity.
+- Only one source-image crop is exact end to end. There is no varied real-image
+  corpus and no quality or rate-distortion characterization.
 
 The project should continue to describe itself as a research prototype with a
 strong prepared-data accelerator boundary, not as a complete JPEG XL encoder.
@@ -293,14 +296,15 @@ Verification is the best-developed part of the repository.
 
 ### Strong evidence
 
-- The reviewed candidate records **85 suites and 357 tests** passing under both
+- The reviewed candidate records **85 suites and 361 tests** passing under both
   sbt and Mill, with zero failures, errors, cancellations, ignored, or pending
   tests. Running both build systems catches build-definition drift, though it
   roughly doubles CI cost.
 - CI pins `libjxl-tiny` to commit
-  `07f2dfe11a1a9f621052e75db5feffb0f58f44bd`, installs Verilator and system
-  `djxl`, checks Python syntax and generated ABI drift, runs the full sbt and
-  Mill suites, elaborates the frozen top, and runs the non-Vivado Tcl preflight.
+  `07f2dfe11a1a9f621052e75db5feffb0f58f44bd`, installs Verilator, Pillow, and
+  system `djxl`, checks Python syntax and generated ABI drift, runs the full sbt
+  and Mill suites, elaborates the frozen top, and runs the non-Vivado Tcl
+  preflight.
 - Tests cover arithmetic primitives, saturation and rounding boundaries,
   traversal, partial frames, 72x72/two-dimensional tile geometry, unsupported
   distances, malformed ownership, sticky errors, recovery, packed trace
@@ -309,7 +313,7 @@ Verification is the best-developed part of the repository.
   output stalls and assert stable trace fields plus final-only TLAST.
 - Oracle tests compare at the correct boundary: tolerant comparisons for
   floating/fixed approximations, exact equality for quantized maps and logical
-  tokens, and byte equality when a codestream claim is made. The 11 exact RGB
+  tokens, and byte equality when a codestream claim is made. The 15 exact RGB
   cases also require independent system-`djxl` decode acceptance.
 - Host tools reject malformed CSV/JSON fields, inconsistent geometry, stale
   checksums, wrong variants, wrong trace packing, wrong register maps, and
@@ -327,14 +331,13 @@ Verification is the best-developed part of the repository.
 - Randomized stalls and malformed streams exist in places but are not a shared,
   seeded property-based framework. Reset-at-every-state and repeated-frame
   stress are not systematic.
-- Oracle diversity is narrow. More signed/extreme fixtures, non-block/tile-
-  aligned RGB sizes, multi-tile two-dimensional RGB images, and small real-
-  image crops are needed.
+- Oracle diversity is narrow. More signed/extreme fixtures, multi-tile two-
+  dimensional RGB images, and varied real-image crops are needed.
 - Local oracle tests use `assume` when the reference checkout is absent. CI
   provides the pinned checkout, but an incomplete local environment can skip
   meaningful tests unless the cancellation count is noticed.
-- The full suite is expensive: the current exact candidate took about 27
-  minutes under sbt and 28 minutes under Mill. This raises iteration cost and
+- The full suite is expensive: the current exact candidate took about 29
+  minutes under sbt and 30 minutes under Mill. This raises iteration cost and
   encourages focused runs, so CI remains essential.
 
 ## Host tooling and ABI
@@ -356,7 +359,7 @@ Verification is the best-developed part of the repository.
 
 ### Weaknesses
 
-- `tools/hjxl_reference.py` is 5,294 lines and mixes reference access, fixed
+- `tools/hjxl_reference.py` is 5,361 lines and mixes reference access, fixed
   models, fixture generation, analysis, and a very large CLI. Two other tools
   exceed 1,500 lines. These are now subsystems and should be a Python package.
 - There is no `pyproject.toml`, dependency lock, native Python test suite,
@@ -380,8 +383,8 @@ performance, the FPGA guide states timing assumptions and missing proof, and
 
 The weakness is information architecture:
 
-- `README.md` is 1,572 lines, `docs/architecture.md` is 1,384, and `AGENTS.md`
-  is 1,470. Much stage status is repeated across all three.
+- `README.md` is 1,583 lines, `docs/architecture.md` is 1,387, and `AGENTS.md`
+  is 1,473. Much stage status is repeated across all three.
 - The README has only a handful of top-level headings, so hundreds of lines of
   implementation detail sit under “Project status” or “Build.” It is accurate
   but difficult to scan as onboarding documentation.
@@ -473,10 +476,10 @@ outside simulation.
    cache-coherency rules, timeout/error recovery, repeat-frame operation, and a
    host program that captures traces and reconstructs a checked codestream.
 3. **Keep completeness claims tied to exact evidence.** Do not generalize the
-   11 exact 16x16 synthetic cases into broad RGB parity. Multiple random seeds,
-   all supported distances, and independent decode acceptance are now covered;
-   expand next to real-image crops and larger/non-aligned geometry while
-   continuing to localize the earliest divergent stage.
+   15 exact small cases into broad RGB parity. Multiple random seeds, all
+   supported distances, non-aligned geometry, one real crop, and independent
+   decode acceptance are now covered; expand next to multiple source images and
+   larger/multi-tile RGB geometry while localizing the earliest divergent stage.
 
 ### P1 — Architecture and maintainability
 
@@ -509,7 +512,7 @@ outside simulation.
 10. **Expand parity oracles.** Cover all supported distances, signed/extreme
     inputs, non-aligned multi-tile images, and real-image crops. Decode emitted
     codestreams with an independent JPEG XL implementation.
-11. **Turn `tools/` into a tested Python package.** Split the 5,294-line oracle
+11. **Turn `tools/` into a tested Python package.** Split the 5,361-line oracle
     helper by responsibility; add `pyproject.toml`, pinned dependencies, native
     unit tests, formatting, linting, and type checks. Keep Scala process tests
     for cross-language integration only.
@@ -522,22 +525,23 @@ outside simulation.
 
 ## Verification performed for this assessment
 
-The prior split-precision random-parity candidate following `9787239` completed
-the full gate on 2026-07-16; the current Q18/Q21 candidate following `a4f175e`
-adds seven exact codestream/decoder regressions and is revalidated below:
+The prior Q18/Q21 multi-distance candidate was committed as `ebc17ba`; the
+current non-aligned/real-crop candidate following that commit adds four exact
+codestream/decoder regressions and was fully revalidated on 2026-07-16:
 
-- `sbt test`: 85 suites, 357 tests, all passed in 1,647 seconds;
+- `sbt test`: 85 suites, 361 tests, all passed in 1,751 seconds;
 - `HJXL_REPO_ROOT=$PWD ./mill --no-server -j 2 hjxl.test`: all 85 suites and
-  357 tests passed in 1,664 seconds; the generated JUnit report records zero
-  failures, errors, or skipped tests;
-- 11 exact RGB VarDCT codestream checks spanning three random seeds and every
-  supported distance, each independently decoded by system `djxl`;
+  361 tests passed in 1,796 seconds, split 202/159 across two forks, with zero
+  failures, cancellations, ignored, or pending tests;
+- 15 exact RGB VarDCT codestream checks spanning three random seeds, every
+  supported distance, three non-block-aligned frames, and one pinned real-image
+  crop, each independently decoded by system `djxl`;
 - focused primitive, prepared-DCT, variable-shape, core, AXI, discovery,
   elaboration, host-tool, and throughput checks described above.
 
 The following ancillary checks were also run on that candidate:
 
-- `git diff --check` — passed before the final documentation refresh;
+- `git diff --check` — passed;
 - `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/*.py` — passed;
 - `python3 tools/hjxl_generate_abi.py --check` — generated bindings current;
 - `PYTHONDONTWRITEBYTECODE=1 python3 tools/hjxl_host_metadata_smoke.py` — passed;
@@ -562,8 +566,8 @@ The next major quality gain will not come from another broad set of trace
 wrappers. It will come from using the frozen prepared-DCT top to obtain the
 first real synthesis and board evidence, then redesigning the frame-scaled
 structures that the reports identify. In parallel, parity work should remain
-trace-first and grow from the 11 exact synthetic cases into real-image and
-larger/non-aligned corpora.
+trace-first and grow from the 15 exact small cases into a varied real-image and
+larger/multi-tile corpus.
 
 Until those milestones are reached, the most accurate description is:
 **a high-quality verification scaffold and partial JPEG XL RTL implementation,

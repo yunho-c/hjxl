@@ -71,10 +71,12 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
 
   private def pokeAdaptiveRgbConfig(
       dut: FrameAqVarDctQuantizeTokenTraceStage,
-      distanceQ8: Int = 256
+      distanceQ8: Int = 256,
+      width: Int = 16,
+      height: Int = 16
   ): Unit = {
-    dut.io.config.xsize.poke(16.U)
-    dut.io.config.ysize.poke(16.U)
+    dut.io.config.xsize.poke(width.U)
+    dut.io.config.ysize.poke(height.U)
     dut.io.config.distanceQ8.poke(distanceQ8.U)
     dut.io.config.fixedPointScale.poke(0.U)
     dut.io.config.fixedInvQacQ16.poke(0.U)
@@ -388,14 +390,21 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
       expectedStrategyValues: Seq[Int],
       expectedCodestreamBytes: Int,
       randomSeed: Int = 0,
-      distanceQ8: Int = 256
+      distanceQ8: Int = 256,
+      width: Int = 16,
+      height: Int = 16,
+      inputImage: Option[Path] = None,
+      cropX: Int = 0,
+      cropY: Int = 0
   ): Unit = {
     assume(
       Files.isDirectory(libjxlTinyRoot.resolve("python")),
       s"libjxl-tiny Python checkout not found at $libjxlTinyRoot"
     )
-    val seedLabel = if (pattern == "random") s"$pattern-seed-$randomSeed" else pattern
-    val fixtureLabel = s"$seedLabel-distance-q8-$distanceQ8"
+    val seedLabel = inputImage
+      .map(path => s"${path.getFileName}-crop-$cropX-$cropY")
+      .getOrElse(if (pattern == "random") s"$pattern-seed-$randomSeed" else pattern)
+    val fixtureLabel = s"$seedLabel-${width}x$height-distance-q8-$distanceQ8"
     val temp = Files.createTempDirectory(s"hjxl-rgb-var-dct-$fixtureLabel-codestream-")
     val expectedDc = temp.resolve("expected-dc.npy")
     val expectedMetadata = temp.resolve("expected-metadata.npy")
@@ -412,18 +421,27 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     val actualCodestream = temp.resolve("actual.jxl")
     val decodedPfm = temp.resolve("decoded.pfm")
 
+    val sourceArgs = inputImage
+      .map(path =>
+        Seq(
+          "--input-image",
+          path.toString,
+          "--crop-x",
+          cropX.toString,
+          "--crop-y",
+          cropY.toString
+        )
+      )
+      .getOrElse(Seq("--pattern", pattern, "--random-seed", randomSeed.toString))
     runTool(
       Seq(
         "python3",
         "tools/hjxl_reference.py",
         "--width",
-        "16",
+        width.toString,
         "--height",
-        "16",
-        "--pattern",
-        pattern,
-        "--random-seed",
-        randomSeed.toString,
+        height.toString
+      ) ++ sourceArgs ++ Seq(
         "--distance",
         (distanceQ8.toDouble / 256.0).toString,
         "--quantize-input-q8",
@@ -446,13 +464,17 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     Files.readAllBytes(expectedCodestream).toSeq mustBe
       Files.readAllBytes(nativeCodestream).toSeq
     Files.size(expectedCodestream) mustBe expectedCodestreamBytes.toLong
-    val inputs = readRgbInputs(rgbCsv, width = 16, height = 16)
-    inputs.length mustBe 16 * 16
+    val inputs = readRgbInputs(rgbCsv, width, height)
+    inputs.length mustBe width * height
 
     val observed = scala.collection.mutable.ArrayBuffer.empty[ExpectedTrace]
-    val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 16)
+    val maxWidth = ((width + HjxlConstants.BlockDim - 1) / HjxlConstants.BlockDim) *
+      HjxlConstants.BlockDim
+    val maxHeight = ((height + HjxlConstants.BlockDim - 1) / HjxlConstants.BlockDim) *
+      HjxlConstants.BlockDim
+    val config = HjxlConfig(maxFrameWidth = maxWidth, maxFrameHeight = maxHeight)
     simulate(new FrameAqVarDctQuantizeTokenTraceStage(config)) { dut =>
-      pokeAdaptiveRgbConfig(dut, distanceQ8)
+      pokeAdaptiveRgbConfig(dut, distanceQ8, width, height)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(true.B)
       dut.clock.step()
@@ -512,9 +534,9 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
         "--trace-csv",
         traceCsv.toString,
         "--width",
-        "16",
+        width.toString,
         "--height",
-        "16",
+        height.toString,
         "--distance",
         (distanceQ8.toDouble / 256.0).toString,
         "--dc-tokens-npy",
@@ -564,7 +586,7 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
       )
     )
     val decodedHeader = Files.readString(decodedPfm, StandardCharsets.ISO_8859_1)
-    decodedHeader must startWith("PF\n16 16\n")
+    decodedHeader must startWith(s"PF\n$width $height\n")
   }
 
   "a nonzero-AC Q8 RGB impulse assembles to the native VarDCT codestream" in {
@@ -651,6 +673,40 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
         distanceQ8 = distanceQ8
       )
     }
+  }
+
+  Seq(
+    (17, 9, Seq(5, 4, 1, 5, 4, 1), 340),
+    (9, 17, Seq(3, 3, 2, 2, 1, 1), 339),
+    (17, 17, Seq(3, 3, 1, 2, 2, 1, 1, 1, 1), 446)
+  ).foreach { case (width, height, strategies, codestreamBytes) =>
+    s"a padded ${width}x$height random frame assembles to the native codestream" in {
+      verifyRgbCodestream(
+        pattern = "random",
+        expectedStrategyValues = strategies,
+        expectedCodestreamBytes = codestreamBytes,
+        randomSeed = 1,
+        width = width,
+        height = height
+      )
+    }
+  }
+
+  "a non-aligned real-image crop assembles to the native codestream" in {
+    val image = libjxlTinyRoot.resolve("test-images/tesla-256x256.jpg")
+    withClue(s"missing pinned libjxl-tiny image fixture: $image") {
+      Files.isRegularFile(image) mustBe true
+    }
+    verifyRgbCodestream(
+      pattern = "image",
+      expectedStrategyValues = Seq(5, 4, 1, 1, 1, 1, 1, 1, 1),
+      expectedCodestreamBytes = 346,
+      width = 17,
+      height = 17,
+      inputImage = Some(image),
+      cropX = 96,
+      cropY = 96
+    )
   }
 
   "the RGB route reaches every logical-token phase and drains before another frame" in {

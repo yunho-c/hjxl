@@ -134,9 +134,11 @@ This split is correctness-driven. Raising analysis uniformly perturbs otherwise
 exact CFL/strategy boundaries, while Q18 selected-owner quantization misses a
 dense distance-0.25 X coefficient. Keeping analysis at Q18 and quantization at
 Q21 preserves the established distance-1 cases and closes that AC boundary.
-Eleven synthetic 16x16 cases now match every native logical token and codestream
-byte, spanning three random seeds and every supported distance; system `djxl`
-accepts every result.
+Eleven synthetic 16x16 cases match every native logical token and codestream
+byte across three random seeds and every supported distance. Three non-aligned
+seed-1 frames and one pinned 17x17 real-image crop bring the exact total to 15;
+system `djxl` accepts every result. These additions change verification breadth,
+not the focused RTL hierarchy or its elaboration counts.
 
 Fresh elaboration emits 68 SystemVerilog files/172,781 lines for
 `ElaborateAqVarDctQuantizeTokens` and 70 files/172,960 lines for

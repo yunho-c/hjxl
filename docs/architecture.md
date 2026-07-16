@@ -907,9 +907,12 @@ wrappers.
   serialize those same arrays. `--quantize-input-q8` first rounds the generated
   fixture onto the signed-Q8 RTL input grid so the native oracle and hardware
   consume identical samples. `--random-seed` expands the deterministic random
-  corpus without changing the seed-0 default. Eleven 16x16 cases currently
+  corpus without changing the seed-0 default. `--input-image` plus bounded crop
+  coordinates uses Pillow to decode sRGB, converts it explicitly to linear RGB,
+  and then enters the same optional Q8 host boundary. Fifteen cases currently
   prove exact nonzero DC/strategy/metadata/AC traces and codestream bytes: six
-  distance-1 patterns/seeds plus seed 1 at every supported distance. System
+  distance-1 16x16 patterns/seeds, seed 1 at every supported distance, three
+  non-aligned seed-1 geometries, and one 17x17 pinned real-image crop. System
   `djxl` independently decodes every assembled stream.
 - `tools/hjxl_reference.py --default-ac-strategy-npy ...` writes the matching
   default DCT-first strategy map.

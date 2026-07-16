@@ -13,7 +13,7 @@ board-proven FPGA encoder.
 | Area | Current state |
 | --- | --- |
 | Strongest validated boundary | Host-prepared, all-DCT coefficients through quantization and logical token traces, followed by host-side codestream assembly |
-| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and combined logical tokens; a focused compile-time route composes the tile-correct adaptive 8x8/16x8/8x16 search with first-block-owned variable-shape quantization and tokenization, with 11 exact nonzero 16x16 codestream cases spanning three random seeds and all six supported distances; broad RGB parity and physical feasibility remain open |
+| RGB-input pipeline | Frame padding, approximate XYB/DCT, adaptive per-block raw quantization, and RGB-derived tile CFL through quantized traces, AC metadata, and combined logical tokens; a focused compile-time route composes the tile-correct adaptive 8x8/16x8/8x16 search with first-block-owned variable-shape quantization and tokenization, with 15 exact nonzero codestream cases spanning three random seeds, all six supported distances, non-aligned geometry, and one real-image crop; broad RGB parity and physical feasibility remain open |
 | Hardware output | Trace/token records; entropy optimization and final JPEG XL bitstream assembly remain host software responsibilities |
 | Near-term FPGA top | `HjxlKv260PreparedDctTop`, the direct prepared-DCT variant, is frozen as the first synthesis and bring-up target |
 | Physical validation | Chisel simulation and generated SystemVerilog are covered; Vivado synthesis, timing closure, resource use, bitstream generation, and KV260 execution have not been demonstrated |
@@ -192,9 +192,14 @@ seeds 1 and 4 add exact 346-byte horizontal and 349-byte vertical cases. Seed 1
 also matches at every supported distance Q8 value (`64`, `128`, `256`, `512`,
 `1024`, and `2048`), producing 569, 451, 346, 259, 213, and 184 bytes. Every
 native DC/strategy/metadata/AC row is exact in all 11 cases, and system `djxl`
-decodes every assembled codestream. This remains narrow synthetic-image
-parity: entropy coding and assembly remain host responsibilities, the fixtures
-are all 16x16, and synthesis/timing/resource fit is unproven.
+decodes every assembled codestream. Three additional seed-1 frames at 17x9,
+9x17, and 17x17 prove exact right/bottom replication, asymmetric block grids,
+and incomplete-edge DCT ownership. A 17x17 crop of the pinned libjxl-tiny Tesla
+JPEG adds an exact real-image path after Pillow decode, explicit sRGB-to-linear
+conversion, and Q8 rounding. All 15 assembled streams decode with `djxl`. This
+remains narrow image parity: entropy coding and assembly remain host
+responsibilities, the corpus has one source image, and synthesis/timing/resource
+fit is unproven.
 `tools/hjxl_reference.py --scaled-dct-q12-csv ...` exports independent signed
 transform fixtures plus the exact fixed transform result;
 `--ac-strategy-cost-q16-csv ...` exports the prepared candidate-cost seam,
@@ -227,6 +232,10 @@ libjxl-tiny consumes the same rounded host-input samples instead of the
 pre-quantized generator values.
 `--random-seed N` selects the NumPy generator seed for `--pattern random`; seed
 0 remains the default so existing fixtures stay stable.
+`--input-image path --crop-x X --crop-y Y` replaces the generated pattern with
+a bounded Pillow-decoded crop, converts sRGB samples to linear RGB, and uses
+`--width`/`--height` as the crop dimensions. Pair it with
+`--quantize-input-q8` for RTL comparisons.
 Standalone fixed-point primitives also cover approximate RGB-to-XYB, 1D DCT-8,
 and the scaled 8x8 DCT block layout used by libjxl-tiny. The RGB-to-XYB primitive
 applies the signed matrix at Q26, clamps
@@ -435,7 +444,7 @@ Or with Mill:
 ./mill hjxl.test
 ```
 
-CI sets `HJXL_REPO_ROOT`, installs Verilator, `python3-numpy`, and the
+CI sets `HJXL_REPO_ROOT`, installs Verilator, `python3-numpy`, Pillow, and the
 `libjxl-tools` system decoder, checks out
 the libjxl-tiny Python-port commit
 `07f2dfe11a1a9f621052e75db5feffb0f58f44bd` from
@@ -1516,9 +1525,10 @@ compares all 32 native token rows from the zero-coefficient 2x2 fixture under
 periodic output stalls. Its nonzero signed-Q8 16x16 impulse, gradient,
 checkerboard, and three-seed random regressions compare all native token arrays
 and assembled codestream bytes while stalling output. The seed-1 matrix covers
-all six supported distance lookup entries; in total 11 codestream cases are
-exact and independently accepted by system `djxl`. The reference fixtures are
-explicitly rounded onto the Q8 host input grid. The suite also drives a live 16x16 RGB
+all six supported distance lookup entries. Three non-aligned random frames and
+one pinned real-image crop bring the total to 15 exact codestream cases, all
+independently accepted by system `djxl`. The reference fixtures are explicitly
+rounded onto the Q8 host input grid. The suite also drives a live 16x16 RGB
 frame through every logical-
 token phase, checks unsupported-distance reporting, verifies packed
 mixed-stage AXI output and final-only TLAST on an 8x8 frame, and requires an
@@ -1548,8 +1558,9 @@ fixed-token oracle. It also checks `tools/hjxl_trace_to_codestream.py`, the
 one-step StageTrace-to-byte assembler, against the same token arrays and byte
 oracle. The full RGB-input token schedulers still depend on approximate fixed-
 point RGB/XYB/AQ arithmetic; the adaptive variable-shape route now establishes
-11 exact nonzero synthetic RGB-to-codestream cases, not broad image parity. The
-next parity frontier is non-synthetic crops and larger/non-aligned geometry.
+15 exact nonzero RGB-to-codestream cases, including three non-aligned frames and
+one real-image crop, not broad image parity. The next parity frontier is a
+multi-image crop corpus and larger/multi-tile RGB geometry.
 
 ## ABI generation
 

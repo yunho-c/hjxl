@@ -29,8 +29,8 @@ jobs:
       - name: Setup Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libjxl-tools python3-numpy tcl verilator
-          python3 -c 'import numpy'
+          sudo apt-get install -y libjxl-tools python3-numpy python3-pil tcl verilator
+          python3 -c 'import numpy; from PIL import Image'
           djxl --version
           verilator --version
       - name: Checkout libjxl-tiny
