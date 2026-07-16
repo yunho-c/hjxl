@@ -206,9 +206,9 @@ class RgbToXybApproxSpec extends AnyFreeSpec with Matchers with ChiselSim {
     }
   }
 
-  "the Q19 converter preserves exact Q12 and Q18 sidebands" in {
-    val primaryFractionBits = RgbVarDctFixedPoint.LumaDcXybFractionBits
-    val secondaryFractionBits = RgbVarDctFixedPoint.QuantizationXybFractionBits
+  "the high-precision converter preserves exact Q12 and Q18 sidebands" in {
+    val primaryFractionBits = RgbVarDctFixedPoint.QuantizationXybFractionBits
+    val secondaryFractionBits = RgbVarDctFixedPoint.AnalysisXybFractionBits
     val random = new Random(2L)
     val vectors = Seq((64, 128, 192)) ++ Seq.fill(256)(
       (
@@ -230,7 +230,7 @@ class RgbToXybApproxSpec extends AnyFreeSpec with Matchers with ChiselSim {
         val expectedQ12 = RgbToXybApprox.rgbToXybQ12(r, g, b)
         val expectedQ18 =
           RgbToXybApprox.rgbToXyb(r, g, b, secondaryFractionBits)
-        val expectedQ19 =
+        val expectedPrimary =
           RgbToXybApprox.rgbToXyb(r, g, b, primaryFractionBits)
         dut.io.input.valid.poke(true.B)
         dut.io.input.bits.x.poke(index.U)
@@ -239,9 +239,9 @@ class RgbToXybApproxSpec extends AnyFreeSpec with Matchers with ChiselSim {
         dut.io.input.bits.g.poke(g.S)
         dut.io.input.bits.b.poke(b.S)
         dut.io.output.valid.expect(true.B)
-        dut.io.output.bits.xybX.expect(expectedQ19._1.S)
-        dut.io.output.bits.xybY.expect(expectedQ19._2.S)
-        dut.io.output.bits.xybB.expect(expectedQ19._3.S)
+        dut.io.output.bits.xybX.expect(expectedPrimary._1.S)
+        dut.io.output.bits.xybY.expect(expectedPrimary._2.S)
+        dut.io.output.bits.xybB.expect(expectedPrimary._3.S)
         dut.io.outputQ18.get.valid.expect(true.B)
         dut.io.outputQ18.get.bits.xybX.expect(expectedQ18._1.S)
         dut.io.outputQ18.get.bits.xybY.expect(expectedQ18._2.S)

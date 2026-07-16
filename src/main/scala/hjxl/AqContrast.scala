@@ -325,12 +325,12 @@ class FrameAqContrastTraceStage(
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val xybAccepted = Output(Valid(new XybPixel(c)))
-    val quantizationXybAccepted =
+    val analysisXybAccepted =
       if (xybOutputFractionBits > RgbToXybApprox.OutputFractionBits)
         Some(Output(Valid(new XybPixel(c))))
       else None
-    val lumaDcXybAccepted =
-      if (xybOutputFractionBits > RgbVarDctFixedPoint.QuantizationXybFractionBits)
+    val quantizationXybAccepted =
+      if (xybOutputFractionBits > RgbVarDctFixedPoint.AnalysisXybFractionBits)
         Some(Output(Valid(new XybPixel(c))))
       else None
     val trace = Decoupled(new StageTrace(c))
@@ -387,7 +387,7 @@ class FrameAqContrastTraceStage(
       outputFractionBits = xybOutputFractionBits,
       includeQ12Output = hasHigherPrecisionOutput,
       includeQ18Output =
-        xybOutputFractionBits > RgbVarDctFixedPoint.QuantizationXybFractionBits
+        xybOutputFractionBits > RgbVarDctFixedPoint.AnalysisXybFractionBits
     )
   )
   converter.io.input.bits := io.input.bits
@@ -398,10 +398,10 @@ class FrameAqContrastTraceStage(
   io.xybAccepted.bits := converter.io.outputQ12
     .map(_.bits)
     .getOrElse(converter.io.output.bits)
-  io.quantizationXybAccepted.foreach { accepted =>
+  io.analysisXybAccepted.foreach { accepted =>
     accepted := converter.io.outputQ18.getOrElse(converter.io.output)
   }
-  io.lumaDcXybAccepted.foreach { accepted =>
+  io.quantizationXybAccepted.foreach { accepted =>
     accepted.valid := converter.io.output.fire
     accepted.bits := converter.io.output.bits
   }

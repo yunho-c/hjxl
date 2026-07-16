@@ -2,9 +2,9 @@
 
 > Consolidated review refreshed through 2026-07-16. Commit `51894ae`
 > (`docs: consolidate project quality assessment`) established the compact
-> baseline; this revision includes the guarded Q18 plus Q19 luma-DC random-
-> fixture parity follow-up. The filename preserves the original requested
-> assessment date.
+> baseline; this revision includes the separated Q18-analysis/Q21-quantization
+> multi-seed and all-supported-distance follow-up. The filename preserves the
+> original requested assessment date.
 
 ## Executive summary
 
@@ -15,8 +15,8 @@ engineered than its current product completeness might suggest.
 
 It is not yet a complete JPEG XL encoder or a demonstrated FPGA accelerator.
 The most reliable path begins with host-prepared DCT coefficients; the most
-complete RGB path reaches adaptive DCT/16x8/8x16 logical tokens, but only four
-small nonzero images have exact end-to-end token and codestream parity. Final
+complete RGB path reaches adaptive DCT/16x8/8x16 logical tokens, but only 11
+small synthetic cases have exact end-to-end token and codestream parity. Final
 entropy optimization and bitstream assembly remain in host software. More
 importantly, no Vivado synthesis, utilization, timing, power, place-and-route,
 bitstream, DMA, or KV260 execution result exists.
@@ -29,7 +29,7 @@ The central architectural tension is clear:
 - As an FPGA architecture, the same choices do not yet scale. The default
   maximum frame is 32x32, whole-frame `Reg(Vec(...))` storage is widespread,
   several datapaths are large or combinational, and the focused RGB VarDCT top
-  emits more than 157,000 lines of SystemVerilog before synthesis.
+  emits more than 172,000 lines of SystemVerilog before synthesis.
 
 ### Overall judgment
 
@@ -52,8 +52,8 @@ care in the code already present.
 
 ## Scope and method
 
-This review covers the current implementation through the split-precision
-deterministic-random parity follow-up, including:
+This review covers the current implementation through the split analysis/
+quantization multi-distance parity follow-up, including:
 
 - repository history, worktree state, build definitions, CI, ignore rules,
   license, and generated-file policy;
@@ -73,10 +73,10 @@ Snapshot size at the reviewed commit:
 
 | Area | Files | Lines |
 | --- | ---: | ---: |
-| Main Scala/Chisel | 70 | 18,379 |
-| Scala tests | 72 | 28,786 |
+| Main Scala/Chisel | 70 | 18,476 |
+| Scala tests | 72 | 28,861 |
 | Python host/oracle tools | 18 | 14,708 |
-| `README.md`, `docs/architecture.md`, and `AGENTS.md` | 3 | 4,417 |
+| `README.md`, `docs/architecture.md`, and `AGENTS.md` | 3 | 4,426 |
 
 The test-to-RTL ratio is a genuine strength. It also shows where complexity has
 moved: the host/oracle layer is nearly as large as the RTL, and the test layer
@@ -164,13 +164,13 @@ final file was produced.
    say nothing about DSP mapping, critical paths, fanout, or routing.
 
 4. **Focused routes trade area for verification convenience.** The RGB VarDCT
-   path carries Q12/Q18 plus Q19 luma precision, stores frame data, evaluates
+   path carries Q12/Q18/Q21 precision, stores frame data, evaluates
    eight strategy candidates, recomputes selected rectangular transforms, and
-   feeds variable-shape quantization/tokenization. Q18 preserves scoring and AC
-   parity while the narrow Q19 luma sideband closes a DC half-step boundary,
-   but the extra frame plane and three transform specializations enlarge an
-   already heavy route. This is defensible for parity closure and should still
-   be treated as an experiment, not the final physical organization.
+   feeds variable-shape quantization/tokenization. Q18 preserves CFL/scoring
+   decisions while Q21 closes selected-owner AC/DC rounding boundaries, but
+   two full higher-precision frame stores and transform specializations enlarge
+   an already heavy route. This is defensible for parity closure and should
+   still be treated as an experiment, not the final physical organization.
 
 5. **Route selection has two overlapping mechanisms.** Compile-time
    `traceRoute` controls elaboration while runtime feature flags and
@@ -220,9 +220,9 @@ final file was produced.
   Subpackages such as `arithmetic`, `stages`, `prepared`, `interfaces`, and
   `tops` would make ownership clearer.
 - **Several modules are too large.** At the reviewed candidate,
-  `FramePreparedAcStrategyTraceStage.scala` is 925 lines,
-  `FrameAqDctOnlyQuantizeTraceStage.scala` is 720,
-  `QuantizeDct8x8Block.scala` is 666, `QuantizeVarDctBlock.scala` is 699,
+  `FramePreparedAcStrategyTraceStage.scala` is 985 lines,
+  `FrameAqDctOnlyQuantizeTraceStage.scala` is 731,
+  `QuantizeDct8x8Block.scala` is 666, `QuantizeVarDctBlock.scala` is 704,
   `Elaborate.scala` is 641, and `HjxlCore.scala` is 529. These files combine
   storage, traversal, arbitration, arithmetic, and protocol responsibilities.
 - **The wrapper matrix is partly combinatorial.** Each new route can require a
@@ -255,8 +255,8 @@ is not complete.
 | Adaptive quantization | Full focused RGB chain implemented | Independent fixed models and stage tests; approximation remains |
 | CFL | Fixed, prepared-estimated, and RGB-estimated paths | Exact fixed-model checks; small bounded native differences |
 | AC strategy | DCT, 16x8, and 8x16 selection implemented | Exact integer model; some float-boundary sensitivity |
-| DCT/VarDCT quantization | Ordinary and two rectangular shapes implemented | Exact prepared fixed-model checks; four exact RGB fixtures |
-| DC, strategy, metadata, and AC logical tokens | Implemented for prepared and focused RGB paths | Strong exact prepared oracles; four exact nonzero RGB fixtures |
+| DCT/VarDCT quantization | Ordinary and two rectangular shapes implemented | Exact prepared fixed-model checks; 11 exact RGB cases |
+| DC, strategy, metadata, and AC logical tokens | Implemented for prepared and focused RGB paths | Strong exact prepared oracles; 11 exact nonzero RGB cases |
 | Entropy optimization | Host only | Reuses `libjxl-tiny` |
 | Frame/codestream assembly | Host only | Exact byte checks for constrained fixtures |
 | Full JPEG XL feature surface | Intentionally out of scope | Lossless, alpha, broad boxes/metadata absent |
@@ -271,20 +271,18 @@ is not complete.
 - Prepared variable-shape tests cover DCT, 16x8, and 8x16 ownership,
   continuation suppression, two-cell DC/prediction semantics, rectangular
   scans, and exact native logical-token arrays.
-- The focused RGB VarDCT route has four exact 16x16 signed-Q8 nonzero cases at
-  distance 1: an impulse with a 197-byte codestream, a gradient with a 230-byte
-  codestream, a checkerboard with a 256-byte codestream, and a deterministic
-  random fixture with a 335-byte codestream. Every DC/strategy/metadata/AC row
-  matches the oracle.
+- The focused RGB VarDCT route has 11 exact 16x16 signed-Q8 nonzero cases: six
+  distance-1 patterns/seeds plus random seed 1 at all six supported distances.
+  Every DC/strategy/metadata/AC row and final codestream byte matches the
+  oracle, and system `djxl` decodes every assembled stream.
 
 ### Current parity frontier
 
-- The first deterministic-random mismatch is closed with a Q18
-  strategy/AC/chroma path and a Q19 luma-DC sideband, but four fixtures do not
-  establish broad RGB parity.
+- The first multi-seed and supported-distance boundaries are closed with Q18
+  analysis and Q21 selected-owner quantization, but 11 tiny synthetic cases do
+  not establish broad RGB parity.
 - Only tiny deterministic fixtures are exact end to end. There is no corpus of
-  real-image crops, no independent decoder acceptance gate, and no quality or
-  rate-distortion characterization.
+  real-image crops and no quality or rate-distortion characterization.
 
 The project should continue to describe itself as a research prototype with a
 strong prepared-data accelerator boundary, not as a complete JPEG XL encoder.
@@ -295,14 +293,14 @@ Verification is the best-developed part of the repository.
 
 ### Strong evidence
 
-- The reviewed candidate records **85 suites and 350 tests** passing under both
+- The reviewed candidate records **85 suites and 357 tests** passing under both
   sbt and Mill, with zero failures, errors, cancellations, ignored, or pending
   tests. Running both build systems catches build-definition drift, though it
   roughly doubles CI cost.
 - CI pins `libjxl-tiny` to commit
-  `07f2dfe11a1a9f621052e75db5feffb0f58f44bd`, installs Verilator, checks Python
-  syntax and generated ABI drift, runs the full sbt and Mill suites, elaborates
-  the frozen top, and runs the non-Vivado Tcl preflight.
+  `07f2dfe11a1a9f621052e75db5feffb0f58f44bd`, installs Verilator and system
+  `djxl`, checks Python syntax and generated ABI drift, runs the full sbt and
+  Mill suites, elaborates the frozen top, and runs the non-Vivado Tcl preflight.
 - Tests cover arithmetic primitives, saturation and rounding boundaries,
   traversal, partial frames, 72x72/two-dimensional tile geometry, unsupported
   distances, malformed ownership, sticky errors, recovery, packed trace
@@ -311,7 +309,8 @@ Verification is the best-developed part of the repository.
   output stalls and assert stable trace fields plus final-only TLAST.
 - Oracle tests compare at the correct boundary: tolerant comparisons for
   floating/fixed approximations, exact equality for quantized maps and logical
-  tokens, and byte equality when a codestream claim is made.
+  tokens, and byte equality when a codestream claim is made. The 11 exact RGB
+  cases also require independent system-`djxl` decode acceptance.
 - Host tools reject malformed CSV/JSON fields, inconsistent geometry, stale
   checksums, wrong variants, wrong trace packing, wrong register maps, and
   mismatched replay plans with specific diagnostics.
@@ -328,16 +327,14 @@ Verification is the best-developed part of the repository.
 - Randomized stalls and malformed streams exist in places but are not a shared,
   seeded property-based framework. Reset-at-every-state and repeated-frame
   stress are not systematic.
-- Oracle diversity is narrow. More signed/extreme fixtures, every supported
-  distance, non-block/tile-aligned sizes, multi-tile two-dimensional images,
-  and small real-image crops are needed.
-- Codestreams are compared with the same reference family used for assembly.
-  Acceptance by an independent JPEG XL decoder would reduce common-mode risk.
+- Oracle diversity is narrow. More signed/extreme fixtures, non-block/tile-
+  aligned RGB sizes, multi-tile two-dimensional RGB images, and small real-
+  image crops are needed.
 - Local oracle tests use `assume` when the reference checkout is absent. CI
   provides the pinned checkout, but an incomplete local environment can skip
   meaningful tests unless the cancellation count is noticed.
-- The full suite is expensive: the current exact candidate took about 23
-  minutes under sbt and 31 minutes under Mill. This raises iteration cost and
+- The full suite is expensive: the current exact candidate took about 27
+  minutes under sbt and 28 minutes under Mill. This raises iteration cost and
   encourages focused runs, so CI remains essential.
 
 ## Host tooling and ABI
@@ -383,8 +380,8 @@ performance, the FPGA guide states timing assumptions and missing proof, and
 
 The weakness is information architecture:
 
-- `README.md` is 1,563 lines, `docs/architecture.md` is 1,386, and `AGENTS.md`
-  is 1,468. Much stage status is repeated across all three.
+- `README.md` is 1,572 lines, `docs/architecture.md` is 1,384, and `AGENTS.md`
+  is 1,470. Much stage status is repeated across all three.
 - The README has only a handful of top-level headings, so hundreds of lines of
   implementation detail sit under “Project status” or “Build.” It is accurate
   but difficult to scan as onboarding documentation.
@@ -445,10 +442,10 @@ crossings, host assembly, or an achieved clock.
 
 The frozen KV260 top currently elaborates to 19 SystemVerilog files and 14,465
 lines. The focused RGB VarDCT route is far larger: fresh split-precision
-elaboration records 70 files/157,330 lines for the standalone hierarchy and 72
-files/157,509 lines for its AXI-stream shell. The latest three specializations
-are Q19 luma-only 8x8, 16x8, and 8x16 transforms; the route also retains Q12 and
-Q18 transform families. Line counts are only complexity indicators, but they
+elaboration records 68 files/172,781 lines for the standalone hierarchy and 70
+files/172,960 lines for its AXI-stream shell. The route retains Q12 AQ, Q18
+analysis, and full-channel Q21 selected-owner transform families. Line counts
+are only complexity indicators, but they
 strongly justify synthesizing the smaller prepared top before expanding the
 physical target.
 
@@ -476,9 +473,10 @@ outside simulation.
    cache-coherency rules, timeout/error recovery, repeat-frame operation, and a
    host program that captures traces and reconstructs a checked codestream.
 3. **Keep completeness claims tied to exact evidence.** Do not generalize the
-   four exact 16x16 RGB fixtures into broad RGB parity. Expand to multiple
-   random seeds, real-image crops, supported distances, and independent decode
-   checks while continuing to localize the earliest divergent stage.
+   11 exact 16x16 synthetic cases into broad RGB parity. Multiple random seeds,
+   all supported distances, and independent decode acceptance are now covered;
+   expand next to real-image crops and larger/non-aligned geometry while
+   continuing to localize the earliest divergent stage.
 
 ### P1 — Architecture and maintainability
 
@@ -524,15 +522,16 @@ outside simulation.
 
 ## Verification performed for this assessment
 
-The split-precision random-parity candidate following `9787239` completed the
-full gate on 2026-07-16:
+The prior split-precision random-parity candidate following `9787239` completed
+the full gate on 2026-07-16; the current Q18/Q21 candidate following `a4f175e`
+adds seven exact codestream/decoder regressions and is revalidated below:
 
-- `sbt test`: 85 suites, 350 tests, all passed in 1,386 seconds;
+- `sbt test`: 85 suites, 357 tests, all passed in 1,647 seconds;
 - `HJXL_REPO_ROOT=$PWD ./mill --no-server -j 2 hjxl.test`: all 85 suites and
-  350 tests passed in 1,880 seconds; the generated JUnit report records zero
+  357 tests passed in 1,664 seconds; the generated JUnit report records zero
   failures, errors, or skipped tests;
-- exact 197-byte impulse, 230-byte gradient, 256-byte checkerboard, and 335-byte
-  deterministic-random RGB VarDCT codestream checks;
+- 11 exact RGB VarDCT codestream checks spanning three random seeds and every
+  supported distance, each independently decoded by system `djxl`;
 - focused primitive, prepared-DCT, variable-shape, core, AXI, discovery,
   elaboration, host-tool, and throughput checks described above.
 
@@ -545,9 +544,9 @@ The following ancillary checks were also run on that candidate:
 - `sbt 'runMain hjxl.ElaborateKv260PreparedDctTop'` — passed;
 - `tclsh fpga/vivado/synth.tcl --preflight-only` — passed with 19 RTL files.
 
-Java 21 and Verilator 5.048 were available. Vivado, Vitis, and Yosys were not
-found. The full dual-build results apply to the exact implementation and
-documentation candidate described here.
+Java 26, Verilator 5.048, and `djxl` 0.12.0 were available. Vivado, Vitis, and
+Yosys were not found. The full dual-build results apply to the exact
+implementation and documentation candidate described here.
 
 No claim is made about synthesis, timing closure, resource use, power,
 place-and-route, bitstream generation, DMA operation, or KV260 execution.
@@ -563,7 +562,8 @@ The next major quality gain will not come from another broad set of trace
 wrappers. It will come from using the frozen prepared-DCT top to obtain the
 first real synthesis and board evidence, then redesigning the frame-scaled
 structures that the reports identify. In parallel, parity work should remain
-trace-first and grow from the four exact RGB fixtures into a varied corpus.
+trace-first and grow from the 11 exact synthetic cases into real-image and
+larger/non-aligned corpora.
 
 Until those milestones are reached, the most accurate description is:
 **a high-quality verification scaffold and partial JPEG XL RTL implementation,

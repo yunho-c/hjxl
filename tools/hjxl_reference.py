@@ -40,7 +40,7 @@ def _add_libjxl_tiny(root: Path) -> None:
     sys.path.insert(0, str(python_dir))
 
 
-def generate_fixture(width: int, height: int, pattern: str):
+def generate_fixture(width: int, height: int, pattern: str, random_seed: int = 0):
     np = _load_numpy()
     y, x = np.mgrid[0:height, 0:width]
     if pattern == "constant":
@@ -65,7 +65,7 @@ def generate_fixture(width: int, height: int, pattern: str):
         image[:, height // 2, width // 2] = np.asarray((1.0, 0.5, 0.25), dtype=np.float32)
         return image
     if pattern == "random":
-        rng = np.random.default_rng(0)
+        rng = np.random.default_rng(random_seed)
         return rng.random((3, height, width), dtype=np.float32)
     raise ValueError(f"unknown pattern: {pattern}")
 
@@ -4520,6 +4520,12 @@ def main() -> int:
         choices=("constant", "gradient", "checkerboard", "impulse", "random"),
         default="gradient",
     )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=0,
+        help="NumPy generator seed used by the random fixture pattern",
+    )
     parser.add_argument("--distance", type=float, default=1.0)
     parser.add_argument(
         "--quantize-input-q8",
@@ -4834,7 +4840,7 @@ def main() -> int:
         if value < -(1 << 7) or value > (1 << 7) - 1:
             raise SystemExit(f"{name} must fit in signed 8-bit")
 
-    image = generate_fixture(args.width, args.height, args.pattern)
+    image = generate_fixture(args.width, args.height, args.pattern, args.random_seed)
     if args.quantize_input_q8:
         image = quantize_rgb_q8(image)
     quant_metadata = None

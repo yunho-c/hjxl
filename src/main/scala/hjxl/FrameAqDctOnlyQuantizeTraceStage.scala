@@ -105,9 +105,11 @@ class AdaptiveInvQacQ16 extends Module {
 }
 
 object RgbVarDctFixedPoint {
-  val QuantizationXybFractionBits = 18
+  val AnalysisXybFractionBits = 18
   val LumaDcXybFractionBits = 19
+  val QuantizationXybFractionBits = 21
   val DctGuardBits = 8
+  val QuantizationDctGuardBits = 7
 }
 
 class AqDctBlockOutput(
@@ -124,13 +126,13 @@ class AqDctBlockOutput(
     if (includeQuantizationPrecision)
       Some(Vec(3, Vec(HjxlConstants.BlockDim * HjxlConstants.BlockDim, SInt(c.traceValueBits.W))))
     else None
-  val lumaDcCoefficients =
+  val quantizationCoefficients =
     if (includeQuantizationPrecision)
-      Some(Vec(2, SInt(c.traceValueBits.W)))
+      Some(Vec(3, Vec(HjxlConstants.BlockDim * HjxlConstants.BlockDim, SInt(c.traceValueBits.W))))
     else None
-  val lumaDcY =
+  val quantizationXyb =
     if (includeQuantizationPrecision)
-      Some(Vec(HjxlConstants.BlockDim * HjxlConstants.BlockDim, SInt(c.traceValueBits.W)))
+      Some(Vec(3, Vec(HjxlConstants.BlockDim * HjxlConstants.BlockDim, SInt(c.traceValueBits.W))))
     else None
   val aqMapQ24 = UInt(AqFinalModulationFixedPoint.ValueBits.W)
   val strategyMaskQ16 = UInt(AqStrategyMaskFixedPoint.ValueBits.W)
@@ -177,22 +179,22 @@ private object AqDctBlockWiring {
   * The default source reuses the X/Y/B block retained by
   * `FrameAqFinalMapPipeline`, so it adds no downstream RGB conversion or frame
   * store. The focused VarDCT build asks that pipeline to retain one additional
-  * Q18 frame from the same conversion for selected-owner CFL fitting and AC
-  * quantization, plus Q19 luma for the precision-sensitive DC pair. Reciprocal
-  * AC-scale generation remains downstream so CFL-map and metadata-only routes
-  * do not elaborate arithmetic they never consume.
+  * Q18 frame from the same conversion for CFL fitting and strategy analysis,
+  * plus a Q21 X/Y/B frame for selected-owner quantization. Reciprocal AC-scale
+  * generation remains downstream so CFL-map and metadata-only routes do not
+  * elaborate arithmetic they never consume.
   */
 class FrameAqDctBlockStage(
     c: HjxlConfig = HjxlConfig(),
     includeQuantizationPrecision: Boolean = false
 ) extends Module {
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
-  private val precisionFractionBits = RgbVarDctFixedPoint.QuantizationXybFractionBits
-  private val lumaDcFractionBits = RgbVarDctFixedPoint.LumaDcXybFractionBits
+  private val precisionFractionBits = RgbVarDctFixedPoint.AnalysisXybFractionBits
+  private val quantizationFractionBits = RgbVarDctFixedPoint.QuantizationXybFractionBits
 
   require(
     precisionFractionBits > RgbToXybApprox.OutputFractionBits,
-    "quantization sideband must retain more precision than Q12"
+    "analysis sideband must retain more precision than Q12"
   )
 
   val io = IO(new Bundle {
@@ -244,14 +246,21 @@ class FrameAqDctBlockStage(
   } else {
     None
   }
-  val lumaDcDct =
+  val quantizationDcts =
     if (includeQuantizationPrecision)
-      Some(Module(new Dct8x8Approx(c, coefficientFractionBits = lumaDcFractionBits)))
+      Some(
+        Seq.fill(3)(
+          Module(new Dct8x8Approx(c, coefficientFractionBits = quantizationFractionBits))
+        )
+      )
     else None
-  lumaDcDct.foreach { dct =>
-    dct.io.input.valid := aq.io.output.valid
-    for (sample <- 0 until blockSize) {
-      dct.io.input.bits(sample) := aq.io.output.bits.lumaDcY.get(sample)
+  quantizationDcts.foreach { dcts =>
+    for (channel <- 0 until 3) {
+      dcts(channel).io.input.valid := aq.io.output.valid
+      for (sample <- 0 until blockSize) {
+        dcts(channel).io.input.bits(sample) :=
+          aq.io.output.bits.quantizationXyb.get(channel)(sample)
+      }
     }
   }
   precisionDcts.foreach { highPrecisionDcts =>
@@ -269,7 +278,7 @@ class FrameAqDctBlockStage(
   val allDctValid =
     dcts.map(_.io.output.valid).reduce(_ && _) &&
       precisionDcts.map(_.map(_.io.output.valid).reduce(_ && _)).getOrElse(true.B) &&
-      lumaDcDct.map(_.io.output.valid).getOrElse(true.B)
+      quantizationDcts.map(_.map(_.io.output.valid).reduce(_ && _)).getOrElse(true.B)
   io.output.valid := aq.io.output.valid && allDctValid
   io.output.bits.aqMapQ24 := aq.io.output.bits.aqMapQ24
   io.output.bits.strategyMaskQ16 := aq.io.output.bits.strategyMaskQ16
@@ -299,13 +308,13 @@ class FrameAqDctBlockStage(
         _(channel)(coefficient) := aq.io.output.bits.precisionXyb.get(channel)(coefficient)
       )
     }
-    io.output.bits.lumaDcY.foreach(
-      _(coefficient) := aq.io.output.bits.lumaDcY.get(coefficient)
-    )
-  }
-  io.output.bits.lumaDcCoefficients.foreach { coefficients =>
-    for (coefficient <- 0 until 2) {
-      coefficients(coefficient) := lumaDcDct.get.io.output.bits(coefficient)
+    for (channel <- 0 until 3) {
+      io.output.bits.quantizationCoefficients.foreach(
+        _(channel)(coefficient) := quantizationDcts.get(channel).io.output.bits(coefficient)
+      )
+      io.output.bits.quantizationXyb.foreach(
+        _(channel)(coefficient) := aq.io.output.bits.quantizationXyb.get(channel)(coefficient)
+      )
     }
   }
 
@@ -317,7 +326,9 @@ class FrameAqDctBlockStage(
   precisionDcts.foreach(_.foreach { dct =>
     dct.io.output.ready := io.output.ready && aq.io.output.valid
   })
-  lumaDcDct.foreach(_.io.output.ready := io.output.ready && aq.io.output.valid)
+  quantizationDcts.foreach(_.foreach { dct =>
+    dct.io.output.ready := io.output.ready && aq.io.output.valid
+  })
 
   io.busy := aq.io.busy
   io.overflow := aq.io.overflow

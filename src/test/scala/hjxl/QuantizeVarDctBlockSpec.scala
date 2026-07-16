@@ -368,7 +368,7 @@ class QuantizeVarDctBlockSpec extends AnyFreeSpec with Matchers with ChiselSim {
       simulate(
         new VarDctQuantizeBlock(
           config,
-          coefficientFractionBits = RgbVarDctFixedPoint.QuantizationXybFractionBits,
+          coefficientFractionBits = RgbVarDctFixedPoint.AnalysisXybFractionBits,
           lumaDcCoefficientFractionBits = lumaDcFractionBits
         )
       ) { dut =>
@@ -425,7 +425,7 @@ class QuantizeVarDctBlockSpec extends AnyFreeSpec with Matchers with ChiselSim {
       result.getOrElse(fail("VarDCT quantizer did not produce a result"))
     }
 
-    val q18 = run(RgbVarDctFixedPoint.QuantizationXybFractionBits)
+    val q18 = run(RgbVarDctFixedPoint.AnalysisXybFractionBits)
     val split = run(RgbVarDctFixedPoint.LumaDcXybFractionBits)
     q18.ac mustBe split.ac
     q18.yDc mustBe Vector(357, 360)

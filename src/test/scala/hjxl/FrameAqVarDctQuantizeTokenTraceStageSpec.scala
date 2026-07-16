@@ -69,10 +69,13 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     dut.io.config.tokenSelect.poke(TokenTraceSelect.AcTokens.U)
   }
 
-  private def pokeAdaptiveRgbConfig(dut: FrameAqVarDctQuantizeTokenTraceStage): Unit = {
+  private def pokeAdaptiveRgbConfig(
+      dut: FrameAqVarDctQuantizeTokenTraceStage,
+      distanceQ8: Int = 256
+  ): Unit = {
     dut.io.config.xsize.poke(16.U)
     dut.io.config.ysize.poke(16.U)
-    dut.io.config.distanceQ8.poke(256.U)
+    dut.io.config.distanceQ8.poke(distanceQ8.U)
     dut.io.config.fixedPointScale.poke(0.U)
     dut.io.config.fixedInvQacQ16.poke(0.U)
     dut.io.config.fixedRawQuant.poke(0.U)
@@ -383,13 +386,17 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
   private def verifyRgbCodestream(
       pattern: String,
       expectedStrategyValues: Seq[Int],
-      expectedCodestreamBytes: Int
+      expectedCodestreamBytes: Int,
+      randomSeed: Int = 0,
+      distanceQ8: Int = 256
   ): Unit = {
     assume(
       Files.isDirectory(libjxlTinyRoot.resolve("python")),
       s"libjxl-tiny Python checkout not found at $libjxlTinyRoot"
     )
-    val temp = Files.createTempDirectory(s"hjxl-rgb-var-dct-$pattern-codestream-")
+    val seedLabel = if (pattern == "random") s"$pattern-seed-$randomSeed" else pattern
+    val fixtureLabel = s"$seedLabel-distance-q8-$distanceQ8"
+    val temp = Files.createTempDirectory(s"hjxl-rgb-var-dct-$fixtureLabel-codestream-")
     val expectedDc = temp.resolve("expected-dc.npy")
     val expectedMetadata = temp.resolve("expected-metadata.npy")
     val expectedAc = temp.resolve("expected-ac.npy")
@@ -403,6 +410,7 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     val actualAc = temp.resolve("actual-ac.npy")
     val actualStrategy = temp.resolve("actual-strategy.npy")
     val actualCodestream = temp.resolve("actual.jxl")
+    val decodedPfm = temp.resolve("decoded.pfm")
 
     runTool(
       Seq(
@@ -414,6 +422,10 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
         "16",
         "--pattern",
         pattern,
+        "--random-seed",
+        randomSeed.toString,
+        "--distance",
+        (distanceQ8.toDouble / 256.0).toString,
         "--quantize-input-q8",
         "--xyb-q12-csv",
         rgbCsv.toString,
@@ -440,7 +452,7 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     val observed = scala.collection.mutable.ArrayBuffer.empty[ExpectedTrace]
     val config = HjxlConfig(maxFrameWidth = 16, maxFrameHeight = 16)
     simulate(new FrameAqVarDctQuantizeTokenTraceStage(config)) { dut =>
-      pokeAdaptiveRgbConfig(dut)
+      pokeAdaptiveRgbConfig(dut, distanceQ8)
       dut.io.input.valid.poke(false.B)
       dut.io.trace.ready.poke(true.B)
       dut.clock.step()
@@ -504,7 +516,7 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
         "--height",
         "16",
         "--distance",
-        "1.0",
+        (distanceQ8.toDouble / 256.0).toString,
         "--dc-tokens-npy",
         actualDc.toString,
         "--ac-metadata-tokens-npy",
@@ -544,6 +556,15 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
     )
     Files.readAllBytes(actualCodestream).toSeq mustBe
       Files.readAllBytes(expectedCodestream).toSeq
+    runTool(
+      Seq(
+        sys.env.getOrElse("DJXL", "djxl"),
+        actualCodestream.toString,
+        decodedPfm.toString
+      )
+    )
+    val decodedHeader = Files.readString(decodedPfm, StandardCharsets.ISO_8859_1)
+    decodedHeader must startWith("PF\n16 16\n")
   }
 
   "a nonzero-AC Q8 RGB impulse assembles to the native VarDCT codestream" in {
@@ -576,6 +597,60 @@ class FrameAqVarDctQuantizeTokenTraceStageSpec
       expectedStrategyValues = Seq(3, 3, 2, 2),
       expectedCodestreamBytes = 335
     )
+  }
+
+  "a second Q8 RGB random seed assembles to the native VarDCT codestream" in {
+    verifyRgbCodestream(
+      pattern = "random",
+      expectedStrategyValues = Seq(3, 3, 2, 2),
+      expectedCodestreamBytes = 346,
+      randomSeed = 1
+    )
+  }
+
+  "a vertical-strategy Q8 RGB random seed assembles to the native VarDCT codestream" in {
+    verifyRgbCodestream(
+      pattern = "random",
+      expectedStrategyValues = Seq(5, 4, 5, 4),
+      expectedCodestreamBytes = 349,
+      randomSeed = 4
+    )
+  }
+
+  "a distance-2 Q8 RGB random seed assembles to the native VarDCT codestream" in {
+    verifyRgbCodestream(
+      pattern = "random",
+      expectedStrategyValues = Seq(3, 3, 2, 2),
+      expectedCodestreamBytes = 259,
+      randomSeed = 1,
+      distanceQ8 = 512
+    )
+  }
+
+  "a distance-quarter Q8 RGB random seed assembles to the native VarDCT codestream" in {
+    verifyRgbCodestream(
+      pattern = "random",
+      expectedStrategyValues = Seq(3, 1, 2, 1),
+      expectedCodestreamBytes = 569,
+      randomSeed = 1,
+      distanceQ8 = 64
+    )
+  }
+
+  Seq(
+    (128, Seq(5, 4, 5, 4), 451),
+    (1024, Seq(5, 4, 5, 4), 213),
+    (2048, Seq(5, 4, 5, 4), 184)
+  ).foreach { case (distanceQ8, strategies, codestreamBytes) =>
+    s"supported distance Q8=$distanceQ8 assembles a random seed to the native codestream" in {
+      verifyRgbCodestream(
+        pattern = "random",
+        expectedStrategyValues = strategies,
+        expectedCodestreamBytes = codestreamBytes,
+        randomSeed = 1,
+        distanceQ8 = distanceQ8
+      )
+    }
   }
 
   "the RGB route reaches every logical-token phase and drains before another frame" in {

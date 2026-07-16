@@ -291,7 +291,7 @@ class CbrtApproxQ12(inputBits: Int, outputBits: Int)
   * after adding the opsin bias, matching the reference ordering. A normalized
   * cube-root table covers the full positive signed-16/Q8 input range without
   * the former high-value saturation. Outputs default to signed Q12; the live
-  * VarDCT route requests a Q19 primary with exact Q18 and Q12 secondary taps.
+  * VarDCT route requests a Q21 primary with exact Q18 and Q12 secondary taps.
   */
 class RgbToXybApprox(
     c: HjxlConfig = HjxlConfig(),

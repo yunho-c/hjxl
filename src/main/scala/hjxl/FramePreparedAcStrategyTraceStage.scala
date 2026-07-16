@@ -9,23 +9,31 @@ import chisel3.util._
   *
   * Q12 XYB samples are retained for candidate scoring. By default their
   * matching Q12 ordinary-DCT coefficients are reused for CFL estimation and
-  * selected-owner quantization. Optional higher-precision X/Y/B values replace
-  * those downstream values, while an independently optional luma-DC sideband
-  * carries one higher-precision Y block and its first two ordinary-DCT
-  * coefficients. AQ and mask values remain per-block inputs whose covered
-  * maxima feed candidate scoring. `rawQuant` is the pre-strategy byte; after
-  * searching the frame, the scheduler applies `adjust_quant_field` to it.
+  * selected-owner quantization. Optional quantization and independent analysis
+  * sidebands let those consumers use different X/Y/B precisions, while the
+  * older optional luma-DC seam remains available to prepared callers. AQ and
+  * mask values remain per-block inputs whose covered maxima feed candidate
+  * scoring. `rawQuant` is the pre-strategy byte; after searching the frame,
+  * the scheduler applies `adjust_quant_field` to it.
   */
 class PreparedAcStrategyFrameBlock(
     c: HjxlConfig,
     quantizationCoefficientFractionBits: Int = Dct8Approx.FractionBits,
-    lumaDcCoefficientFractionBits: Int = 0
+    lumaDcCoefficientFractionBits: Int = 0,
+    analysisCoefficientFractionBits: Int = 0
 ) extends Bundle {
   private val blockSize = HjxlConstants.BlockDim * HjxlConstants.BlockDim
   private val activeLumaDcFractionBits =
     if (lumaDcCoefficientFractionBits == 0)
       quantizationCoefficientFractionBits
     else lumaDcCoefficientFractionBits
+  private val activeAnalysisFractionBits =
+    if (analysisCoefficientFractionBits == 0)
+      quantizationCoefficientFractionBits
+    else analysisCoefficientFractionBits
+  private val hasIndependentAnalysisPrecision =
+    activeAnalysisFractionBits != Dct8Approx.FractionBits &&
+      activeAnalysisFractionBits != quantizationCoefficientFractionBits
   require(
     quantizationCoefficientFractionBits >= Dct8Approx.FractionBits,
     "prepared AC-strategy quantization precision cannot be below Q12"
@@ -33,6 +41,10 @@ class PreparedAcStrategyFrameBlock(
   require(
     activeLumaDcFractionBits >= quantizationCoefficientFractionBits,
     "prepared luma-DC precision cannot be below quantization precision"
+  )
+  require(
+    activeAnalysisFractionBits >= Dct8Approx.FractionBits,
+    "prepared AC-strategy analysis precision cannot be below Q12"
   )
 
   val xyb = Vec(3, Vec(blockSize, SInt(c.traceValueBits.W)))
@@ -43,6 +55,14 @@ class PreparedAcStrategyFrameBlock(
     else None
   val quantizationDct8x8 =
     if (quantizationCoefficientFractionBits > Dct8Approx.FractionBits)
+      Some(Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))
+    else None
+  val analysisXyb =
+    if (hasIndependentAnalysisPrecision)
+      Some(Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))
+    else None
+  val analysisDct8x8 =
+    if (hasIndependentAnalysisPrecision)
       Some(Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))
     else None
   val lumaDcY =
@@ -144,7 +164,8 @@ class FramePreparedAcStrategyTraceStage(
     c: HjxlConfig = HjxlConfig(),
     quantizationCoefficientFractionBits: Int = Dct8Approx.FractionBits,
     analysisDctGuardBits: Int = 0,
-    lumaDcCoefficientFractionBits: Int = 0
+    lumaDcCoefficientFractionBits: Int = 0,
+    analysisCoefficientFractionBits: Int = 0
 ) extends Module {
   private val blockDim = HjxlConstants.BlockDim
   private val blockSize = blockDim * blockDim
@@ -166,6 +187,13 @@ class FramePreparedAcStrategyTraceStage(
     if (lumaDcCoefficientFractionBits == 0)
       quantizationCoefficientFractionBits
     else lumaDcCoefficientFractionBits
+  private val activeAnalysisFractionBits =
+    if (analysisCoefficientFractionBits == 0)
+      quantizationCoefficientFractionBits
+    else analysisCoefficientFractionBits
+  private val hasIndependentAnalysisPrecision =
+    activeAnalysisFractionBits != Dct8Approx.FractionBits &&
+      activeAnalysisFractionBits != quantizationCoefficientFractionBits
 
   require(maxBlocks > 0, "prepared AC-strategy frame must contain a block")
   require(maxTiles > 0, "prepared AC-strategy frame must contain a tile")
@@ -177,7 +205,8 @@ class FramePreparedAcStrategyTraceStage(
         new PreparedAcStrategyFrameBlock(
           c,
           quantizationCoefficientFractionBits,
-          activeLumaDcFractionBits
+          activeLumaDcFractionBits,
+          activeAnalysisFractionBits
         )
       )
     )
@@ -216,6 +245,14 @@ class FramePreparedAcStrategyTraceStage(
     if (quantizationCoefficientFractionBits > Dct8Approx.FractionBits)
       Some(Reg(Vec(maxBlocks, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))))
     else None
+  val analysisXyb =
+    if (hasIndependentAnalysisPrecision)
+      Some(Reg(Vec(maxBlocks, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))))
+    else None
+  val analysisDct8x8 =
+    if (hasIndependentAnalysisPrecision)
+      Some(Reg(Vec(maxBlocks, Vec(3, Vec(blockSize, SInt(c.traceValueBits.W))))))
+    else None
   val lumaDcY =
     if (activeLumaDcFractionBits > quantizationCoefficientFractionBits)
       Some(Reg(Vec(maxBlocks, Vec(blockSize, SInt(c.traceValueBits.W)))))
@@ -252,6 +289,22 @@ class FramePreparedAcStrategyTraceStage(
     quantizationDct8x8
       .map(_(blockAddress(block))(channel)(coefficient))
       .getOrElse(storedDct(block, channel, coefficient))
+
+  private def storedAnalysisXyb(block: UInt, channel: Int, sample: Int): SInt =
+    if (activeAnalysisFractionBits == quantizationCoefficientFractionBits)
+      storedQuantizationXyb(block, channel, sample)
+    else
+      analysisXyb
+        .map(_(blockAddress(block))(channel)(sample))
+        .getOrElse(storedXyb(block, channel, sample))
+
+  private def storedAnalysisDct(block: UInt, channel: Int, coefficient: UInt): SInt =
+    if (activeAnalysisFractionBits == quantizationCoefficientFractionBits)
+      storedQuantizationDct(block, channel, coefficient)
+    else
+      analysisDct8x8
+        .map(_(blockAddress(block))(channel)(coefficient))
+        .getOrElse(storedDct(block, channel, coefficient))
 
   private def storedAq(block: UInt): UInt = aqMapQ24(blockAddress(block))
   private def storedMask(block: UInt): UInt = strategyMaskQ16(blockAddress(block))
@@ -326,6 +379,12 @@ class FramePreparedAcStrategyTraceStage(
       )
       quantizationDct8x8.foreach(
         _(store)(channel)(sample) := io.input.bits.quantizationDct8x8.get(channel)(sample)
+      )
+      analysisXyb.foreach(
+        _(store)(channel)(sample) := io.input.bits.analysisXyb.get(channel)(sample)
+      )
+      analysisDct8x8.foreach(
+        _(store)(channel)(sample) := io.input.bits.analysisDct8x8.get(channel)(sample)
       )
     }
     lumaDcY.foreach(_(store) := io.input.bits.lumaDcY.get)
@@ -414,13 +473,13 @@ class FramePreparedAcStrategyTraceStage(
   )
   val analysisDctBlock = Mux(state === cflStreaming, cflBlockIndex, dctCandidateBlock)
 
-  private val quantizationToQ16Shift = 16 - quantizationCoefficientFractionBits
+  private val analysisToQ16Shift = 16 - activeAnalysisFractionBits
 
   private def coefficientQ16(value: SInt): SInt =
-    if (quantizationToQ16Shift > 0)
-      (value << quantizationToQ16Shift).asSInt.pad(estimatorCoefficientBits)
-    else if (quantizationToQ16Shift < 0)
-      (value >> -quantizationToQ16Shift).asSInt.pad(estimatorCoefficientBits)
+    if (analysisToQ16Shift > 0)
+      (value << analysisToQ16Shift).asSInt.pad(estimatorCoefficientBits)
+    else if (analysisToQ16Shift < 0)
+      (value >> -analysisToQ16Shift).asSInt.pad(estimatorCoefficientBits)
     else value.pad(estimatorCoefficientBits)
 
   val cflEstimator = Module(
@@ -437,7 +496,7 @@ class FramePreparedAcStrategyTraceStage(
           Module(
             new Dct8x8Approx(
               c,
-              coefficientFractionBits = quantizationCoefficientFractionBits,
+              coefficientFractionBits = activeAnalysisFractionBits,
               internalGuardBits = analysisDctGuardBits
             )
           )
@@ -457,7 +516,7 @@ class FramePreparedAcStrategyTraceStage(
       dcts(channel).io.output.ready := analysisDctReady
       for (sample <- 0 until blockSize) {
         dcts(channel).io.input.bits(sample) :=
-          storedQuantizationXyb(analysisDctBlock, channel, sample)
+          storedAnalysisXyb(analysisDctBlock, channel, sample)
       }
     }
   }
@@ -471,7 +530,7 @@ class FramePreparedAcStrategyTraceStage(
   ): SInt =
     analysisPrecisionDcts
       .map(_(channel).io.output.bits(coefficient))
-      .getOrElse(storedQuantizationDct(block, channel, coefficient))
+      .getOrElse(storedAnalysisDct(block, channel, coefficient))
 
   cflEstimator.io.input.valid := cflDctActive && analysisDctValid
   cflEstimator.io.input.bits.coefficientIndex := cflCoefficientIndexSafe
@@ -534,7 +593,7 @@ class FramePreparedAcStrategyTraceStage(
     Module(
       new Dct16x8Approx(
         c,
-        quantizationCoefficientFractionBits,
+        activeAnalysisFractionBits,
         internalGuardBits = analysisDctGuardBits
       )
     )
@@ -543,7 +602,7 @@ class FramePreparedAcStrategyTraceStage(
     Module(
       new Dct8x16Approx(
         c,
-        quantizationCoefficientFractionBits,
+        activeAnalysisFractionBits,
         internalGuardBits = analysisDctGuardBits
       )
     )
@@ -560,7 +619,7 @@ class FramePreparedAcStrategyTraceStage(
         if (verticalY < 8) verticalTopBlock else verticalBottomBlock
       val verticalSourceSample = (verticalY % 8) * 8 + verticalX
       verticalDct(channel).io.input.bits(sample) :=
-        storedQuantizationXyb(verticalSourceBlock, channel, verticalSourceSample)
+        storedAnalysisXyb(verticalSourceBlock, channel, verticalSourceSample)
 
       val horizontalY = sample / 16
       val horizontalX = sample % 16
@@ -568,12 +627,12 @@ class FramePreparedAcStrategyTraceStage(
         if (horizontalX < 8) horizontalLeftBlock else horizontalRightBlock
       val horizontalSourceSample = horizontalY * 8 + (horizontalX % 8)
       horizontalDct(channel).io.input.bits(sample) :=
-        storedQuantizationXyb(horizontalSourceBlock, channel, horizontalSourceSample)
+        storedAnalysisXyb(horizontalSourceBlock, channel, horizontalSourceSample)
     }
   }
 
   val selector = Module(
-    new PreparedAcStrategy2x2Selector(c.traceValueBits, quantizationCoefficientFractionBits)
+    new PreparedAcStrategy2x2Selector(c.traceValueBits, activeAnalysisFractionBits)
   )
   val verticalValid = verticalDct.map(_.io.output.valid).reduce(_ && _)
   val horizontalValid = horizontalDct.map(_.io.output.valid).reduce(_ && _)

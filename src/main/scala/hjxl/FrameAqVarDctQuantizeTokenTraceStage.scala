@@ -10,8 +10,8 @@ import chisel3.util._
   * Continuation cells are consumed without producing an owner. First cells
   * reuse the stored ordinary DCT coefficients or recompute the selected
   * rectangular transform from the two covered XYB blocks. The live RGB route
-  * supplies Q18 sidebands for strategy search and AC quantization plus Q19
-  * luma for the precision-sensitive DC pair; prepared Q12 users retain the
+  * supplies independent Q18 sidebands for CFL/strategy analysis and Q21
+  * sidebands for selected-owner quantization; prepared Q12 users retain the
   * original compact interface. Adaptive raw quantization uses a reciprocal
   * matched to the post-strategy maximum.
   */
@@ -251,12 +251,17 @@ class FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
     coefficientFractionBits: Int = Dct8Approx.FractionBits,
     analysisDctGuardBits: Int = 0,
     quantizationDctGuardBits: Int = 0,
-    lumaDcCoefficientFractionBits: Int = 0
+    lumaDcCoefficientFractionBits: Int = 0,
+    analysisCoefficientFractionBits: Int = 0
 ) extends Module {
   private val activeLumaDcFractionBits =
     if (lumaDcCoefficientFractionBits == 0)
       coefficientFractionBits
     else lumaDcCoefficientFractionBits
+  private val activeAnalysisFractionBits =
+    if (analysisCoefficientFractionBits == 0)
+      coefficientFractionBits
+    else analysisCoefficientFractionBits
 
   val io = IO(new Bundle {
     val config = Input(new FrameConfig(c))
@@ -265,7 +270,8 @@ class FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
         new PreparedAcStrategyFrameBlock(
           c,
           coefficientFractionBits,
-          activeLumaDcFractionBits
+          activeLumaDcFractionBits,
+          activeAnalysisFractionBits
         )
       )
     )
@@ -281,7 +287,8 @@ class FramePreparedAcStrategyVarDctQuantizeTokenTraceStage(
       c,
       coefficientFractionBits,
       analysisDctGuardBits = analysisDctGuardBits,
-      lumaDcCoefficientFractionBits = activeLumaDcFractionBits
+      lumaDcCoefficientFractionBits = activeLumaDcFractionBits,
+      analysisCoefficientFractionBits = activeAnalysisFractionBits
     )
   )
   val owners = Module(
@@ -349,10 +356,10 @@ class FrameAqVarDctQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig())
     val unsupportedDistance = Output(Bool())
   })
 
+  private val analysisCoefficientFractionBits =
+    RgbVarDctFixedPoint.AnalysisXybFractionBits
   private val quantizationCoefficientFractionBits =
     RgbVarDctFixedPoint.QuantizationXybFractionBits
-  private val lumaDcCoefficientFractionBits =
-    RgbVarDctFixedPoint.LumaDcXybFractionBits
 
   val blocks = Module(new FrameAqDctBlockStage(c, includeQuantizationPrecision = true))
   val composed = Module(
@@ -360,8 +367,8 @@ class FrameAqVarDctQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig())
       c,
       coefficientFractionBits = quantizationCoefficientFractionBits,
       analysisDctGuardBits = RgbVarDctFixedPoint.DctGuardBits,
-      quantizationDctGuardBits = RgbVarDctFixedPoint.DctGuardBits,
-      lumaDcCoefficientFractionBits = lumaDcCoefficientFractionBits
+      quantizationDctGuardBits = RgbVarDctFixedPoint.QuantizationDctGuardBits,
+      analysisCoefficientFractionBits = analysisCoefficientFractionBits
     )
   )
   val distanceStatus = Module(new DistanceParamsLookup)
@@ -379,13 +386,13 @@ class FrameAqVarDctQuantizeTokenTraceStage(c: HjxlConfig = HjxlConfig())
   composed.io.input.bits.xyb := blocks.io.output.bits.xyb
   composed.io.input.bits.dct8x8 := blocks.io.output.bits.coefficients
   composed.io.input.bits.quantizationXyb.get :=
-    blocks.io.output.bits.precisionXyb.get
+    blocks.io.output.bits.quantizationXyb.get
   composed.io.input.bits.quantizationDct8x8.get :=
+    blocks.io.output.bits.quantizationCoefficients.get
+  composed.io.input.bits.analysisXyb.get :=
+    blocks.io.output.bits.precisionXyb.get
+  composed.io.input.bits.analysisDct8x8.get :=
     blocks.io.output.bits.precisionCoefficients.get
-  composed.io.input.bits.lumaDcY.get :=
-    blocks.io.output.bits.lumaDcY.get
-  composed.io.input.bits.lumaDcDct8x8.get :=
-    blocks.io.output.bits.lumaDcCoefficients.get
   composed.io.input.bits.aqMapQ24 := blocks.io.output.bits.aqMapQ24
   composed.io.input.bits.strategyMaskQ16 := blocks.io.output.bits.strategyMaskQ16
   composed.io.input.bits.rawQuant := blocks.io.output.bits.quant

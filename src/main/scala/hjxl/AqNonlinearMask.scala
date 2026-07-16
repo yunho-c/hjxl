@@ -375,12 +375,12 @@ class FrameAqNonlinearMaskTraceStage(
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val xybAccepted = Output(Valid(new XybPixel(c)))
-    val quantizationXybAccepted =
+    val analysisXybAccepted =
       if (xybOutputFractionBits > RgbToXybApprox.OutputFractionBits)
         Some(Output(Valid(new XybPixel(c))))
       else None
-    val lumaDcXybAccepted =
-      if (xybOutputFractionBits > RgbVarDctFixedPoint.QuantizationXybFractionBits)
+    val quantizationXybAccepted =
+      if (xybOutputFractionBits > RgbVarDctFixedPoint.AnalysisXybFractionBits)
         Some(Output(Valid(new XybPixel(c))))
       else None
     val trace = Decoupled(new StageTrace(c))
@@ -403,8 +403,8 @@ class FrameAqNonlinearMaskTraceStage(
   fuzzyErosion.io.input.valid := io.input.valid && !fuzzyErosionDone
   io.input.ready := fuzzyErosion.io.input.ready && !fuzzyErosionDone
   io.xybAccepted := fuzzyErosion.io.xybAccepted
+  io.analysisXybAccepted.foreach(_ := fuzzyErosion.io.analysisXybAccepted.get)
   io.quantizationXybAccepted.foreach(_ := fuzzyErosion.io.quantizationXybAccepted.get)
-  io.lumaDcXybAccepted.foreach(_ := fuzzyErosion.io.lumaDcXybAccepted.get)
 
   nonlinearMask.io.config := activeConfig
   nonlinearMask.io.input.valid := fuzzyErosion.io.trace.valid

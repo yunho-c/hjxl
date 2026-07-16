@@ -270,12 +270,12 @@ class FrameAqFuzzyErosionTraceStage(
     val config = Input(new FrameConfig(c))
     val input = Flipped(Decoupled(new RgbPixel(c)))
     val xybAccepted = Output(Valid(new XybPixel(c)))
-    val quantizationXybAccepted =
+    val analysisXybAccepted =
       if (xybOutputFractionBits > RgbToXybApprox.OutputFractionBits)
         Some(Output(Valid(new XybPixel(c))))
       else None
-    val lumaDcXybAccepted =
-      if (xybOutputFractionBits > RgbVarDctFixedPoint.QuantizationXybFractionBits)
+    val quantizationXybAccepted =
+      if (xybOutputFractionBits > RgbVarDctFixedPoint.AnalysisXybFractionBits)
         Some(Output(Valid(new XybPixel(c))))
       else None
     val trace = Decoupled(new StageTrace(c))
@@ -297,8 +297,8 @@ class FrameAqFuzzyErosionTraceStage(
   contrast.io.input.valid := io.input.valid && !contrastDone
   io.input.ready := contrast.io.input.ready && !contrastDone
   io.xybAccepted := contrast.io.xybAccepted
+  io.analysisXybAccepted.foreach(_ := contrast.io.analysisXybAccepted.get)
   io.quantizationXybAccepted.foreach(_ := contrast.io.quantizationXybAccepted.get)
-  io.lumaDcXybAccepted.foreach(_ := contrast.io.lumaDcXybAccepted.get)
 
   erosion.io.config := activeConfig
   erosion.io.input.valid := contrast.io.trace.valid
